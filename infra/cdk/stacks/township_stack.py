@@ -29,10 +29,14 @@ class TownshipStack(Stack):
         security = SecurityConstruct(self, "Security", config=config)
 
         # 2. Asynchronous Messaging (5 SQS Queues + 5 Dedicated DLQs + KMS)
-        messaging = MessagingConstruct(self, "Messaging", config=config, kms_key=security.kms_key)
+        messaging = MessagingConstruct(
+            self, "Messaging", config=config, kms_key=security.kms_key
+        )
 
         # 3. Storage & Content Delivery (S3 Private Buckets + CloudFront CDN)
-        storage = StorageConstruct(self, "Storage", config=config, kms_key=security.kms_key)
+        storage = StorageConstruct(
+            self, "Storage", config=config, kms_key=security.kms_key
+        )
 
         # Single source of truth for allowed frontend origins across CloudFront, API Gateway, and FastAPI
         cf_origin = f"https://{storage.distribution.distribution_domain_name}"
@@ -69,7 +73,12 @@ class TownshipStack(Stack):
         )
 
         # CloudFormation Outputs
-        CfnOutput(self, "ApiUrl", value=apigw.api.url, description="API Gateway Invocation URL")
+        CfnOutput(
+            self,
+            "ApiUrl",
+            value=apigw.api.url,
+            description="API Gateway Invocation URL",
+        )
         CfnOutput(
             self,
             "CloudFrontDomain",

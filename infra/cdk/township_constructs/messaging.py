@@ -25,11 +25,18 @@ class QueueWithDLQ:
 
 class MessagingConstruct(Construct):
     def __init__(
-        self, scope: Construct, id: str, config: EnvironmentConfig, kms_key: kms.IKey, **kwargs
+        self,
+        scope: Construct,
+        id: str,
+        config: EnvironmentConfig,
+        kms_key: kms.IKey,
+        **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
 
-        removal_policy = RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        removal_policy = (
+            RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        )
 
         queue_names = [
             "billing-jobs",
@@ -60,7 +67,9 @@ class MessagingConstruct(Construct):
                 queue_name=f"{q_name}-{config.env_name}",
                 encryption=sqs.QueueEncryption.KMS,
                 encryption_master_key=kms_key,
-                visibility_timeout=Duration.seconds(config.sqs_visibility_timeout_seconds),
+                visibility_timeout=Duration.seconds(
+                    config.sqs_visibility_timeout_seconds
+                ),
                 retention_period=Duration.days(4),
                 dead_letter_queue=sqs.DeadLetterQueue(
                     max_receive_count=config.sqs_max_receive_count,

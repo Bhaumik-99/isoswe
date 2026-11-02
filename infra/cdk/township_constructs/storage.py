@@ -20,11 +20,18 @@ from environments.config import EnvironmentConfig
 
 class StorageConstruct(Construct):
     def __init__(
-        self, scope: Construct, id: str, config: EnvironmentConfig, kms_key: kms.IKey, **kwargs
+        self,
+        scope: Construct,
+        id: str,
+        config: EnvironmentConfig,
+        kms_key: kms.IKey,
+        **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
 
-        removal_policy = RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        removal_policy = (
+            RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        )
 
         # 1. Documents Private Bucket (Statements, Invoices, Receipts)
         self.documents_bucket = s3.Bucket(
@@ -57,7 +64,9 @@ class StorageConstruct(Construct):
             self,
             "WebDistribution",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(self.web_bucket),
+                origin=origins.S3BucketOrigin.with_origin_access_control(
+                    self.web_bucket
+                ),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,

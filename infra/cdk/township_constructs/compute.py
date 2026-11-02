@@ -43,7 +43,11 @@ class LambdaLocalBundler:
         self.source_path = source_path
 
     def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
-        skip_docker = os.environ.get("CDK_SKIP_DOCKER_BUNDLING", "false").lower() in ("true", "1", "yes")
+        skip_docker = os.environ.get("CDK_SKIP_DOCKER_BUNDLING", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
         if skip_docker or "pytest" in sys.modules:
             excluded = {
                 ".venv",
@@ -85,7 +89,11 @@ class ComputeConstruct(Construct):
     ) -> None:
         super().__init__(scope, id, **kwargs)
 
-        log_retention = logs.RetentionDays.ONE_MONTH if config.is_production else logs.RetentionDays.ONE_WEEK
+        log_retention = (
+            logs.RetentionDays.ONE_MONTH
+            if config.is_production
+            else logs.RetentionDays.ONE_WEEK
+        )
 
         # 1. API Lambda IAM Role with least-privilege policy
         api_role = iam.Role(
@@ -93,7 +101,9 @@ class ComputeConstruct(Construct):
             "ApiLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
             ],
         )
 
@@ -121,7 +131,11 @@ class ComputeConstruct(Construct):
             "tests/**",
         ]
 
-        canonical_env = "production" if config.is_production else ("staging" if config.env_name == "staging" else "development")
+        canonical_env = (
+            "production"
+            if config.is_production
+            else ("staging" if config.env_name == "staging" else "development")
+        )
 
         # Common environment variables for all serverless application Lambdas
         lambda_environment = {
@@ -132,10 +146,18 @@ class ComputeConstruct(Construct):
             "DATABASE_SECRET_NAME": db_secret.secret_name,
             "DATABASE_SECRET_ARN": db_secret.secret_arn,
             "SQS_BILLING_JOBS_QUEUE_URL": queues["billing-jobs"].main_queue.queue_url,
-            "SQS_PAYMENT_EVENTS_QUEUE_URL": queues["payment-events"].main_queue.queue_url,
-            "SQS_RECONCILIATION_JOBS_QUEUE_URL": queues["reconciliation-jobs"].main_queue.queue_url,
-            "SQS_COMPLAINT_AI_JOBS_QUEUE_URL": queues["complaint-ai-jobs"].main_queue.queue_url,
-            "SQS_NOTIFICATION_JOBS_QUEUE_URL": queues["notification-jobs"].main_queue.queue_url,
+            "SQS_PAYMENT_EVENTS_QUEUE_URL": queues[
+                "payment-events"
+            ].main_queue.queue_url,
+            "SQS_RECONCILIATION_JOBS_QUEUE_URL": queues[
+                "reconciliation-jobs"
+            ].main_queue.queue_url,
+            "SQS_COMPLAINT_AI_JOBS_QUEUE_URL": queues[
+                "complaint-ai-jobs"
+            ].main_queue.queue_url,
+            "SQS_NOTIFICATION_JOBS_QUEUE_URL": queues[
+                "notification-jobs"
+            ].main_queue.queue_url,
         }
 
         if frontend_origins:
@@ -183,7 +205,9 @@ class ComputeConstruct(Construct):
             "WorkerLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
             ],
         )
         db_secret.grant_read(worker_role)
@@ -220,7 +244,9 @@ class ComputeConstruct(Construct):
             "OutboxLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
             ],
         )
         db_secret.grant_read(outbox_role)

@@ -22,13 +22,16 @@ from stacks.township_stack import TownshipStack  # noqa: E402
 app = App()
 
 # Read target environment from context or environment variable
-target_env_name = app.node.try_get_context("env") or os.environ.get("ENVIRONMENT", "dev")
+target_env_name = app.node.try_get_context("env") or os.environ.get(
+    "ENVIRONMENT", "dev"
+)
 config = get_environment_config(target_env_name)
 
 # AWS Account and Region resolution from environment
 aws_env = Environment(
     account=os.environ.get("CDK_DEFAULT_ACCOUNT") or os.environ.get("AWS_ACCOUNT_ID"),
-    region=os.environ.get("CDK_DEFAULT_REGION") or os.environ.get("AWS_REGION", "ap-south-1"),
+    region=os.environ.get("CDK_DEFAULT_REGION")
+    or os.environ.get("AWS_REGION", "ap-south-1"),
 )
 
 stack_name = f"TownshipOps-{config.env_name.capitalize()}"

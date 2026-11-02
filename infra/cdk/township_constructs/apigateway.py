@@ -28,8 +28,14 @@ class ApiGatewayConstruct(Construct):
     ) -> None:
         super().__init__(scope, id, **kwargs)
 
-        cors_origins = frontend_origins if frontend_origins else (
-            apigw.Cors.ALL_ORIGINS if not config.is_production else ["https://township.example.com"]
+        cors_origins = (
+            frontend_origins
+            if frontend_origins
+            else (
+                apigw.Cors.ALL_ORIGINS
+                if not config.is_production
+                else ["https://township.example.com"]
+            )
         )
 
         # 1. API Gateway REST API with proxy integration

@@ -142,14 +142,18 @@ def test_postgres_empty_migration_upgrade_and_downgrade(postgres_test_db: Engine
 
         # Verify supabase_uid column exists and is populated for the pre-existing record
         user_row = connection.execute(
-            text("SELECT id, supabase_uid, email FROM users WHERE email = 'legacy@township.example.com'")
+            text(
+                "SELECT id, supabase_uid, email FROM users WHERE email = 'legacy@township.example.com'"
+            )
         ).fetchone()
         assert user_row is not None
         assert user_row.supabase_uid is not None
 
         # Verify profiles view exists and is queryable
         view_row = connection.execute(
-            text("SELECT id, supabase_uid, email FROM profiles WHERE email = 'legacy@township.example.com'")
+            text(
+                "SELECT id, supabase_uid, email FROM profiles WHERE email = 'legacy@township.example.com'"
+            )
         ).fetchone()
         assert view_row is not None
 
@@ -310,7 +314,9 @@ def test_postgres_rls_tenant_isolation_and_expired_lease_denial(postgres_test_db
         # 1c. Direct UPDATE is blocked (users_authenticated_update was safely removed)
         update_failed = False
         try:
-            conn.execute(text(f"UPDATE users SET full_name = 'Hacked' WHERE id = '{user_active_id}';"))
+            conn.execute(
+                text(f"UPDATE users SET full_name = 'Hacked' WHERE id = '{user_active_id}';")
+            )
         except Exception:
             update_failed = True
             conn.rollback()

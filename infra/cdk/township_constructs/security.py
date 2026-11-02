@@ -16,10 +16,14 @@ from environments.config import EnvironmentConfig
 
 
 class SecurityConstruct(Construct):
-    def __init__(self, scope: Construct, id: str, config: EnvironmentConfig, **kwargs) -> None:
+    def __init__(
+        self, scope: Construct, id: str, config: EnvironmentConfig, **kwargs
+    ) -> None:
         super().__init__(scope, id, **kwargs)
 
-        removal_policy = RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        removal_policy = (
+            RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
+        )
 
         # 1. Master Customer Managed Key (CMK) for encryption at rest
         self.kms_key = kms.Key(
