@@ -33,14 +33,14 @@ class IdentityRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_user_by_cognito_sub(self, cognito_sub: str) -> User | None:
+    def get_user_by_supabase_uid(self, supabase_uid: UUID) -> User | None:
         stmt = (
             select(User)
             .options(
                 joinedload(User.roles).joinedload(UserRole.society),
                 joinedload(User.memberships).joinedload(FlatMembership.flat),
             )
-            .where(User.cognito_sub == cognito_sub, User.status == UserStatus.ACTIVE)
+            .where(User.supabase_uid == supabase_uid, User.status == UserStatus.ACTIVE)
         )
         return self.db.scalars(stmt).unique().first()
 

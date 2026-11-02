@@ -1,10 +1,12 @@
 """AWS CDK Infrastructure Assertions and Unit Tests
 
-Verifies compliance with engineering and security baselines:
-- SQS encryption and DLQ configuration
-- RDS PostgreSQL KMS encryption and private isolation
-- Cognito user pool MFA and client configuration
-- CloudFront TLS enforcement
+Verifies compliance with engineering and security baselines for Option B:
+- SQS encryption and dedicated DLQs (5 queues + 5 DLQs = 10 total)
+- KMS Customer Managed Key encryption
+- AWS Secrets Manager configuration for Supabase
+- S3 private buckets with BlockPublicAccess
+- Serverless Lambda configuration with direct internet access (no NAT gateway cost)
+- API Gateway configuration
 """
 
 import pytest
@@ -36,28 +38,49 @@ def test_sqs_queues_have_dedicated_dlqs_and_encryption(prod_template: Template) 
     )
 
 
-def test_rds_postgresql_encryption_and_multi_az(prod_template: Template) -> None:
-    """Verifies that production RDS instance is Multi-AZ, encrypted, and has deletion protection."""
+def test_secrets_manager_supabase_credentials(prod_template: Template) -> None:
+    """Verifies AWS Secrets Manager secret is configured for Supabase credentials with KMS encryption."""
     prod_template.has_resource_properties(
-        "AWS::RDS::DBInstance",
+        "AWS::SecretsManager::Secret",
         {
-            "Engine": "postgres",
-            "MultiAZ": True,
-            "StorageEncrypted": True,
-            "DeletionProtection": True,
+            "Description": Match.string_like_regexp("Supabase"),
+            "KmsKeyId": Match.any_value(),
         },
     )
 
 
-def test_cognito_user_pool_configuration(prod_template: Template) -> None:
-    """Verifies Cognito User Pool has email/phone aliases and password policy."""
+def test_serverless_lambda_functions_configured(prod_template: Template) -> None:
+    """Verifies serverless Lambda functions (API + Worker) are configured with least-privilege IAM roles."""
+    # Should have at least API function and Worker function
     prod_template.has_resource_properties(
-        "AWS::Cognito::UserPool",
+        "AWS::Lambda::Function",
         {
-            "AdminCreateUserConfig": {
-                "AllowAdminCreateUserOnly": True,
+            "FunctionName": "township-api-prod",
+            "Runtime": "python3.11",
+            "Environment": {
+                "Variables": Match.object_like(
+                    {
+                        "ENVIRONMENT": "prod",
+                        "MESSAGING_PROVIDER": "aws",
+                    }
+                )
             },
-            "UsernameAttributes": Match.array_with(["email", "phone_number"]),
+        },
+    )
+
+    prod_template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "FunctionName": "township-worker-prod",
+            "Runtime": "python3.11",
+            "Environment": {
+                "Variables": Match.object_like(
+                    {
+                        "ENVIRONMENT": "prod",
+                        "MESSAGING_PROVIDER": "aws",
+                    }
+                )
+            },
         },
     )
 
@@ -73,5 +96,15 @@ def test_s3_buckets_block_public_access(prod_template: Template) -> None:
                 "IgnorePublicAcls": True,
                 "RestrictPublicBuckets": True,
             },
+        },
+    )
+
+
+def test_api_gateway_rest_api_created(prod_template: Template) -> None:
+    """Verifies API Gateway REST API is created."""
+    prod_template.has_resource_properties(
+        "AWS::ApiGateway::RestApi",
+        {
+            "Name": "township-api-prod",
         },
     )

@@ -117,11 +117,11 @@ def seed_database() -> None:
                 db.flush()
                 logger.info(f"Created Flat: {f_num} (Area: {area} sq ft)")
 
-        # 4. Users
+        # 4. Users (Linked to Supabase Auth UUIDs)
         users_data = [
             (
                 USER_NEERAJ_ID,
-                "mock-sub-neeraj-kulkarni",
+                uuid.UUID("00000000-0000-0000-0000-000000000001"),
                 "neeraj.kulkarni@example.com",
                 "+91-98000-00001",
                 "Neeraj Kulkarni",
@@ -129,7 +129,7 @@ def seed_database() -> None:
             ),
             (
                 USER_SWATI_ID,
-                "mock-sub-swati-joshi",
+                uuid.UUID("00000000-0000-0000-0000-000000000002"),
                 "swati.joshi@example.com",
                 "+91-98000-00002",
                 "Swati Joshi",
@@ -137,7 +137,7 @@ def seed_database() -> None:
             ),
             (
                 USER_AAMIR_ID,
-                "mock-sub-aamir-shaikh",
+                uuid.UUID("00000000-0000-0000-0000-000000000003"),
                 "aamir.shaikh@example.com",
                 "+91-98000-00003",
                 "Aamir Shaikh",
@@ -145,7 +145,7 @@ def seed_database() -> None:
             ),
             (
                 USER_HELPDESK_ID,
-                "mock-sub-helpdesk-shinde",
+                uuid.UUID("00000000-0000-0000-0000-000000000004"),
                 "helpdesk@example.com",
                 "+91-98000-00004",
                 "Rajesh Shinde",
@@ -153,12 +153,12 @@ def seed_database() -> None:
             ),
         ]
 
-        for u_id, sub, email, phone, name, primary_role in users_data:
+        for u_id, s_uid, email, phone, name, primary_role in users_data:
             user = db.get(User, u_id)
             if not user:
                 user = User(
                     id=u_id,
-                    cognito_sub=sub,
+                    supabase_uid=s_uid,
                     email=email,
                     phone=phone,
                     full_name=name,

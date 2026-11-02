@@ -75,8 +75,8 @@ class UserRoleSchema(BaseSchema):
 
 class UserProfileSchema(BaseSchema):
     id: UUID
-    cognito_sub: str
-    email: EmailStr
+    supabase_uid: UUID
+    email: EmailStr | None = None
     phone: str | None = None
     full_name: str
     status: UserStatus
@@ -87,8 +87,9 @@ class CurrentUserClaims(BaseModel):
     """Internal security context representing authenticated actor."""
 
     user_id: UUID
-    cognito_sub: str
-    email: str
+    supabase_uid: UUID
+    email: str | None = None
+    phone: str | None = None
     full_name: str
     roles: list[RoleType] = Field(default_factory=list)
     permissions: list[Permission] = Field(default_factory=list)

@@ -1,17 +1,20 @@
-"""Township Operations Primary Stack
+"""Township Operations Primary Stack: Supabase + AWS Serverless Architecture
 
-Assembles the cohesive multi-tier architecture using modular, reusable constructs.
+Assembles the cohesive serverless architecture using modular, reusable constructs:
+- AWS KMS Customer Managed Key for encryption at rest
+- AWS Secrets Manager for Supabase connection string and credentials
+- Amazon SQS (5 business queues + 5 dedicated DLQs)
+- Amazon S3 + CloudFront CDN for frontend and receipts storage
+- AWS Lambda (FastAPI API + Asynchronous SQS Worker) with direct TLS to Supabase
+- Amazon API Gateway with AWS WAF protection
 """
 
 from aws_cdk import CfnOutput, Stack
 from constructs import Construct
 from environments.config import EnvironmentConfig
 from township_constructs.apigateway import ApiGatewayConstruct
-from township_constructs.auth import AuthConstruct
 from township_constructs.compute import ComputeConstruct
-from township_constructs.database import DatabaseConstruct
 from township_constructs.messaging import MessagingConstruct
-from township_constructs.network import NetworkConstruct
 from township_constructs.security import SecurityConstruct
 from township_constructs.storage import StorageConstruct
 
@@ -22,45 +25,26 @@ class TownshipStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # 1. Security & Cryptography
+        # 1. Security & Cryptography (KMS CMK, Secrets Manager, CloudTrail)
         security = SecurityConstruct(self, "Security", config=config)
 
-        # 2. Network Isolation (VPC)
-        network = NetworkConstruct(self, "Network", config=config, kms_key=security.kms_key)
-
-        # 3. Authentication & User Management (Cognito)
-        auth = AuthConstruct(self, "Auth", config=config, kms_key=security.kms_key)
-
-        # 4. Asynchronous Messaging (SQS + DLQs)
+        # 2. Asynchronous Messaging (5 SQS Queues + 5 Dedicated DLQs + KMS)
         messaging = MessagingConstruct(self, "Messaging", config=config, kms_key=security.kms_key)
 
-        # 5. Relational System of Record (RDS PostgreSQL + RDS Proxy)
-        database = DatabaseConstruct(
-            self,
-            "Database",
-            config=config,
-            vpc=network.vpc,
-            db_security_group=network.db_security_group,
-            kms_key=security.kms_key,
-            db_secret=security.db_secret,
-        )
-
-        # 6. Storage & Content Delivery (S3 + CloudFront)
+        # 3. Storage & Content Delivery (S3 Private Buckets + CloudFront CDN)
         storage = StorageConstruct(self, "Storage", config=config, kms_key=security.kms_key)
 
-        # 7. Serverless Compute (Lambda)
+        # 4. Serverless Compute (FastAPI Lambda + SQS Worker Lambda)
         compute = ComputeConstruct(
             self,
             "Compute",
             config=config,
-            vpc=network.vpc,
-            lambda_sg=network.lambda_security_group,
             kms_key=security.kms_key,
             db_secret=security.db_secret,
             queues=messaging.queues,
         )
 
-        # 8. API Exposure & WAF Protection
+        # 5. API Exposure & WAF Protection (API Gateway + WAF)
         apigw = ApiGatewayConstruct(
             self,
             "ApiGateway",
@@ -70,6 +54,15 @@ class TownshipStack(Stack):
 
         # CloudFormation Outputs
         CfnOutput(self, "ApiUrl", value=apigw.api.url, description="API Gateway Invocation URL")
-        CfnOutput(self, "CloudFrontDomain", value=storage.distribution.distribution_domain_name, description="CloudFront Web App Domain")
-        CfnOutput(self, "CognitoUserPoolId", value=auth.user_pool.user_pool_id, description="Cognito User Pool ID")
-        CfnOutput(self, "CognitoClientId", value=auth.web_client.user_pool_client_id, description="Cognito App Client ID")
+        CfnOutput(
+            self,
+            "CloudFrontDomain",
+            value=storage.distribution.distribution_domain_name,
+            description="CloudFront Web App Domain",
+        )
+        CfnOutput(
+            self,
+            "SupabaseSecretArn",
+            value=security.db_secret.secret_arn,
+            description="AWS Secrets Manager Supabase Secret ARN",
+        )

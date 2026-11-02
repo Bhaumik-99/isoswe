@@ -2,16 +2,42 @@
 
 ## 1. System of Record Overview
 
-The multi-tenant Society Operations Platform uses **PostgreSQL 16** as its authoritative system of record.
-- **Engine**: PostgreSQL 16
+The multi-tenant Society Operations Platform uses **Supabase PostgreSQL** (Mumbai `ap-south-1`) as its authoritative system of record.
+- **Engine**: PostgreSQL 16 (hosted on Supabase)
+- **Connection Endpoint**: Supabase Shared Transaction Pooler (PgBouncer port `6543`)
 - **Driver**: Psycopg 3 (`psycopg[binary]>=3.1.18`)
 - **ORM**: SQLAlchemy 2.0 with strict typing (`Mapped[...]`, `mapped_column`)
-- **Schema Management**: Alembic migrations only (zero `create_all()` in production code)
+- **Schema Management**: Version-controlled Alembic migrations only (zero `create_all()` in production code)
+- **Security & RLS**: PostgreSQL Row-Level Security (RLS) enabled on all core tables for defense-in-depth
 - **Monetary Precision**: All monetary values are strictly represented in integer paise (e.g. ₹1,000.00 is stored as `100000`). Storing money in floating-point columns is strictly prohibited to eliminate IEEE 754 rounding errors.
 
 ---
 
-## 2. Entity Relationship Diagram (ERD)
+## 2. Supabase Shared Transaction Pooler & Lambda Configuration
+
+AWS Lambda instances connect to Supabase PostgreSQL using its shared transaction pooler:
+```python
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_size=1,
+    max_overflow=0,
+    pool_pre_ping=True,
+    connect_args={
+        "sslmode": "require",
+        "prepare_threshold": None,  # Disables prepared statements for PgBouncer transaction mode
+    },
+)
+```
+
+### Critical Invariants:
+1. **Disable Prepared Statements (`prepare_threshold: None`)**: PgBouncer in transaction pooling mode routes individual transactions across heterogeneous backend connections. Prepared statements must be disabled in Psycopg 3 to prevent "prepared statement does not exist" errors.
+2. **Small Per-Lambda Pool (`pool_size=1, max_overflow=0`)**: Prevents connection exhaustion when multiple Lambda concurrent workers scale.
+3. **Module-Scoped Engine**: Retained in global memory across warm Lambda invocations to eliminate connection handshake latency.
+4. **Secrets Manager Storage**: The exact transaction pooler connection URI is stored securely in AWS Secrets Manager and encrypted with AWS KMS.
+
+---
+
+## 3. Entity Relationship Diagram (ERD)
 
 ```mermaid
 erDiagram
@@ -89,7 +115,7 @@ erDiagram
 
     users {
         uuid id PK
-        string cognito_sub UK
+        uuid supabase_uid UK
         string phone
         string email UK
         string full_name
@@ -135,9 +161,9 @@ erDiagram
 
 ---
 
-## 3. Table Specifications & Constraints
+## 4. Table Specifications & Constraints
 
-### 3.1 Identity Domain
+### 4.1 Identity Domain
 
 #### `societies`
 - Root tenant anchor. All residential assets, billing ledgers, and access boundaries scope directly to a society.
@@ -152,48 +178,30 @@ erDiagram
 - Composite Unique Constraint: `(tower_id, flat_number)` guarantees unit number uniqueness per tower.
 - Foreign Key with `ON DELETE CASCADE` to both `societies` and `towers`.
 
-#### `users`
-- Platform accounts mapped to Cognito subjects.
-- Constraints: `cognito_sub` (UNIQUE, INDEXED), `email` (UNIQUE, INDEXED).
-- Status: `ACTIVE`, `INACTIVE`, `SUSPENDED`.
+#### `users` (Application Profile Table)
+- Application user profile table linked to `auth.users` via `supabase_uid`.
+- Constraints: `supabase_uid` (UUID, UNIQUE, INDEXED), `phone` (VARCHAR 32, INDEXED), `email` (VARCHAR 255, NULLABLE, UNIQUE).
+- Never modified directly by Supabase Auth; synced via application domain logic.
 
 #### `flat_memberships`
-- Relationship binding an individual user to a specific apartment.
-- Supports residents belonging to multiple flats.
-- Check Constraint: `ck_membership_valid_dates` enforces `valid_until IS NULL OR valid_until >= valid_from`.
-- Tenant Leases: `valid_until` is enforced on all resident requests. If current timestamp exceeds `valid_until`, access is denied automatically by the security layer.
+- Links a user to a specific flat as an `OWNER`, `TENANT`, or `FAMILY_MEMBER`.
+- Check Constraint: `valid_until IS NULL OR valid_until >= valid_from` ensures lease integrity.
+- Compound Index: `(user_id, status)` for fast authorization lookup.
 
 #### `user_roles`
-- Role-based authorization per society.
-- Roles: `RESIDENT`, `HELPDESK`. Committee reporting is a read-only helpdesk capability, not a separate role.
-- Composite Unique Constraint: `(user_id, society_id, role)`.
+- Granular RBAC assignments.
+- Valid Roles: `RESIDENT` and `HELPDESK`.
+- Unique Constraint: `(user_id, society_id, role)` prevents duplicate role assignments.
 
 ---
 
-### 3.2 Platform Reliability & Messaging Domain
+## 5. Row-Level Security (RLS)
 
-#### `audit_events`
-- Append-only compliance log.
-- Indexed by `correlation_id`, `resource_id`, `actor_id`, and `society_id` for distributed transaction tracing.
-
-#### `outbox_events`
-- Implements the Transactional Outbox pattern.
-- Columns: `event_type`, `aggregate_type`, `aggregate_id`, `payload` (JSONB), `status` (PENDING, PUBLISHED, FAILED), `attempts`, `published_at`.
-- Index: `(status, attempts, created_at)` allows high-throughput polling workers using `SELECT ... FOR UPDATE SKIP LOCKED` without locking table scans.
-
-#### `processed_events`
-- Prevents duplicate message execution across SQS consumers.
-- Primary Key: `(consumer_name, event_id)` guarantees consumer idempotency within the business transaction.
-
-#### `idempotency_keys`
-- API-level idempotency store for payment operations, bill generation, and state-mutating requests.
-- Unique Constraint: `(scope, idempotency_key)` with automatic expiry TTL.
-
----
-
-## 4. Migration Strategy
-
-Schema changes follow zero-downtime expand/contract rules:
-1. **Never edit existing migration scripts**: Always generate forward migrations using `alembic revision -m "..."`.
-2. **Backward-compatible changes first**: Add new columns as nullable or with defaults before updating code.
-3. **Automated CI Validation**: CI executes migrations against an empty PostgreSQL database instance on every pull request.
+All application tables enable PostgreSQL Row-Level Security:
+```sql
+ALTER TABLE societies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE flats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+...
+```
+Permissive policies allow the FastAPI application connection (operating via the authenticated connection / service role) to perform verified business transactions, while preventing direct unauthenticated SQL tampering.

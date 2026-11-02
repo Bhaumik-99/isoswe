@@ -89,9 +89,11 @@ def test_tenant_access_stops_after_membership_expiry(
     """Requirement 13.6: Tenant access stops after membership expiry."""
     # Create a tenant with an expired lease
     now = datetime.now(UTC)
+    expired_sub = uuid.uuid4()
     expired_user = User(
         id=uuid.uuid4(),
-        cognito_sub="mock-sub-expired-tenant",
+        supabase_uid=expired_sub,
+        phone="+91-98000-00099",
         email="expired.tenant@example.com",
         full_name="Expired Tenant",
         status=UserStatus.ACTIVE,
@@ -133,13 +135,13 @@ def test_tenant_access_stops_after_membership_expiry(
 
     # Also verify via API endpoint that expired tenant gets 403 FLAT_ACCESS_DENIED
     with patch(
-        "app.integrations.cognito.cognito_verifier.verify_token",
+        "app.integrations.supabase_auth.supabase_verifier.verify_token",
         return_value={
-            "sub": "mock-sub-expired-tenant",
-            "token_use": "id",
-            "aud": "mock-client-id",
+            "sub": str(expired_sub),
+            "role": "authenticated",
+            "aud": "authenticated",
             "exp": 9999999999,
-            "iss": "https://cognito-idp.ap-south-1.amazonaws.com/test-pool",
+            "iss": "https://test-project.supabase.co/auth/v1",
         },
     ):
         res = client.get(
@@ -216,27 +218,27 @@ def test_helpdesk_can_access_flats_in_own_society(client: TestClient, db_session
 
 
 def test_canonical_sub_enforced_no_email_fallback(client: TestClient, db_session: Session) -> None:
-    """Requirement: Authentication strictly maps canonical Cognito sub. No fallback to email."""
+    """Requirement: Authentication strictly maps canonical Supabase UUID. No fallback to email."""
     from unittest.mock import patch
 
-    # Mock token with an unknown sub, but an email matching an existing user (Neeraj)
+    # Mock token with an unknown UUID sub, but an email matching an existing user (Neeraj)
     unlinked_token_payload = {
-        "sub": "unknown-cognito-sub-attempting-takeover",
+        "sub": "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "email": "neeraj.kulkarni@example.com",
-        "token_use": "id",
-        "aud": "mock-client-id",
+        "role": "authenticated",
+        "aud": "authenticated",
         "exp": 9999999999,
-        "iss": "https://cognito-idp.ap-south-1.amazonaws.com/test-pool",
+        "iss": "https://test-project.supabase.co/auth/v1",
     }
 
     with patch(
-        "app.integrations.cognito.cognito_verifier.verify_token",
+        "app.integrations.supabase_auth.supabase_verifier.verify_token",
         return_value=unlinked_token_payload,
     ):
         res = client.get(
             "/api/v1/me",
-            headers={"Authorization": "Bearer genuine-cognito-jwt-unlinked"},
+            headers={"Authorization": "Bearer genuine-supabase-jwt-unlinked"},
         )
-        # Must be rejected because 'unknown-cognito-sub-attempting-takeover' does not exist in DB
+        # Must be rejected because 'ffffffff-ffff-ffff-ffff-ffffffffffff' does not exist in DB
         assert res.status_code == 401
         assert res.json()["error"]["code"] == "USER_NOT_REGISTERED"

@@ -1,5 +1,5 @@
 /**
- * Cognito & In-Memory Session Manager
+ * Supabase & In-Memory Session Manager
  *
  * Security Invariants:
  * 1. Tokens are kept in memory and ephemeral sessionStorage (tab-scoped only).

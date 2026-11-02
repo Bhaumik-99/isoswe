@@ -29,14 +29,14 @@ class SecurityConstruct(Construct):
             removal_policy=removal_policy,
         )
 
-        # 2. Database Credentials Secret (automatically rotated in production)
+        # 2. Supabase Connection & Credentials Secret (AWS Secrets Manager)
         self.db_secret = secretsmanager.Secret(
             self,
             "DatabaseSecret",
-            description=f"RDS PostgreSQL Credentials - {config.env_name}",
+            description=f"Supabase PostgreSQL Connection & Credentials - {config.env_name}",
             generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"username": "postgres"}',
-                generate_string_key="password",
+                secret_string_template='{"SUPABASE_URL": "", "SUPABASE_SERVICE_ROLE_KEY": ""}',
+                generate_string_key="DATABASE_URL",
                 exclude_characters=" %+~`#$&*()[]{}|\\;:'\",<>?!@/",
                 password_length=32,
             ),

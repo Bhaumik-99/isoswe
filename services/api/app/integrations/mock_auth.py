@@ -17,25 +17,29 @@ from app.core.logging import logger
 MOCK_USERS: dict[str, dict[str, str]] = {
     "dev-token-neeraj": {
         "email": "neeraj.kulkarni@example.com",
-        "sub": "mock-sub-neeraj-kulkarni",
+        "phone": "+91-98000-00001",
+        "sub": "00000000-0000-0000-0000-000000000001",
         "name": "Neeraj Kulkarni",
         "role": "RESIDENT",
     },
     "dev-token-swati": {
         "email": "swati.joshi@example.com",
-        "sub": "mock-sub-swati-joshi",
+        "phone": "+91-98000-00002",
+        "sub": "00000000-0000-0000-0000-000000000002",
         "name": "Swati Joshi",
         "role": "RESIDENT",
     },
     "dev-token-aamir": {
         "email": "aamir.shaikh@example.com",
-        "sub": "mock-sub-aamir-shaikh",
+        "phone": "+91-98000-00003",
+        "sub": "00000000-0000-0000-0000-000000000003",
         "name": "Aamir Shaikh",
         "role": "RESIDENT",
     },
     "dev-token-helpdesk": {
         "email": "helpdesk@example.com",
-        "sub": "mock-sub-helpdesk-shinde",
+        "phone": "+91-98000-00004",
+        "sub": "00000000-0000-0000-0000-000000000004",
         "name": "Rajesh Shinde",
         "role": "HELPDESK",
     },

@@ -12,8 +12,8 @@ export type FlatStatus = 'OCCUPIED' | 'VACANT' | 'UNDER_MAINTENANCE';
 
 export interface UserProfile {
   id: string;
-  cognito_sub: string;
-  email: string;
+  supabase_uid: string;
+  email?: string | null;
   phone?: string | null;
   full_name: string;
   status: UserStatus;

@@ -38,7 +38,7 @@ class IdentityService:
 
         user_profile = UserProfileSchema(
             id=user.id,
-            cognito_sub=user.cognito_sub,
+            supabase_uid=user.supabase_uid,
             email=user.email,
             phone=user.phone,
             full_name=user.full_name,

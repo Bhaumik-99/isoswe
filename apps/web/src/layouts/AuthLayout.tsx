@@ -23,7 +23,7 @@ export const AuthLayout: React.FC<{ children: React.ReactNode }> = ({ children }
 
         <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400">
           <ShieldCheck className="h-4 w-4 text-emerald-600" />
-          <span>Multi-tenant Isolation • Amazon Cognito Auth • End-to-End Auditing</span>
+          <span>Multi-tenant Isolation • Supabase Auth • End-to-End Auditing</span>
         </div>
       </div>
     </div>

@@ -171,9 +171,11 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    cognito_sub: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
-    phone: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    supabase_uid: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), unique=True, nullable=False, index=True
+    )
+    phone: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     status: Mapped[UserStatus] = mapped_column(
         SAEnum(UserStatus, native_enum=False), nullable=False, default=UserStatus.ACTIVE

@@ -54,25 +54,27 @@ class Settings(BaseSettings):
     # Local Auth Bypass - strictly prohibited in staging and production
     ENABLE_LOCAL_AUTH_BYPASS: bool = False
 
-    # Database
+    # Database Connection & Pooling (PgBouncer Transaction Pooler compatible)
     DATABASE_URL: str = Field(
         default="postgresql+psycopg://postgres:postgres@localhost:5432/township_ops",
         description="SQLAlchemy-compatible PostgreSQL connection URL",
     )
     TEST_DATABASE_URL: str | None = None
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_SIZE: int = 1
+    DB_MAX_OVERFLOW: int = 0
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 1800
+
+    # Supabase Configuration
+    SUPABASE_URL: str = ""
+    SUPABASE_JWKS_URL: str = ""
+    SUPABASE_JWT_ISSUER: str = ""
+    SUPABASE_JWT_AUDIENCE: str = "authenticated"
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # AWS
     AWS_REGION: str = "ap-south-1"
     AWS_ACCOUNT_ID: str = ""
-
-    # Amazon Cognito
-    COGNITO_USER_POOL_ID: str = ""
-    COGNITO_APP_CLIENT_ID: str = ""
-    COGNITO_JWKS_URL: str = ""
 
     # SQS Queue URLs
     SQS_BILLING_JOBS_QUEUE_URL: str = ""
@@ -80,6 +82,11 @@ class Settings(BaseSettings):
     SQS_RECONCILIATION_JOBS_QUEUE_URL: str = ""
     SQS_COMPLAINT_AI_JOBS_QUEUE_URL: str = ""
     SQS_NOTIFICATION_JOBS_QUEUE_URL: str = ""
+
+    # Payment Integration (Behind backend adapters)
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
 
     # Messaging Provider: "local" (in-memory/file/db for dev) or "aws" (real SQS)
     MESSAGING_PROVIDER: Literal["local", "aws"] = "local"

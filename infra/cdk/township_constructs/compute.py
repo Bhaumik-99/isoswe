@@ -1,23 +1,21 @@
-"""Compute Construct: AWS Lambda Functions and Execution Roles
+"""Compute Construct: AWS Serverless Lambda Functions and Execution Roles
 
 Provisions:
 1. API Lambda function running FastAPI with Mangum
-2. SQS Worker Lambda processing asynchronous event batches
-3. Least-privilege IAM roles with access strictly limited to required SQS queues, Secrets, and KMS keys
-4. VPC integration with application subnets
+2. SQS Worker Lambda processing asynchronous event batches with report_batch_item_failures
+3. Direct TLS connection to Supabase without unnecessary VPC/NAT gateway overhead
+4. Least-privilege IAM roles with access strictly limited to required SQS queues, Secrets, and KMS keys
 """
 
-from typing import Dict
+from typing import Dict, Optional
 from aws_cdk import (
     Duration,
-    aws_ec2 as ec2,
     aws_iam as iam,
     aws_kms as kms,
     aws_lambda as _lambda,
     aws_lambda_event_sources as lambda_sources,
     aws_logs as logs,
     aws_secretsmanager as secretsmanager,
-    aws_sqs as sqs,
 )
 from constructs import Construct
 from environments.config import EnvironmentConfig
@@ -30,8 +28,6 @@ class ComputeConstruct(Construct):
         scope: Construct,
         id: str,
         config: EnvironmentConfig,
-        vpc: ec2.IVpc,
-        lambda_sg: ec2.ISecurityGroup,
         kms_key: kms.IKey,
         db_secret: secretsmanager.ISecret,
         queues: Dict[str, QueueWithDLQ],
@@ -41,13 +37,13 @@ class ComputeConstruct(Construct):
 
         log_retention = logs.RetentionDays.ONE_MONTH if config.is_production else logs.RetentionDays.ONE_WEEK
 
-        # 1. Base IAM Role with least-privilege policy
+        # 1. API Lambda IAM Role with least-privilege policy
         api_role = iam.Role(
             self,
             "ApiLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaVPCAccessExecutionRole")
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
             ],
         )
 
@@ -75,7 +71,7 @@ class ComputeConstruct(Construct):
             "tests/**",
         ]
 
-        # 2. FastAPI API Gateway Lambda
+        # 2. FastAPI API Gateway Lambda (Direct TLS to Supabase, no NAT Gateway)
         self.api_lambda = _lambda.Function(
             self,
             "ApiFunction",
@@ -83,9 +79,6 @@ class ComputeConstruct(Construct):
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_api.handler",
             code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
-            vpc=vpc,
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-            security_groups=[lambda_sg],
             memory_size=1024,
             timeout=Duration.seconds(30),
             role=api_role,
@@ -94,6 +87,7 @@ class ComputeConstruct(Construct):
                 "ENVIRONMENT": config.env_name,
                 "LOG_LEVEL": "INFO",
                 "MESSAGING_PROVIDER": "aws",
+                "SUPABASE_JWT_AUDIENCE": "authenticated",
             },
         )
 
@@ -103,7 +97,7 @@ class ComputeConstruct(Construct):
             "WorkerLambdaRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaVPCAccessExecutionRole")
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
             ],
         )
         db_secret.grant_read(worker_role)
@@ -116,9 +110,6 @@ class ComputeConstruct(Construct):
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_sqs.handler",
             code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
-            vpc=vpc,
-            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
-            security_groups=[lambda_sg],
             memory_size=512,
             timeout=Duration.seconds(60),
             role=worker_role,
@@ -127,6 +118,7 @@ class ComputeConstruct(Construct):
                 "ENVIRONMENT": config.env_name,
                 "LOG_LEVEL": "INFO",
                 "MESSAGING_PROVIDER": "aws",
+                "SUPABASE_JWT_AUDIENCE": "authenticated",
             },
         )
 

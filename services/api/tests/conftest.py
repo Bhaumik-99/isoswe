@@ -115,21 +115,24 @@ def db_session() -> Generator[Session, None, None]:
     # Users
     user_neeraj = User(
         id=uuid.UUID("44444444-4444-4444-4444-444444440001"),
-        cognito_sub="mock-sub-neeraj-kulkarni",
+        supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        phone="+91-98000-00001",
         email="neeraj.kulkarni@example.com",
         full_name="Neeraj Kulkarni",
         status=UserStatus.ACTIVE,
     )
     user_swati = User(
         id=uuid.UUID("44444444-4444-4444-4444-444444440002"),
-        cognito_sub="mock-sub-swati-joshi",
+        supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+        phone="+91-98000-00002",
         email="swati.joshi@example.com",
         full_name="Swati Joshi",
         status=UserStatus.ACTIVE,
     )
     user_helpdesk = User(
         id=uuid.UUID("44444444-4444-4444-4444-444444440004"),
-        cognito_sub="mock-sub-helpdesk-shinde",
+        supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000004"),
+        phone="+91-98000-00004",
         email="helpdesk@example.com",
         full_name="Rajesh Shinde",
         status=UserStatus.ACTIVE,

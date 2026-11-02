@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound, Mail, Sparkles, AlertCircle } from 'lucide-react';
+import { KeyRound, Phone, Sparkles, AlertCircle } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { Button } from '../../components/ui/Button';
 import { Alert } from '../../components/ui/Alert';
-import { cognitoAuth } from '../../services/cognitoAuth';
+import { supabaseAuth } from '../../services/supabaseAuth';
 
 interface DevPersona {
   name: string;
@@ -51,11 +51,10 @@ export const LoginForm: React.FC = () => {
   const { login, isSessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
 
-  // In production builds, default strictly to genuine Cognito OTP authentication
+  // In production builds, default strictly to genuine Supabase Phone OTP authentication
   const [activeTab, setActiveTab] = useState<'dev' | 'otp'>(isDev ? 'dev' : 'otp');
-  const [emailOrPhone, setEmailOrPhone] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  const [cognitoSession, setCognitoSession] = useState<string | null>(null);
   const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -88,8 +87,8 @@ export const LoginForm: React.FC = () => {
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailOrPhone.trim()) {
-      setError('Please provide an email address or mobile phone number');
+    if (!phoneNumber.trim()) {
+      setError('Please provide a mobile phone number');
       return;
     }
 
@@ -98,9 +97,8 @@ export const LoginForm: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      // Genuine AWS Cognito InitiateAuth call via Cognito adapter
-      const result = await cognitoAuth.requestOtp(emailOrPhone);
-      setCognitoSession(result.session);
+      // Genuine Supabase Auth Phone OTP dispatch
+      await supabaseAuth.requestPhoneOtp(phoneNumber);
       setOtpSent(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to dispatch authentication code');
@@ -112,12 +110,7 @@ export const LoginForm: React.FC = () => {
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!otpCode.trim()) {
-      setError('Please enter the 6-digit OTP code sent to your device');
-      return;
-    }
-    if (!cognitoSession) {
-      setError('Authentication session expired. Please request a new code.');
-      setOtpSent(false);
+      setError('Please enter the 6-digit OTP code sent to your mobile');
       return;
     }
 
@@ -125,9 +118,9 @@ export const LoginForm: React.FC = () => {
     setIsSubmitting(true);
 
     try {
-      // Genuine AWS Cognito RespondToAuthChallenge call
-      const tokens = await cognitoAuth.verifyOtp(emailOrPhone, cognitoSession, otpCode);
-      await login(tokens.idToken, tokens.expiresIn);
+      // Genuine Supabase Auth OTP verification returning signed bearer JWT
+      const tokens = await supabaseAuth.verifyPhoneOtp(phoneNumber, otpCode);
+      await login(tokens.accessToken, tokens.expiresIn);
       navigate('/resident/overview');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'OTP verification failed');
@@ -176,7 +169,7 @@ export const LoginForm: React.FC = () => {
             }`}
           >
             <KeyRound className="w-3.5 h-3.5" />
-            <span>Cognito OTP</span>
+            <span>Supabase Phone OTP</span>
           </button>
         </div>
       )}
@@ -226,33 +219,33 @@ export const LoginForm: React.FC = () => {
         </div>
       )}
 
-      {/* Genuine Production AWS Cognito OTP Flow */}
+      {/* Genuine Production Supabase Phone OTP Flow */}
       {(!isDev || activeTab === 'otp') && (
         <div>
           {!otpSent ? (
             <form onSubmit={handleSendOtp} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Mobile Number or Email
+                  Registered Mobile Number
                 </label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <Phone className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                   <input
-                    type="text"
-                    value={emailOrPhone}
-                    onChange={(e) => setEmailOrPhone(e.target.value)}
-                    placeholder="+91 98000 00001 or resident@example.com"
+                    type="tel"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    placeholder="+91 98000 00001"
                     className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
                     required
                   />
                 </div>
                 <p className="mt-1.5 text-xs text-slate-500">
-                  A 6-digit one-time passcode will be securely dispatched via AWS Cognito.
+                  A 6-digit one-time passcode will be securely sent via SMS through Supabase Auth.
                 </p>
               </div>
 
               <Button type="submit" variant="primary" isLoading={isSubmitting} className="w-full">
-                Request Login OTP
+                Request Phone OTP
               </Button>
             </form>
           ) : (
@@ -279,12 +272,11 @@ export const LoginForm: React.FC = () => {
                   variant="outline"
                   onClick={() => {
                     setOtpSent(false);
-                    setCognitoSession(null);
                     setOtpCode('');
                   }}
                   className="flex-1"
                 >
-                  Change Email/Phone
+                  Change Number
                 </Button>
                 <Button type="submit" variant="primary" isLoading={isSubmitting} className="flex-1">
                   Verify & Sign In

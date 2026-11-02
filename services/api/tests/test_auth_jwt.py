@@ -1,12 +1,15 @@
-"""JWT Authentication Test Suite
+"""JWT Authentication Test Suite for Supabase Auth
 
 Mandatory Tests:
 1. Invalid JWT rejected (401 Unauthorized)
 2. Expired JWT rejected (401 Unauthorized with token expired)
 3. Local Auth Bypass fail-closed in staging/production
+4. Supabase audience, issuer, and UUID subject validation
+5. Reject malformed claims
 """
 
 import time
+import uuid
 
 import jwt
 import pytest
@@ -15,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.core.errors import AuthenticationError
 from app.integrations.mock_auth import mock_auth_provider
+from app.integrations.supabase_auth import SupabaseJwtVerifier
 
 
 def test_invalid_jwt_rejected(client: TestClient) -> None:
@@ -35,18 +39,17 @@ def test_invalid_jwt_rejected(client: TestClient) -> None:
 
 def test_expired_jwt_rejected() -> None:
     """Requirement 13.2: Expired JWT rejected."""
-    from app.integrations.cognito import CognitoJwtVerifier
-
-    verifier = CognitoJwtVerifier()
+    verifier = SupabaseJwtVerifier()
     # Mock token expired 1 hour ago
     expired_payload = {
-        "sub": "some-sub",
+        "sub": str(uuid.uuid4()),
         "email": "test@example.com",
         "exp": int(time.time()) - 3600,
-        "iss": "https://cognito-idp.ap-south-1.amazonaws.com/test-pool",
-        "token_use": "id",
+        "iss": "https://test-project.supabase.co/auth/v1",
+        "aud": "authenticated",
+        "role": "authenticated",
     }
-    # Encode with temporary 32-byte key
+    # Encode with temporary key
     fake_token = jwt.encode(
         expired_payload, "test-secret-must-be-32-bytes-long!", algorithm="HS256"
     )
@@ -66,90 +69,80 @@ def test_local_auth_bypass_fails_closed_in_production(monkeypatch: pytest.Monkey
     assert exc_info.value.code == "SECURITY_VIOLATION"
 
 
-def test_cognito_jwt_token_use_and_audience_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies strict validation of ID token 'aud' and Access token 'client_id'."""
+def test_supabase_jwt_audience_and_issuer_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies strict validation of 'aud' and 'iss' claims in Supabase JWTs."""
     from unittest.mock import MagicMock
 
-    from app.integrations.cognito import CognitoJwtVerifier
+    verifier = SupabaseJwtVerifier()
+    verifier.expected_issuer = "https://test-project.supabase.co/auth/v1"
+    verifier.expected_audience = "authenticated"
 
-    verifier = CognitoJwtVerifier()
-    verifier.expected_issuer = "https://cognito-idp.ap-south-1.amazonaws.com/test-pool"
-    verifier.app_client_id = "configured-app-client-id"
-
-    # Mock _get_signing_key to return a dummy key
     dummy_key = MagicMock()
     dummy_key.key = "test-secret-must-be-32-bytes-long!"
     monkeypatch.setattr(verifier, "_get_signing_key", lambda token: dummy_key)
 
-    # 1. ID token with wrong audience
-    id_token_payload = {
-        "sub": "user-sub-123",
+    # 1. Token with wrong audience
+    _wrong_aud_payload = {
+        "sub": str(uuid.uuid4()),
         "iss": verifier.expected_issuer,
         "exp": int(time.time()) + 3600,
-        "token_use": "id",
-        "aud": "wrong-client-id",
+        "aud": "wrong-audience",
     }
     with monkeypatch.context() as m:
-        m.setattr(jwt, "decode", lambda *args, **kwargs: id_token_payload)
-        with pytest.raises(AuthenticationError) as exc:
-            verifier.verify_id_token("dummy-token")
-        assert exc.value.code == "INVALID_AUDIENCE"
-
-    # 2. Access token with matching client_id
-    access_token_payload = {
-        "sub": "user-sub-123",
-        "iss": verifier.expected_issuer,
-        "exp": int(time.time()) + 3600,
-        "token_use": "access",
-        "client_id": "configured-app-client-id",
-    }
-    with monkeypatch.context() as m:
-        m.setattr(jwt, "decode", lambda *args, **kwargs: access_token_payload)
-        res = verifier.verify_access_token("dummy-token")
-        assert res["client_id"] == "configured-app-client-id"
-
-    # 3. Access token passed when ID token expected
-    with monkeypatch.context() as m:
-        m.setattr(jwt, "decode", lambda *args, **kwargs: access_token_payload)
-        with pytest.raises(AuthenticationError) as exc:
-            verifier.verify_id_token("dummy-token")
-        assert exc.value.code == "TOKEN_USE_MISMATCH"
-
-    # 4. Unknown token_use (e.g. 'refresh')
-    refresh_token_payload = {
-        "sub": "user-sub-123",
-        "iss": verifier.expected_issuer,
-        "exp": int(time.time()) + 3600,
-        "token_use": "refresh",
-    }
-    with monkeypatch.context() as m:
-        m.setattr(jwt, "decode", lambda *args, **kwargs: refresh_token_payload)
+        m.setattr(
+            jwt, "decode", lambda *args, **kwargs: (_ for _ in ()).throw(jwt.InvalidAudienceError())
+        )
         with pytest.raises(AuthenticationError) as exc:
             verifier.verify_token("dummy-token")
-        assert exc.value.code == "INVALID_TOKEN_USE"
+        assert exc.value.code == "INVALID_AUDIENCE"
+
+    # 2. Token with valid audience and valid UUID subject
+    valid_sub = str(uuid.uuid4())
+    valid_payload = {
+        "sub": valid_sub,
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "aud": "authenticated",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: valid_payload)
+        res = verifier.verify_token("dummy-token")
+        assert res["sub"] == valid_sub
+        assert res["aud"] == "authenticated"
 
 
-def test_cognito_jwt_malformed_claims_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies that malformed subject or non-numeric exp claims are rejected."""
+def test_supabase_jwt_malformed_claims_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that malformed subject (non-UUID) or non-numeric exp claims are rejected."""
     from unittest.mock import MagicMock
 
-    from app.integrations.cognito import CognitoJwtVerifier
-
-    verifier = CognitoJwtVerifier()
-    verifier.expected_issuer = "https://cognito-idp.ap-south-1.amazonaws.com/test-pool"
+    verifier = SupabaseJwtVerifier()
+    verifier.expected_issuer = "https://test-project.supabase.co/auth/v1"
+    verifier.expected_audience = "authenticated"
     dummy_key = MagicMock()
     monkeypatch.setattr(verifier, "_get_signing_key", lambda token: dummy_key)
 
-    # Empty sub
+    # 1. Empty sub
     malformed_sub = {
         "sub": "   ",
         "iss": verifier.expected_issuer,
         "exp": int(time.time()) + 3600,
-        "token_use": "id",
-        "aud": "any",
+        "aud": "authenticated",
     }
     with monkeypatch.context() as m:
         m.setattr(jwt, "decode", lambda *args, **kwargs: malformed_sub)
+        with pytest.raises(AuthenticationError) as exc:
+            verifier.verify_token("dummy-token")
+        assert exc.value.code == "MALFORMED_CLAIMS"
+
+    # 2. Non-UUID sub (e.g., raw email or arbitrary text)
+    non_uuid_sub = {
+        "sub": "not-a-valid-uuid-value",
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "aud": "authenticated",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: non_uuid_sub)
         with pytest.raises(AuthenticationError) as exc:
             verifier.verify_token("dummy-token")
         assert exc.value.code == "MALFORMED_CLAIMS"

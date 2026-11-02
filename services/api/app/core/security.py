@@ -27,8 +27,8 @@ from app.domains.identity.models import (
 )
 from app.domains.identity.repository import IdentityRepository
 from app.domains.identity.schemas import CurrentUserClaims
-from app.integrations.cognito import cognito_verifier
 from app.integrations.mock_auth import mock_auth_provider
+from app.integrations.supabase_auth import supabase_verifier
 
 # Standard HTTP Bearer scheme
 security_scheme = HTTPBearer(auto_error=False)
@@ -43,6 +43,7 @@ def get_current_user(
     """Authenticates the incoming request and returns verified user claims.
 
     Never trusts frontend claims - always verifies against PostgreSQL system of record.
+    Never uses email as an identity fallback; strictly authenticates via Supabase Auth UUID.
     """
     token: str | None = None
     if credentials:
@@ -70,15 +71,22 @@ def get_current_user(
         sub = mock_user["sub"]
         is_mock = True
     else:
-        # Production Cognito verification
-        payload = cognito_verifier.verify_token(token)
-        sub = payload.get("sub", "")
+        # Production / Staging Supabase JWT verification
+        payload = supabase_verifier.verify_token(token)
+        sub = str(payload.get("sub", ""))
 
     if not sub:
         raise AuthenticationError("Token subject (sub) claim is missing", code="INVALID_TOKEN_SUB")
 
+    try:
+        supabase_uid = UUID(sub)
+    except ValueError:
+        raise AuthenticationError(
+            "Token subject (sub) is not a valid UUID format", code="INVALID_TOKEN_SUB"
+        )
+
     repo = IdentityRepository(db)
-    user = repo.get_user_by_cognito_sub(sub)
+    user = repo.get_user_by_supabase_uid(supabase_uid)
 
     if not user:
         raise AuthenticationError(
@@ -115,8 +123,9 @@ def get_current_user(
 
     claims = CurrentUserClaims(
         user_id=user.id,
-        cognito_sub=user.cognito_sub,
+        supabase_uid=user.supabase_uid,
         email=user.email,
+        phone=user.phone,
         full_name=user.full_name,
         roles=roles,
         permissions=user_permissions,

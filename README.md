@@ -1,8 +1,9 @@
 # Township Operations Platform (`township-ops`)
 
-[![Continuous Integration](https://github.com/organization/township-ops/actions/workflows/ci.yml/badge.svg)](https://github.com/organization/township-ops/actions/workflows/ci.yml)
+[![Continuous Integration](https://github.com/Bhaumik-99/isoswe/actions/workflows/ci.yml/badge.svg)](https://github.com/Bhaumik-99/isoswe/actions/workflows/ci.yml)
 [![Security Policy](https://img.shields.io/badge/Security-Fail--Closed-green.svg)](docs/security.md)
-[![Database](https://img.shields.io/badge/System%20of%20Record-PostgreSQL%2016-blue.svg)](docs/database.md)
+[![Database](https://img.shields.io/badge/Database-Supabase%20PostgreSQL-3ECF8E.svg)](docs/database.md)
+[![Compute](https://img.shields.io/badge/Compute-AWS%20Serverless%20Lambda-FF9900.svg)](docs/architecture.md)
 
 Production-grade technical engineering foundation for a multi-tenant **Society Operations Platform** serving gated townships in Pune, India.
 
@@ -20,41 +21,31 @@ The platform is designed to operate:
 
 ### Core User Roles
 1. `RESIDENT`: Apartment owner or tenant with access strictly restricted to approved flats and non-expired tenancy dates.
-2. `HELPDESK`: Facility management desk handling technician dispatch.
-3. `FINANCE`: Society accounting team managing billing batches and bank reconciliation.
-4. `COMMITTEE_VIEWER`: Managing committee member with read-only audit and financial oversight.
-5. `PLATFORM_ADMIN`: Township administrator with global platform provisioning.
+2. `HELPDESK`: Facility management desk handling technician dispatch, status management, bank statement import, reconciliation review, and read-only committee reporting.
+
+*Note: The platform demo model strictly implements two application roles (`RESIDENT` and `HELPDESK`). Committee reporting is accessible inside the authorized helpdesk portal with read-only permissions.*
 
 ---
 
-## 2. Technology Stack
+## 2. Technology Stack (Option B: Supabase + AWS Serverless)
 
-### Frontend Application Shell
-- **React 18** with **TypeScript** and **Vite**
-- **Tailwind CSS** (curated slate typography and restrained indigo primary accents; no AI slop)
-- **TanStack Query v5** (caching and asynchronous state management)
-- **React Router v6** (role-aware protected routing and responsive mobile drawers)
-- **Lucide React** (consistent accessible SVG iconography)
-- Centralized API client with token injection and distributed tracing headers (`X-Request-ID`, `X-Correlation-ID`)
-
-### Backend Monolith
-- **Python 3.11+** with **FastAPI**
-- **Pydantic v2** and **Pydantic-Settings** (fail-closed environment validation)
-- **SQLAlchemy 2.0** with **Psycopg 3**
-- **Alembic** (strict database migrations; zero `create_all()` in runtime code)
-- **Transactional Outbox Pattern** with **Amazon SQS** and dedicated Dead Letter Queues (DLQs)
-- **Amazon Cognito** JWT validation using JWKS; isolated fail-closed local dev mock provider
-
-### Cloud Infrastructure (AWS CDK)
-- **VPC** (Public, Private with Egress for Lambdas, Isolated for RDS)
-- **RDS PostgreSQL 16** (Multi-AZ, KMS encryption at rest, automated backups, PITR)
-- **Amazon RDS Proxy** (Connection pooling and connection storms prevention)
-- **Amazon SQS** (`billing-jobs`, `payment-events`, `reconciliation-jobs`, `complaint-ai-jobs`, `notification-jobs`) + dedicated DLQs
-- **Amazon S3** (Private document buckets & web hosting with CloudFront OAC)
-- **AWS WAF** (SQL injection rules, OWASP top 10, rate-limiting)
-- **AWS KMS** (Customer Managed Keys for encryption at rest)
-- **AWS Secrets Manager** (Automatic database credentials rotation)
-- **AWS CloudTrail** & **CloudWatch** (Compliance audit logging and alarms)
+| Component | Selected Technology | Notes |
+| :--- | :--- | :--- |
+| **Frontend** | React + TypeScript + Vite | Tailwind CSS, Lucide React, TanStack Query v5 |
+| **Authentication** | Supabase Auth | Passwordless Phone OTP via official `@supabase/supabase-js` |
+| **Primary Database** | Supabase PostgreSQL | Region `ap-south-1` (Mumbai), Row-Level Security enabled |
+| **Backend Framework** | FastAPI + Python 3.11+ | Pydantic v2, Mangum adapter for AWS Lambda |
+| **ORM & Driver** | SQLAlchemy 2.0 + Psycopg 3 | Shared transaction pooler, `prepare_threshold=None` |
+| **Migrations** | Alembic | Version-controlled, zero runtime `create_all()` |
+| **API Hosting** | AWS Lambda | Serverless execution, direct TLS to Supabase (no NAT GW) |
+| **API Gateway** | Amazon API Gateway | REST API with AWS WAF integration |
+| **Messaging** | Amazon SQS | 5 domain queues with dedicated Dead Letter Queues (DLQs) |
+| **File Storage** | Amazon S3 | Private buckets with Origin Access Control |
+| **CDN** | Amazon CloudFront | TLS 1.3 edge distribution |
+| **Security & Secrets** | AWS WAF + KMS + Secrets Manager | CMK encryption at rest, connection strings in Secrets Manager |
+| **Monitoring** | Amazon CloudWatch + CloudTrail | Structured JSON logs and compliance audit trail |
+| **Infrastructure as Code** | AWS CDK | Modular Python constructs for dev, staging, and prod |
+| **CI/CD** | GitHub Actions | Automated lint, typing, tests, build, and CDK synth |
 
 ---
 
@@ -67,11 +58,11 @@ township-ops/
 │   └── web/                     # React + TypeScript + Vite frontend application
 │       ├── src/
 │       │   ├── app/             # Application entrypoint & QueryClient provider
-│       │   ├── components/      # UI components (Button, Card, Badge, Skeleton, Alert)
+│       │   ├── components/      # Accessible UI components (Button, Card, Alert, etc.)
 │       │   ├── features/        # Auth, Resident, Staff, and Committee views
 │       │   ├── layouts/         # Auth, Resident, Staff, and Committee layouts
 │       │   ├── routes/          # Role-based route guards and path definitions
-│       │   ├── services/        # Central API client abstraction
+│       │   ├── services/        # Supabase Auth adapter & central API client
 │       │   └── types/           # Domain and API response TypeScript contracts
 │       ├── package.json
 │       └── vite.config.ts
@@ -83,20 +74,20 @@ township-ops/
 │       │   ├── domains/         # Domain models, schemas, repositories, services
 │       │   │   ├── identity/    # Societies, Towers, Flats, Memberships, Roles
 │       │   │   ├── reliability/ # AuditEvents, OutboxEvents, IdempotencyKeys
-│       │   │   └── billing/     # Clean domain boundaries stubbed for future phases
-│       │   ├── integrations/    # Cognito JWT verifier & local mock auth provider
+│       │   │   └── billing/     # Domain boundaries stubbed for future phases
+│       │   ├── integrations/    # Supabase JWT verifier & local mock auth provider
 │       │   ├── messaging/       # SQS & Local queue publishers, outbox worker, consumer
 │       │   ├── workers/         # Platform health check worker & background runner
 │       │   ├── middleware/      # Correlation ID, Request ID & structured logger
 │       │   └── handlers/        # Mangum Lambda API handler & SQS Lambda trigger
-│       ├── migrations/          # Alembic versioned migrations
-│       └── tests/               # 13 mandatory unit and integration test suites
+│       ├── migrations/          # Alembic versioned migrations (001, 002)
+│       └── tests/               # Unit and integration test suites
 │
 ├── infra/
 │   └── cdk/                     # AWS CDK Python infrastructure
 │       ├── app.py               # CDK app entrypoint
 │       ├── stacks/              # TownshipStack primary composition
-│       ├── constructs/          # Reusable Network, DB, Auth, SQS, S3, Compute, WAF
+│       ├── township_constructs/ # Reusable SQS, S3, Compute, Security, ApiGateway
 │       ├── environments/        # Dev, Staging, and Production configurations
 │       └── tests/               # Infrastructure unit tests
 │
@@ -154,38 +145,10 @@ make test
 
 ---
 
-## 5. Seed Identities & Personas
+## 5. Seed Personas (Local Development)
 
-The database is seeded idempotently with real-world scenarios for Pune township testing:
+The database is seeded idempotently with scenarios matching Marvel Greenfield Residences, Pune:
 - **Neeraj Kulkarni** (`dev-token-neeraj`): Resident & Owner of **T07-1203** (1,150 sq ft).
 - **Swati Joshi** (`dev-token-swati`): Resident & Tenant of **T12-0408** (980 sq ft) with time-bound active lease.
 - **Aamir Shaikh** (`dev-token-aamir`): Resident & Owner of **T21-1601** (1,640 sq ft).
 - **Rajesh Shinde** (`dev-token-helpdesk`): Facility management staff (`HELPDESK`).
-- **Priya Deshmukh** (`dev-token-finance`): Society accountant (`FINANCE`).
-- **Aniket Patwardhan** (`dev-token-committee`): Managing committee member (`COMMITTEE_VIEWER`).
-- **Vikram Joshi** (`dev-token-admin`): Platform administrator (`PLATFORM_ADMIN`).
-
----
-
-## 6. Testing & Quality Verification
-
-Run the complete test suite:
-```bash
-cd services/api && pytest -v
-cd infra/cdk && pytest -v
-```
-
-All 13 mandatory engineering assertions pass with zero failures:
-1. Invalid JWT rejected (401 Unauthorized)
-2. Expired JWT rejected (401 Unauthorized)
-3. Resident cannot access another resident's flat (403 Forbidden)
-4. Help-desk user cannot perform restricted finance operations (403 Forbidden)
-5. Committee viewer cannot modify records (403 Forbidden)
-6. Tenant access stops after membership lease expiry (403 Forbidden)
-7. Society-level isolation works (Cross-society access denied)
-8. Outbox event committed atomically with business transaction
-9. Duplicate event cannot be processed twice (Idempotency handler)
-10. Failed SQS publishing leaves event recoverable
-11. Health endpoints behave correctly (`/health/live`, `/health/ready`)
-12. Database migration works from an empty database
-13. Seed script is idempotent
