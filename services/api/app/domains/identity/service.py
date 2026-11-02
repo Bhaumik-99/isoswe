@@ -79,25 +79,18 @@ class IdentityService:
         if not flat:
             raise ResourceNotFoundError(message=f"Flat {flat_id} not found", code="FLAT_NOT_FOUND")
 
-        # Platform Admin and Society Staff (Helpdesk, Finance, Committee) can access flats within their society
+        # Society helpdesk can access flats within its assigned society
         is_staff_or_admin = any(
             role
             in [
-                RoleType.PLATFORM_ADMIN,
                 RoleType.HELPDESK,
-                RoleType.FINANCE,
-                RoleType.COMMITTEE_VIEWER,
             ]
             for role in claims.roles
         )
 
         if is_staff_or_admin:
             # Check society boundary
-            if (
-                claims.society_ids
-                and flat.society_id not in claims.society_ids
-                and RoleType.PLATFORM_ADMIN not in claims.roles
-            ):
+            if claims.society_ids and flat.society_id not in claims.society_ids:
                 raise TenantIsolationError("Access to flat in a different society is denied")
         else:
             # For residents: must have active approved membership for this specific flat

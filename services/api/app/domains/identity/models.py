@@ -66,9 +66,13 @@ class MembershipStatus(str, enum.Enum):
 class RoleType(str, enum.Enum):
     RESIDENT = "RESIDENT"
     HELPDESK = "HELPDESK"
-    FINANCE = "FINANCE"
-    COMMITTEE_VIEWER = "COMMITTEE_VIEWER"
-    PLATFORM_ADMIN = "PLATFORM_ADMIN"
+
+
+class Permission(str, enum.Enum):
+    COMPLAINT_MANAGE = "COMPLAINT_MANAGE"
+    BANK_IMPORT = "BANK_IMPORT"
+    RECONCILIATION_REVIEW = "RECONCILIATION_REVIEW"
+    COMMITTEE_REPORT_READ = "COMMITTEE_REPORT_READ"
 
 
 class Society(Base):

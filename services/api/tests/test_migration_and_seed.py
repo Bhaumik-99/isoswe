@@ -77,7 +77,8 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert society_count_1 == 1
         assert tower_count_1 == 3
         assert flat_count_1 == 3
-        assert user_count_1 == 7
+        assert user_count_1 == 4
+        assert role_count_1 == 4
 
         # Verify the 3 required sample flats exist with correct details
         f1 = session.get(Flat, FLAT_1203_ID)

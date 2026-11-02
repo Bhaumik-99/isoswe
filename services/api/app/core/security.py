@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import AuthenticationError, AuthorizationError, TenantIsolationError
 from app.domains.identity.models import (
+    Permission,
     RoleType,
     UserStatus,
 )
@@ -63,7 +64,7 @@ def get_current_user(
     if token.startswith("dev-token-") or (
         settings.is_local_dev
         and settings.ENABLE_LOCAL_AUTH_BYPASS
-        and token in ["neeraj", "swati", "aamir", "helpdesk", "finance", "committee", "admin"]
+        and token in ["neeraj", "swati", "aamir", "helpdesk"]
     ):
         mock_user = mock_auth_provider.verify_dev_token(token)
         sub = mock_user["sub"]
@@ -95,6 +96,16 @@ def get_current_user(
     roles: list[RoleType] = [r.role for r in user.roles]
     society_ids: list[UUID] = list({r.society_id for r in user.roles})
 
+    # Derive granular permissions based on validated role
+    user_permissions: list[Permission] = []
+    if RoleType.HELPDESK in roles:
+        user_permissions = [
+            Permission.COMPLAINT_MANAGE,
+            Permission.BANK_IMPORT,
+            Permission.RECONCILIATION_REVIEW,
+            Permission.COMMITTEE_REPORT_READ,
+        ]
+
     # Collect active flat memberships taking tenant validity dates into account
     active_memberships = repo.get_active_memberships_for_user(user.id)
     active_flat_ids: list[UUID] = [m.flat_id for m in active_memberships]
@@ -108,6 +119,7 @@ def get_current_user(
         email=user.email,
         full_name=user.full_name,
         roles=roles,
+        permissions=user_permissions,
         society_ids=society_ids,
         active_flat_ids=active_flat_ids,
         is_mock=is_mock,
@@ -124,10 +136,6 @@ def require_roles(*required_roles: RoleType) -> Callable[..., CurrentUserClaims]
     """FastAPI dependency factory enforcing that the authenticated user possesses at least one of the specified roles."""
 
     def role_checker(claims: CurrentUserClaims = Depends(get_current_user)) -> CurrentUserClaims:
-        # PLATFORM_ADMIN has superuser override
-        if RoleType.PLATFORM_ADMIN in claims.roles:
-            return claims
-
         if not any(role in claims.roles for role in required_roles):
             role_names = [r.value for r in required_roles]
             raise AuthorizationError(
@@ -139,13 +147,26 @@ def require_roles(*required_roles: RoleType) -> Callable[..., CurrentUserClaims]
     return role_checker
 
 
+def require_permissions(*permissions: Permission) -> Callable[..., CurrentUserClaims]:
+    """Authorize granular helpdesk capabilities held by the user's assigned role."""
+
+    def permission_checker(
+        claims: CurrentUserClaims = Depends(get_current_user),
+    ) -> CurrentUserClaims:
+        if not set(permissions).issubset(set(claims.permissions)):
+            raise AuthorizationError(
+                message=f"Access denied: Missing required permission(s): {', '.join(p.value for p in permissions)}",
+                code="INSUFFICIENT_PERMISSIONS",
+            )
+        return claims
+
+    return permission_checker
+
+
 def require_society_access(society_id: UUID) -> Callable[..., CurrentUserClaims]:
     """Verifies that the user belongs to the requested society to prevent cross-tenant data leakage."""
 
     def society_checker(claims: CurrentUserClaims = Depends(get_current_user)) -> CurrentUserClaims:
-        if RoleType.PLATFORM_ADMIN in claims.roles:
-            return claims
-
         if society_id not in claims.society_ids:
             raise TenantIsolationError(
                 message="Access denied: You do not have permission to access resources in this society"
@@ -162,8 +183,7 @@ def require_flat_access(
 ) -> CurrentUserClaims:
     """Verifies that the user has explicit, non-expired rights to access the specified flat.
 
-    - Platform Admin has platform-wide authority.
-    - Staff roles (HELPDESK, FINANCE, COMMITTEE_VIEWER) are restricted strictly to flats
+    - Helpdesk is restricted strictly to flats
       within societies they are explicitly assigned to.
     - Residents must possess an active, approved, non-expired membership for this specific flat.
     """
@@ -175,12 +195,8 @@ def require_flat_access(
             code="FLAT_NOT_FOUND",
         )
 
-    # 1. Platform Admin has platform-wide authority
-    if RoleType.PLATFORM_ADMIN in claims.roles:
-        return claims
-
-    # 2. Staff roles: check society-level boundary
-    staff_roles = {RoleType.HELPDESK, RoleType.FINANCE, RoleType.COMMITTEE_VIEWER}
+    # Staff roles: check society-level boundary
+    staff_roles = {RoleType.HELPDESK}
     if any(r in staff_roles for r in claims.roles):
         if flat.society_id not in claims.society_ids:
             raise TenantIsolationError(

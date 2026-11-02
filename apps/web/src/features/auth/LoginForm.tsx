@@ -44,24 +44,6 @@ const DEV_PERSONAS: DevPersona[] = [
     token: 'dev-token-helpdesk',
     description: 'Facility management staff handling resident maintenance tickets',
   },
-  {
-    name: 'Priya Deshmukh',
-    role: 'FINANCE',
-    token: 'dev-token-finance',
-    description: 'Society accountant managing maintenance billing and bank matching',
-  },
-  {
-    name: 'Aniket Patwardhan',
-    role: 'COMMITTEE_VIEWER',
-    token: 'dev-token-committee',
-    description: 'Managing committee member with read-only audit & reporting access',
-  },
-  {
-    name: 'Vikram Joshi',
-    role: 'PLATFORM_ADMIN',
-    token: 'dev-token-admin',
-    description: 'Township system administrator with platform-wide oversight',
-  },
 ];
 
 export const LoginForm: React.FC = () => {
@@ -81,8 +63,6 @@ export const LoginForm: React.FC = () => {
   const navigateByRole = (role: string) => {
     if (role.includes('RESIDENT')) {
       navigate('/resident/overview');
-    } else if (role.includes('COMMITTEE')) {
-      navigate('/committee/overview');
     } else {
       navigate('/staff/overview');
     }

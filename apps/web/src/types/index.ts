@@ -1,9 +1,6 @@
 export type RoleType =
   | 'RESIDENT'
-  | 'HELPDESK'
-  | 'FINANCE'
-  | 'COMMITTEE_VIEWER'
-  | 'PLATFORM_ADMIN';
+  | 'HELPDESK';
 
 export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
 

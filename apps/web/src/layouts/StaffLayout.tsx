@@ -24,20 +24,15 @@ export const StaffLayout: React.FC = () => {
     navigate('/login');
   };
 
-  const isFinance = roles.includes('FINANCE') || roles.includes('PLATFORM_ADMIN');
-  const isHelpdesk = roles.includes('HELPDESK') || roles.includes('PLATFORM_ADMIN');
+  const isHelpdesk = roles.includes('HELPDESK');
 
   const navItems = [
     { name: 'Operations Overview', path: '/staff/overview', icon: Cpu, exact: true },
     ...(isHelpdesk
       ? [{ name: 'Helpdesk Tickets', path: '/staff/helpdesk', icon: Headphones }]
       : []),
-    ...(isFinance
-      ? [
-          { name: 'Billing & Invoicing', path: '/staff/billing', icon: CircleDollarSign },
-          { name: 'Bank Reconciliation', path: '/staff/reconciliation', icon: Scale },
-        ]
-      : []),
+    ...(isHelpdesk ? [{ name: 'Bank Reconciliation', path: '/staff/reconciliation', icon: Scale }] : []),
+    ...(isHelpdesk ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }] : []),
     { name: 'Residents Directory', path: '/staff/residents', icon: Users },
   ];
 

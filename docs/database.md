@@ -165,7 +165,7 @@ erDiagram
 
 #### `user_roles`
 - Role-based authorization per society.
-- Roles: `RESIDENT`, `HELPDESK`, `FINANCE`, `COMMITTEE_VIEWER`, `PLATFORM_ADMIN`.
+- Roles: `RESIDENT`, `HELPDESK`. Committee reporting is a read-only helpdesk capability, not a separate role.
 - Composite Unique Constraint: `(user_id, society_id, role)`.
 
 ---

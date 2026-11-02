@@ -134,30 +134,7 @@ def db_session() -> Generator[Session, None, None]:
         full_name="Rajesh Shinde",
         status=UserStatus.ACTIVE,
     )
-    user_finance = User(
-        id=uuid.UUID("44444444-4444-4444-4444-444444440005"),
-        cognito_sub="mock-sub-finance-deshmukh",
-        email="finance@example.com",
-        full_name="Priya Deshmukh",
-        status=UserStatus.ACTIVE,
-    )
-    user_committee = User(
-        id=uuid.UUID("44444444-4444-4444-4444-444444440006"),
-        cognito_sub="mock-sub-committee-patwardhan",
-        email="committee@example.com",
-        full_name="Aniket Patwardhan",
-        status=UserStatus.ACTIVE,
-    )
-    user_admin = User(
-        id=uuid.UUID("44444444-4444-4444-4444-444444440007"),
-        cognito_sub="mock-sub-admin-joshi",
-        email="admin@example.com",
-        full_name="Vikram Joshi",
-        status=UserStatus.ACTIVE,
-    )
-    session.add_all(
-        [user_neeraj, user_swati, user_helpdesk, user_finance, user_committee, user_admin]
-    )
+    session.add_all([user_neeraj, user_swati, user_helpdesk])
 
     # Roles
     session.add_all(
@@ -165,11 +142,6 @@ def db_session() -> Generator[Session, None, None]:
             UserRole(user_id=user_neeraj.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_swati.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.HELPDESK),
-            UserRole(user_id=user_finance.id, society_id=society_id, role=RoleType.FINANCE),
-            UserRole(
-                user_id=user_committee.id, society_id=society_id, role=RoleType.COMMITTEE_VIEWER
-            ),
-            UserRole(user_id=user_admin.id, society_id=society_id, role=RoleType.PLATFORM_ADMIN),
         ]
     )
 

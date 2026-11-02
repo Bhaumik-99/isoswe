@@ -12,6 +12,7 @@ from app.domains.identity.models import (
     FlatStatus,
     MembershipStatus,
     MembershipType,
+    Permission,
     RoleType,
     SocietyStatus,
     UserStatus,
@@ -90,6 +91,7 @@ class CurrentUserClaims(BaseModel):
     email: str
     full_name: str
     roles: list[RoleType] = Field(default_factory=list)
+    permissions: list[Permission] = Field(default_factory=list)
     society_ids: list[UUID] = Field(default_factory=list)
     active_flat_ids: list[UUID] = Field(default_factory=list)
     is_mock: bool = False

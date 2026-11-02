@@ -209,16 +209,16 @@ export const StaffOverview: React.FC = () => {
           <CardTitle className="text-sm font-semibold flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Shield className="h-4 w-4 text-slate-700" />
-              Backend RBAC Verification Action
+              Granular Permission Verification Action
             </span>
-            <span className="text-xs text-slate-500">Restricted to FINANCE / PLATFORM_ADMIN</span>
+            <span className="text-xs text-slate-500">Restricted to HELPDESK (BANK_IMPORT / RECONCILIATION_REVIEW)</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-slate-600 leading-relaxed">
             Tests invoking <code className="bg-slate-100 px-1 py-0.5 rounded">POST /api/v1/finance/batch-billing/preview</code>.
-            If logged in as Rajesh Shinde (HELPDESK), the backend immediately rejects the call with a 403 Forbidden.
-            If logged in as Priya Deshmukh (FINANCE), the operation succeeds.
+            Under the two-role architecture, authenticated HELPDESK personnel holding granular finance/reconciliation permissions
+            can execute this action, whereas unauthenticated users or residents are rejected with a 403 Forbidden.
           </p>
 
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -228,7 +228,7 @@ export const StaffOverview: React.FC = () => {
               isLoading={isTestingFinance}
               onClick={testFinanceAction}
             >
-              Execute Restricted Finance Action
+              Execute Helpdesk Finance Action
             </Button>
 
             {financeResult && (

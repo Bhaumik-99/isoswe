@@ -5,7 +5,6 @@ import { ProtectedRoute } from './ProtectedRoute';
 import { AuthLayout } from '../layouts/AuthLayout';
 import { ResidentLayout } from '../layouts/ResidentLayout';
 import { StaffLayout } from '../layouts/StaffLayout';
-import { CommitteeLayout } from '../layouts/CommitteeLayout';
 import { LoginForm } from '../features/auth/LoginForm';
 import { ResidentOverview } from '../features/resident/ResidentOverview';
 import { StaffOverview } from '../features/staff/StaffOverview';
@@ -27,9 +26,6 @@ const RootRedirect: React.FC = () => {
 
   if (roles.includes('RESIDENT')) {
     return <Navigate to="/resident/overview" replace />;
-  }
-  if (roles.includes('COMMITTEE_VIEWER')) {
-    return <Navigate to="/committee/overview" replace />;
   }
   return <Navigate to="/staff/overview" replace />;
 };
@@ -125,7 +121,7 @@ export const AppRoutes: React.FC = () => {
       <Route
         path="/staff"
         element={
-          <ProtectedRoute allowedRoles={['HELPDESK', 'FINANCE', 'PLATFORM_ADMIN']}>
+          <ProtectedRoute allowedRoles={['HELPDESK']}>
             <StaffLayout />
           </ProtectedRoute>
         }
@@ -189,48 +185,10 @@ export const AppRoutes: React.FC = () => {
             />
           }
         />
+        <Route path="committee" element={<CommitteeOverview />} />
       </Route>
 
-      {/* Committee Portal */}
-      <Route
-        path="/committee"
-        element={
-          <ProtectedRoute allowedRoles={['COMMITTEE_VIEWER', 'PLATFORM_ADMIN']}>
-            <CommitteeLayout />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<Navigate to="overview" replace />} />
-        <Route path="overview" element={<CommitteeOverview />} />
-        <Route
-          path="financials"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Managing Committee Financial Statements"
-              plannedPhase="Phase 3 - Committee Reporting"
-              description="Aggregated monthly society balance sheets, collection ratios, and sinking fund allocations."
-              deliverables={[
-                'Federation financial review and variance analytics',
-                'Quarterly statutory audit report export',
-              ]}
-            />
-          }
-        />
-        <Route
-          path="audit"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Statutory Audit & Compliance Ledger"
-              plannedPhase="Phase 2 - Governance"
-              description="Read-only immutable audit trail recording every administrative modification and financial transaction."
-              deliverables={[
-                'Exportable audit_events ledger for statutory auditors',
-                'Non-repudiation verification',
-              ]}
-            />
-          }
-        />
-      </Route>
+      <Route path="/committee" element={<Navigate to="/staff/committee" replace />} />
 
       {/* 404 Fallback */}
       <Route path="*" element={<NotFound />} />

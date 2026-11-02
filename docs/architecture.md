@@ -22,6 +22,11 @@
 - **Decision**: All financial amounts are stored as 64-bit BigInteger paise (1 INR = 100 paise). Floating-point data types (`FLOAT`, `REAL`, `DOUBLE PRECISION`) are prohibited in financial columns.
 - **Consequences**: Eliminates IEEE 754 precision drift and rounding discrepancies in ledger audits.
 
+### ADR 005: Two-Role Application Model with Embedded Committee Reporting
+- **Context**: The township operations platform specification identifies two primary application roles: `RESIDENT` and `HELPDESK`. Managing committee members require governance visibility into society metrics, billing totals, and audit trails without requiring a separate user role.
+- **Decision**: Maintain strictly two application roles: `RESIDENT` and `HELPDESK`. Granular permissions within `HELPDESK` (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`) govern operational actions. The Committee Dashboard is exposed inside the authorized helpdesk portal with read-only reporting capabilities, rather than introducing a separate `COMMITTEE_VIEWER` role.
+- **Consequences**: Prevents role bloat while ensuring complete auditability, role-aware routing, and strict tenant isolation.
+
 ---
 
 ## 2. AWS Target Architecture Diagram

@@ -151,30 +151,6 @@ def seed_database() -> None:
                 "Rajesh Shinde",
                 RoleType.HELPDESK,
             ),
-            (
-                USER_FINANCE_ID,
-                "mock-sub-finance-deshmukh",
-                "finance@example.com",
-                "+91-98000-00005",
-                "Priya Deshmukh",
-                RoleType.FINANCE,
-            ),
-            (
-                USER_COMMITTEE_ID,
-                "mock-sub-committee-patwardhan",
-                "committee@example.com",
-                "+91-98000-00006",
-                "Aniket Patwardhan",
-                RoleType.COMMITTEE_VIEWER,
-            ),
-            (
-                USER_ADMIN_ID,
-                "mock-sub-admin-joshi",
-                "admin@example.com",
-                "+91-98000-00007",
-                "Vikram Joshi",
-                RoleType.PLATFORM_ADMIN,
-            ),
         ]
 
         for u_id, sub, email, phone, name, primary_role in users_data:

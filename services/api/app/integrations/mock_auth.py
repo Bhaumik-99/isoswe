@@ -39,24 +39,6 @@ MOCK_USERS: dict[str, dict[str, str]] = {
         "name": "Rajesh Shinde",
         "role": "HELPDESK",
     },
-    "dev-token-finance": {
-        "email": "finance@example.com",
-        "sub": "mock-sub-finance-deshmukh",
-        "name": "Priya Deshmukh",
-        "role": "FINANCE",
-    },
-    "dev-token-committee": {
-        "email": "committee@example.com",
-        "sub": "mock-sub-committee-patwardhan",
-        "name": "Aniket Patwardhan",
-        "role": "COMMITTEE_VIEWER",
-    },
-    "dev-token-admin": {
-        "email": "admin@example.com",
-        "sub": "mock-sub-admin-joshi",
-        "name": "Vikram Joshi",
-        "role": "PLATFORM_ADMIN",
-    },
 }
 
 

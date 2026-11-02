@@ -12,7 +12,7 @@
   5. Token usage validation: `token_use` must be either `"id"` or `"access"`.
   6. Subject resolution: `sub` is mapped to an internal application user in PostgreSQL.
 - **Resident OTP Flow**: Passwordless authentication via SMS and Email OTP challenges.
-- **Privileged MFA**: Mandatory Multi-Factor Authentication (TOTP / SMS) enforced for `FINANCE` and `PLATFORM_ADMIN` accounts.
+- **Privileged MFA**: Mandatory Multi-Factor Authentication (TOTP / SMS) enforced for helpdesk accounts.
 
 ### 1.2 Local Development Mock Identity Provider
 - **Purpose**: Enables local offline development and automated CI testing without live AWS Cognito dependencies.
@@ -35,10 +35,9 @@
 | Role | Scope | Capabilities | Restrictions |
 | :--- | :--- | :--- | :--- |
 | `RESIDENT` | Flat Memberships | View assigned unit details, view maintenance invoices, make payments, lodge complaints | Cannot access other resident units or financial admin operations |
-| `HELPDESK` | Society | View technician dispatch queue, view maintenance tickets, view resident contact registry | Cannot trigger billing, view banking statements, or modify ledgers |
-| `FINANCE` | Society | Execute batch billing, view collection receipts, perform bank statement reconciliation | Cannot access platform admin settings |
-| `COMMITTEE_VIEWER`| Society | Read-only governance oversight, review financial statements, audit logs | Cannot modify any business or financial records |
-| `PLATFORM_ADMIN` | Cross-Society | Global platform provisioning, society onboarding, emergency overrides | Superuser privileges logged to immutable audit trail |
+| `HELPDESK` | Assigned Society | Complaint assignment and status, bank statement import, reconciliation review, read-only committee reporting | Cannot access another society; committee reporting is read-only |
+
+The assignment's demo authentication model has exactly two application roles: `RESIDENT` and `HELPDESK`. The Committee Dashboard is exposed inside the authorized helpdesk application and grants reporting access only; it is not a separate user role. Operational capabilities are granular permissions within HELPDESK.
 
 ### 2.2 Flat-Level Access Control for Residents
 Residents can only query flat-level resources if:

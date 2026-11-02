@@ -23,7 +23,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowe
   }
 
   if (allowedRoles && allowedRoles.length > 0) {
-    const hasRole = roles.includes('PLATFORM_ADMIN') || allowedRoles.some((r) => roles.includes(r));
+  const hasRole = allowedRoles.some((r) => roles.includes(r));
     if (!hasRole) {
       return (
         <div className="max-w-md mx-auto my-12 p-4">
