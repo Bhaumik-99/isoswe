@@ -5,8 +5,14 @@ Continuously runs in local dev or worker containers to:
 2. Poll queues and dispatch incoming messages to domain workers
 """
 
+import os
 import signal
+import sys
 import time
+
+# Ensure application root is on sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, ".")
 
 # Ensure handlers are imported and registered
 import app.workers.health_worker  # noqa: F401

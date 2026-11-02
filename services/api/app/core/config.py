@@ -24,11 +24,29 @@ class Settings(BaseSettings):
 
     # Security & CORS
     SECRET_KEY: str = Field(default="dev-secret-key-change-in-production-must-be-32-bytes-long!")
-    CORS_ALLOWED_ORIGINS: list[str] = [
+    CORS_ALLOWED_ORIGINS: list[str] | str = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
     ]
+
+    @field_validator("CORS_ALLOWED_ORIGINS", mode="after")
+    @classmethod
+    def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            if v.startswith("[") and v.endswith("]"):
+                import json
+                try:
+                    return json.loads(v)
+                except Exception:
+                    pass
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        return []
 
     # Local Auth Bypass - strictly prohibited in staging and production
     ENABLE_LOCAL_AUTH_BYPASS: bool = False

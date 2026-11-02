@@ -17,6 +17,7 @@ from typing import Optional
 
 # Ensure services/api is on sys.path
 sys.path.insert(0, "services/api")
+sys.path.insert(0, ".")
 
 from sqlalchemy import select
 from app.core.database import SessionLocal

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -29,17 +27,19 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - PYTHONPATH=/app
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
       - ENABLE_LOCAL_AUTH_BYPASS=true
       - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/township_ops
       - MESSAGING_PROVIDER=local
-      - CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+      - CORS_ALLOWED_ORIGINS=["http://localhost:5173","http://localhost:3000"]
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./services/api:/app
+      - ./scripts:/app/scripts
 
   worker:
     build:
@@ -49,6 +49,7 @@ services:
     restart: unless-stopped
     command: python app/workers/runner.py
     environment:
+      - PYTHONPATH=/app
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
       - ENABLE_LOCAL_AUTH_BYPASS=true
