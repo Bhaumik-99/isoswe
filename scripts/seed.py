@@ -36,6 +36,17 @@ from app.domains.identity.models import (
     UserRole,
     UserStatus,
 )
+from app.domains.billing.models import (
+    BillingConfiguration,
+    FinancialLedgerEntry,
+    Invoice,
+    InvoiceLineItem,
+    InvoiceStatus,
+    LedgerEntryType,
+    Payment,
+    PaymentAllocation,
+    PaymentStatus,
+)
 
 # Fixed deterministic UUIDs for seed records so they are easily referenceable in tests
 SOCIETY_PUNE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -54,6 +65,14 @@ USER_HELPDESK_ID = uuid.UUID("44444444-4444-4444-4444-444444440004")
 USER_FINANCE_ID = uuid.UUID("44444444-4444-4444-4444-444444440005")
 USER_COMMITTEE_ID = uuid.UUID("44444444-4444-4444-4444-444444440006")
 USER_ADMIN_ID = uuid.UUID("44444444-4444-4444-4444-444444440007")
+
+BILLING_CONFIG_PUNE_ID = uuid.UUID("66666666-6666-6666-6666-666666660001")
+INVOICE_NEERAJ_ID = uuid.UUID("77777777-7777-7777-7777-777777770001")
+INVOICE_SWATI_ID = uuid.UUID("77777777-7777-7777-7777-777777770002")
+INVOICE_AAMIR_ID = uuid.UUID("77777777-7777-7777-7777-777777770003")
+PAYMENT_AAMIR_ID = uuid.UUID("88888888-8888-8888-8888-888888880001")
+ALLOCATION_AAMIR_ID = uuid.UUID("99999999-9999-9999-9999-999999990001")
+
 
 
 def seed_database() -> None:
@@ -233,6 +252,171 @@ def seed_database() -> None:
                 db.add(membership)
                 db.flush()
                 logger.info(f"Assigned {m_type.value} membership for user {u_id} to flat {f_id}")
+
+        # 6. Billing Configuration (Rate: ₹6.50/sq ft = 650 paise)
+        b_config = db.get(BillingConfiguration, BILLING_CONFIG_PUNE_ID)
+        if not b_config:
+            b_config = BillingConfiguration(
+                id=BILLING_CONFIG_PUNE_ID,
+                society_id=SOCIETY_PUNE_ID,
+                rate_paise_per_sqft=650,
+                currency="INR",
+                effective_from=now - timedelta(days=90),
+                due_day=10,
+            )
+            db.add(b_config)
+            db.flush()
+            logger.info("Created BillingConfiguration: ₹6.50/sq ft (650 paise)")
+
+        # 7. Required Invoices
+        # Period strings
+        current_period = now.strftime("%Y-%m")
+        prev_period_1 = (now - timedelta(days=30)).strftime("%Y-%m")
+        prev_period_2 = (now - timedelta(days=60)).strftime("%Y-%m")
+
+        invoices_data = [
+            # Neeraj Kulkarni (T07-1203, 1,150 sq ft, ₹7,475, UNPAID, due in 7 days)
+            (
+                INVOICE_NEERAJ_ID,
+                FLAT_1203_ID,
+                current_period,
+                f"INV-{current_period.replace('-', '')}-T07-1203",
+                1150,
+                650,
+                747500,
+                now + timedelta(days=7),
+                InvoiceStatus.UNPAID,
+                "Neeraj Kulkarni",
+            ),
+            # Swati Joshi (T12-0408, 980 sq ft, ₹6,370, OVERDUE by 47 days)
+            (
+                INVOICE_SWATI_ID,
+                FLAT_0408_ID,
+                prev_period_2,
+                f"INV-{prev_period_2.replace('-', '')}-T12-0408",
+                980,
+                650,
+                637000,
+                now - timedelta(days=47),
+                InvoiceStatus.OVERDUE,
+                "Swati Joshi",
+            ),
+            # Aamir Shaikh (T21-1601, 1,640 sq ft, ₹10,660, OVERDUE by 18 days, PARTIALLY_PAID)
+            (
+                INVOICE_AAMIR_ID,
+                FLAT_1601_ID,
+                prev_period_1,
+                f"INV-{prev_period_1.replace('-', '')}-T21-1601",
+                1640,
+                650,
+                1066000,
+                now - timedelta(days=18),
+                InvoiceStatus.PARTIALLY_PAID,
+                "Aamir Shaikh",
+            ),
+        ]
+
+        for inv_id, f_id, period, inv_num, area, rate, total_paise, due_d, inv_status, resident_name in invoices_data:
+            inv = db.get(Invoice, inv_id)
+            if not inv:
+                inv = Invoice(
+                    id=inv_id,
+                    society_id=SOCIETY_PUNE_ID,
+                    flat_id=f_id,
+                    billing_period=period,
+                    invoice_number=inv_num,
+                    area_sqft_snapshot=area,
+                    rate_paise_per_sqft_snapshot=rate,
+                    subtotal_paise=total_paise,
+                    total_paise=total_paise,
+                    due_date=due_d,
+                    status=inv_status,
+                )
+                db.add(inv)
+                db.flush()
+
+                line_item = InvoiceLineItem(
+                    id=uuid.uuid4(),
+                    invoice_id=inv.id,
+                    description=f"Monthly Maintenance ({area:,} sq ft @ ₹6.50/sq ft)",
+                    quantity=1,
+                    unit_rate_paise=total_paise,
+                    amount_paise=total_paise,
+                )
+                db.add(line_item)
+                db.flush()
+
+                # Financial ledger entry: CHARGE
+                charge_entry = FinancialLedgerEntry(
+                    id=uuid.uuid4(),
+                    society_id=SOCIETY_PUNE_ID,
+                    flat_id=f_id,
+                    invoice_id=inv.id,
+                    entry_type=LedgerEntryType.CHARGE,
+                    amount_paise=total_paise,
+                    reference_id=inv.invoice_number,
+                    description=f"Monthly maintenance charge for unit ({period})",
+                )
+                db.add(charge_entry)
+                db.flush()
+                logger.info(f"Created Invoice: {inv_num} for {resident_name} (₹{total_paise/100:,.2f})")
+
+        # 8. Payments & Allocations (Aamir Shaikh: ₹5,000 paid against ₹10,660 invoice)
+        payment_aamir = db.get(Payment, PAYMENT_AAMIR_ID)
+        if not payment_aamir:
+            payment_aamir = Payment(
+                id=PAYMENT_AAMIR_ID,
+                society_id=SOCIETY_PUNE_ID,
+                flat_id=FLAT_1601_ID,
+                amount_paise=500000,  # ₹5,000
+                currency="INR",
+                provider="SIMULATED",
+                provider_reference="SIM-SEED-AAMIR-5000",
+                status=PaymentStatus.SUCCESS,
+                initiated_by=USER_AAMIR_ID,
+            )
+            db.add(payment_aamir)
+            db.flush()
+
+            # Allocation
+            alloc = PaymentAllocation(
+                id=ALLOCATION_AAMIR_ID,
+                payment_id=payment_aamir.id,
+                invoice_id=INVOICE_AAMIR_ID,
+                allocated_paise=500000,
+            )
+            db.add(alloc)
+            db.flush()
+
+            # Ledger entries: PAYMENT_RECEIVED and PAYMENT_ALLOCATED
+            db.add(
+                FinancialLedgerEntry(
+                    id=uuid.uuid4(),
+                    society_id=SOCIETY_PUNE_ID,
+                    flat_id=FLAT_1601_ID,
+                    invoice_id=INVOICE_AAMIR_ID,
+                    payment_id=payment_aamir.id,
+                    entry_type=LedgerEntryType.PAYMENT_RECEIVED,
+                    amount_paise=500000,
+                    reference_id=payment_aamir.provider_reference,
+                    description="Simulated partial payment received for Aamir Shaikh",
+                )
+            )
+            db.add(
+                FinancialLedgerEntry(
+                    id=uuid.uuid4(),
+                    society_id=SOCIETY_PUNE_ID,
+                    flat_id=FLAT_1601_ID,
+                    invoice_id=INVOICE_AAMIR_ID,
+                    payment_id=payment_aamir.id,
+                    entry_type=LedgerEntryType.PAYMENT_ALLOCATED,
+                    amount_paise=500000,
+                    reference_id=str(alloc.id),
+                    description="Funds allocated to invoice (Outstanding: ₹5,660)",
+                )
+            )
+            db.flush()
+            logger.info("Created Seed Payment & Allocation: ₹5,000 for Aamir Shaikh")
 
         db.commit()
         logger.info("Seed data successfully committed without errors.")

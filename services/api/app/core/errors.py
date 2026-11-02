@@ -78,6 +78,14 @@ class ConflictError(AppException):
         super().__init__(code=code, message=message, status_code=status.HTTP_409_CONFLICT)
 
 
+class ValidationError(AppException):
+    def __init__(self, message: str = "Invalid request parameters", code: str = "VALIDATION_ERROR"):
+        super().__init__(code=code, message=message, status_code=status.HTTP_400_BAD_REQUEST)
+
+
+NotFoundError = ResourceNotFoundError
+
+
 class TenantIsolationError(AuthorizationError):
     def __init__(self, message: str = "Cross-society or cross-flat access violation"):
         super().__init__(message=message, code="CROSS_TENANT_ACCESS_DENIED")

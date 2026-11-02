@@ -195,13 +195,64 @@ erDiagram
 
 ---
 
+### 4.3 Billing Domain (Phase 2)
+
+#### `billing_configurations`
+- Society-level billing configuration parameters.
+- Fields: `id` (UUID PK), `society_id` (UUID FK, UNIQUE), `rate_paise_per_sqft` (BIGINT, positive), `currency` (VARCHAR 8, default 'INR'), `due_day` (INTEGER, 1-28), `effective_from` (TIMESTAMPTZ), `created_at`, `updated_at`.
+
+#### `invoices`
+- Monthly apartment maintenance invoices.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `flat_id` (UUID FK), `billing_period` (VARCHAR 7, 'YYYY-MM'), `invoice_number` (VARCHAR 64), `area_sqft_snapshot` (INTEGER), `rate_paise_per_sqft_snapshot` (BIGINT), `subtotal_paise` (BIGINT), `total_paise` (BIGINT), `due_date` (TIMESTAMPTZ), `status` (UNPAID, PARTIALLY_PAID, PAID, OVERDUE, VOID), `created_at`, `updated_at`.
+- Unique Constraints:
+  - `(society_id, flat_id, billing_period)` enforces at most 1 invoice per apartment per period.
+  - `(society_id, invoice_number)` guarantees unique invoice numbers within the society.
+- Check Constraints: `total_paise >= 0`, `subtotal_paise >= 0`, `area_sqft_snapshot > 0`, `rate_paise_per_sqft_snapshot > 0`.
+
+#### `invoice_line_items`
+- Itemized charges composing an invoice.
+- Fields: `id` (UUID PK), `invoice_id` (UUID FK), `description` (VARCHAR 255), `quantity` (INTEGER, > 0), `unit_rate_paise` (BIGINT), `amount_paise` (BIGINT, >= 0), `created_at`.
+
+#### `payments`
+- Financial receipts and simulated payment transactions.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `flat_id` (UUID FK), `amount_paise` (BIGINT, > 0), `currency` (VARCHAR 8), `provider` (VARCHAR 32, default 'SIMULATED'), `provider_reference` (VARCHAR 128), `status` (PENDING, SUCCESS, FAILED, REFUNDED), `initiated_by` (UUID FK), `created_at`, `updated_at`.
+- Unique Constraint: `(provider, provider_reference)` guarantees duplicate payment reference prevention.
+
+#### `payment_allocations`
+- Explicit mapping of payment funds to invoices.
+- Fields: `id` (UUID PK), `payment_id` (UUID FK), `invoice_id` (UUID FK), `allocated_paise` (BIGINT, > 0), `created_at`.
+- Unique Constraint: `(payment_id, invoice_id)` prevents duplicate allocation of the same payment to an invoice.
+
+#### `financial_ledger_entries`
+- **Append-Only Journal**: Immutable financial ledger tracking all debits, credits, and balance changes.
+- Invariant: Never edit or delete rows. Corrections use explicit compensating reversal or adjustment entries referencing `reference_id`.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `flat_id` (UUID FK), `invoice_id` (UUID FK, nullable), `payment_id` (UUID FK, nullable), `entry_type` (CHARGE, PAYMENT_RECEIVED, PAYMENT_ALLOCATED, REVERSAL, ADJUSTMENT), `amount_paise` (BIGINT, > 0), `reference_id` (VARCHAR 128, nullable), `description` (VARCHAR 255), `created_at`.
+
+#### `billing_runs`
+- Execution logs and metadata for society monthly billing generation.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `billing_period` (VARCHAR 7), `total_eligible_flats` (INTEGER), `total_invoiced_flats` (INTEGER), `total_skipped_flats` (INTEGER), `total_charges_paise` (BIGINT), `status` (VARCHAR 32), `initiated_by` (UUID FK), `metadata` (JSON), `created_at`.
+
+---
+
 ## 5. Row-Level Security (RLS)
 
-All application tables enable PostgreSQL Row-Level Security:
+All application and billing tables enable PostgreSQL Row-Level Security with `FORCE ROW LEVEL SECURITY`:
 ```sql
-ALTER TABLE societies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE flats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-...
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invoices FORCE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments FORCE ROW LEVEL SECURITY;
+ALTER TABLE payment_allocations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_allocations FORCE ROW LEVEL SECURITY;
+ALTER TABLE financial_ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE financial_ledger_entries FORCE ROW LEVEL SECURITY;
 ```
-Permissive policies allow the FastAPI application connection (operating via the authenticated connection / service role) to perform verified business transactions, while preventing direct unauthenticated SQL tampering.
+
+### RLS Policies
+- **Resident Read Isolation**:
+  - `invoices_authenticated_select`: A resident can only view invoices if their `auth.uid()` maps to an active, approved `flat_membership` where `flat_id = invoices.flat_id` and `current_timestamp BETWEEN valid_from AND COALESCE(valid_until, 'infinity')`. Expired tenants immediately lose access.
+  - `payments_authenticated_select`: A resident can only query payments for their authorized active flat.
+  - `ledger_authenticated_select`: A resident can only view ledger records associated with their authorized flat.
+- **Service Role & Helpdesk Authority**:
+  - Direct modifications (`INSERT`, `UPDATE`, `DELETE`) by untrusted `authenticated` roles are forbidden. All financial mutations must be mediated by FastAPI domain service transactions via the backend database role.
+

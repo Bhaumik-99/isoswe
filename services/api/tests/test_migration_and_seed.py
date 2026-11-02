@@ -13,6 +13,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
+from app.domains.billing.models import (
+    FinancialLedgerEntry,
+    Invoice,
+    InvoiceStatus,
+    Payment,
+    PaymentAllocation,
+)
 from app.domains.identity.models import (
     Flat,
     FlatMembership,
@@ -53,6 +60,13 @@ def test_database_migration_works_from_empty_database() -> None:
             "outbox_events",
             "idempotency_keys",
             "processed_events",
+            "billing_configurations",
+            "invoices",
+            "invoice_line_items",
+            "payments",
+            "payment_allocations",
+            "financial_ledger_entries",
+            "billing_runs",
         ]
         for tbl in required_tables:
             assert tbl in table_names, f"Table '{tbl}' must be created by Alembic upgrade head"
@@ -94,11 +108,18 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         membership_count_1 = session.scalar(select(func.count(FlatMembership.id)))
         role_count_1 = session.scalar(select(func.count(UserRole.id)))
 
+        invoice_count_1 = session.scalar(select(func.count(Invoice.id)))
+        payment_count_1 = session.scalar(select(func.count(Payment.id)))
+        ledger_count_1 = session.scalar(select(func.count(FinancialLedgerEntry.id)))
+
         assert society_count_1 == 1
         assert tower_count_1 == 3
         assert flat_count_1 == 3
         assert user_count_1 == 4
         assert role_count_1 == 4
+        assert invoice_count_1 == 3
+        assert payment_count_1 == 1
+        assert ledger_count_1 == 5
 
         # Verify the 3 required sample flats exist with correct details
         f1 = session.get(Flat, FLAT_1203_ID)
@@ -113,6 +134,33 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert f3.flat_number == "1601"
         assert f3.area_sqft == 1640
 
+        # Verify required sample calculations
+        inv_neeraj = session.scalar(select(Invoice).where(Invoice.flat_id == FLAT_1203_ID))
+        assert inv_neeraj is not None
+        assert inv_neeraj.total_paise == 747500  # 1,150 sq ft * 650 = ₹7,475
+        assert inv_neeraj.status == InvoiceStatus.UNPAID
+
+        inv_swati = session.scalar(select(Invoice).where(Invoice.flat_id == FLAT_0408_ID))
+        assert inv_swati is not None
+        assert inv_swati.total_paise == 637000  # 980 sq ft * 650 = ₹6,370
+        assert inv_swati.status == InvoiceStatus.OVERDUE
+
+        inv_aamir = session.scalar(select(Invoice).where(Invoice.flat_id == FLAT_1601_ID))
+        assert inv_aamir is not None
+        assert inv_aamir.total_paise == 1066000  # 1,640 sq ft * 650 = ₹10,660
+        assert inv_aamir.status == InvoiceStatus.PARTIALLY_PAID
+
+        # Verify Aamir's payment allocation
+        payment_aamir = session.scalar(select(Payment).where(Payment.flat_id == FLAT_1601_ID))
+        assert payment_aamir is not None
+        assert payment_aamir.amount_paise == 500000  # ₹5,000 paid
+
+        alloc_aamir = session.scalar(
+            select(PaymentAllocation).where(PaymentAllocation.payment_id == payment_aamir.id)
+        )
+        assert alloc_aamir is not None
+        assert alloc_aamir.allocated_paise == 500000
+
     # Pass 2: Re-run seed immediately (must not fail or duplicate)
     seed_database()
 
@@ -123,6 +171,9 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         user_count_2 = session.scalar(select(func.count(User.id)))
         membership_count_2 = session.scalar(select(func.count(FlatMembership.id)))
         role_count_2 = session.scalar(select(func.count(UserRole.id)))
+        invoice_count_2 = session.scalar(select(func.count(Invoice.id)))
+        payment_count_2 = session.scalar(select(func.count(Payment.id)))
+        ledger_count_2 = session.scalar(select(func.count(FinancialLedgerEntry.id)))
 
         # Counts must remain strictly identical
         assert society_count_2 == society_count_1
@@ -131,5 +182,8 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert user_count_2 == user_count_1
         assert membership_count_2 == membership_count_1
         assert role_count_2 == role_count_1
+        assert invoice_count_2 == invoice_count_1
+        assert payment_count_2 == payment_count_1
+        assert ledger_count_2 == ledger_count_1
 
     Base.metadata.drop_all(bind=engine)

@@ -130,3 +130,27 @@ cd services/api && mypy app
 # Frontend build & type check
 cd apps/web && npm run build
 ```
+
+---
+
+## 6. Phase 2 Demo Billing & Payment Testing
+
+### Seed Scenarios
+After running `python scripts/seed.py`:
+1. **Neeraj Kulkarni** (`dev-token-neeraj`):
+   - Flat **T07-1203** (1,150 sq ft)
+   - Monthly maintenance: ₹7,475.00 (`UNPAID`)
+   - Test flow: Log in, click "Pay", simulate payment of ₹7,475.00 -> invoice transitions to `PAID`.
+2. **Swati Joshi** (`dev-token-swati`):
+   - Flat **T12-0408** (980 sq ft)
+   - Monthly maintenance: ₹6,370.00 (`OVERDUE` by 47 days)
+   - Test flow: Verifies tenant lease validity and overdue tracking.
+3. **Aamir Shaikh** (`dev-token-aamir`):
+   - Flat **T21-1601** (1,640 sq ft)
+   - Monthly maintenance: ₹10,660.00, ₹5,000 paid, ₹5,660 outstanding (`PARTIALLY_PAID` / `OVERDUE`)
+   - Test flow: Test partial payment and receipt generation.
+4. **Helpdesk (Rajesh Shinde)** (`dev-token-helpdesk`):
+   - Navigate to `/staff/billing`.
+   - View society-wide metrics (Billed, Collected, Outstanding, Overdue).
+   - Test "Run Monthly Billing" preview and execution. Verify idempotent conflict-safe behavior.
+

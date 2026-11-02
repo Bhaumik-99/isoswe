@@ -135,6 +135,7 @@ def get_current_user(
             Permission.BANK_IMPORT,
             Permission.RECONCILIATION_REVIEW,
             Permission.COMMITTEE_REPORT_READ,
+            Permission.BILLING_MANAGE,
         ]
 
     # Collect active flat memberships taking tenant validity dates into account

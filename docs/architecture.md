@@ -127,3 +127,29 @@ All five core asynchronous flows run over dedicated Amazon SQS queues with paire
 | `township-reconciliation-jobs-{env}` | Bank statement parser & auto-reconciliation | `township-reconciliation-jobs-dlq-{env}` | 3 (dev) / 5 (prod) |
 | `township-complaint-ai-jobs-{env}` | Bedrock ticket categorization & routing | `township-complaint-ai-jobs-dlq-{env}` | 3 (dev) / 5 (prod) |
 | `township-notification-jobs-{env}` | Resident payment reminders & alert dispatch | `township-notification-jobs-dlq-{env}` | 3 (dev) / 5 (prod) |
+
+---
+
+## 5. Phase 2 — Maintenance Billing & Simulated Payment Architecture
+
+### Domain Layer Separation of Concerns
+1. **Billing Domain Service (`app/domains/billing/service.py`)**:
+   - Authoritative business engine for society monthly billing preview, execution, and ledger entry creation.
+   - Enforces integer paise arithmetic: `maintenance_paise = area_sqft * 650` (₹6.50/sq ft).
+   - Dynamically evaluates effective invoice status (`UNPAID`, `PARTIALLY_PAID`, `PAID`, `OVERDUE`, `VOID`) based on due dates and allocated payments.
+   - Emits transactional audit (`audit_events`) and outbox (`outbox_events`) events atomically with financial mutations.
+
+2. **Billing Repository (`app/domains/billing/repository.py`)**:
+   - Encapsulates database queries for invoices, line items, payments, allocations, ledger entries, and billing runs.
+   - Preserves society-level tenant scoping and membership validation.
+
+3. **Payment Provider Interface (`app/domains/billing/provider.py`)**:
+   - `PaymentProvider` abstract base class defining `process_payment(request: PaymentRequest) -> ProviderPaymentResult`.
+   - `SimulatedPaymentProvider`: Local development implementation supporting deterministic success and controlled failure simulation for testing.
+   - **Future Integration Boundary**: To integrate live Razorpay or Stripe in later phases, an implementation of `PaymentProvider` (e.g. `RazorpayPaymentProvider`) is injected without altering billing calculation or ledger accounting business logic.
+
+4. **Append-Only Financial Ledger Invariant**:
+   - Every invoice generation appends a `CHARGE` entry to `financial_ledger_entries`.
+   - Every successful payment appends `PAYMENT_RECEIVED` and `PAYMENT_ALLOCATED` entries.
+   - No financial records are ever edited or deleted. Reversals or adjustments must be recorded as explicit compensating entries referencing original records.
+

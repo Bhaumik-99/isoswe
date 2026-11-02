@@ -84,7 +84,13 @@ def db_session() -> Generator[Session, None, None]:
         tower_number="T12",
         name="Tower 12",
     )
-    session.add_all([tow1, tow2])
+    tow3 = Tower(
+        id=uuid.UUID("22222222-2222-2222-2222-222222222221"),
+        society_id=society_id,
+        tower_number="T21",
+        name="Tower 21",
+    )
+    session.add_all([tow1, tow2, tow3])
 
     flat_1203 = Flat(
         id=uuid.UUID("33333333-3333-3333-3333-333333331203"),
@@ -102,6 +108,14 @@ def db_session() -> Generator[Session, None, None]:
         area_sqft=980,
         status=FlatStatus.OCCUPIED,
     )
+    flat_1601 = Flat(
+        id=uuid.UUID("33333333-3333-3333-3333-333333331601"),
+        society_id=society_id,
+        tower_id=tow3.id,
+        flat_number="1601",
+        area_sqft=1640,
+        status=FlatStatus.OCCUPIED,
+    )
     flat_other = Flat(
         id=uuid.UUID("33333333-3333-3333-3333-333333339999"),
         society_id=other_society_id,
@@ -110,7 +124,7 @@ def db_session() -> Generator[Session, None, None]:
         area_sqft=1000,
         status=FlatStatus.OCCUPIED,
     )
-    session.add_all([flat_1203, flat_0408, flat_other])
+    session.add_all([flat_1203, flat_0408, flat_1601, flat_other])
 
     # Users
     user_neeraj = User(
@@ -129,6 +143,14 @@ def db_session() -> Generator[Session, None, None]:
         full_name="Swati Joshi",
         status=UserStatus.ACTIVE,
     )
+    user_aamir = User(
+        id=uuid.UUID("44444444-4444-4444-4444-444444440003"),
+        supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000003"),
+        phone="+91-98000-00003",
+        email="aamir.shaikh@example.com",
+        full_name="Aamir Shaikh",
+        status=UserStatus.ACTIVE,
+    )
     user_helpdesk = User(
         id=uuid.UUID("44444444-4444-4444-4444-444444440004"),
         supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000004"),
@@ -137,13 +159,14 @@ def db_session() -> Generator[Session, None, None]:
         full_name="Rajesh Shinde",
         status=UserStatus.ACTIVE,
     )
-    session.add_all([user_neeraj, user_swati, user_helpdesk])
+    session.add_all([user_neeraj, user_swati, user_aamir, user_helpdesk])
 
     # Roles
     session.add_all(
         [
             UserRole(user_id=user_neeraj.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_swati.id, society_id=society_id, role=RoleType.RESIDENT),
+            UserRole(user_id=user_aamir.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.HELPDESK),
         ]
     )
@@ -178,6 +201,34 @@ def db_session() -> Generator[Session, None, None]:
             status=MembershipStatus.APPROVED,
         )
     )
+
+    # Aamir: Owner of 1601
+    session.add(
+        FlatMembership(
+            id=uuid.UUID("55555555-5555-5555-5555-555555550003"),
+            society_id=society_id,
+            user_id=user_aamir.id,
+            flat_id=flat_1601.id,
+            membership_type=MembershipType.OWNER,
+            valid_from=now - timedelta(days=200),
+            valid_until=None,
+            is_primary=True,
+            status=MembershipStatus.APPROVED,
+        )
+    )
+
+    # Billing Configuration for society (rate: 650 paise = ₹6.50/sq ft)
+    from app.domains.billing.models import BillingConfiguration
+
+    billing_config = BillingConfiguration(
+        id=uuid.UUID("66666666-6666-6666-6666-666666660001"),
+        society_id=society_id,
+        rate_paise_per_sqft=650,
+        currency="INR",
+        due_day=15,
+        effective_from=now - timedelta(days=365),
+    )
+    session.add(billing_config)
 
     session.commit()
 

@@ -145,10 +145,41 @@ make test
 
 ---
 
-## 5. Seed Personas (Local Development)
+## 5. Seed Personas & Demo Billing Scenarios
 
-The database is seeded idempotently with scenarios matching Marvel Greenfield Residences, Pune:
-- **Neeraj Kulkarni** (`dev-token-neeraj`): Resident & Owner of **T07-1203** (1,150 sq ft).
-- **Swati Joshi** (`dev-token-swati`): Resident & Tenant of **T12-0408** (980 sq ft) with time-bound active lease.
-- **Aamir Shaikh** (`dev-token-aamir`): Resident & Owner of **T21-1601** (1,640 sq ft).
-- **Rajesh Shinde** (`dev-token-helpdesk`): Facility management staff (`HELPDESK`).
+The database is seeded idempotently with real financial scenarios matching Marvel Greenfield Residences, Pune:
+- **Neeraj Kulkarni** (`dev-token-neeraj`): Resident & Owner of **T07-1203** (1,150 sq ft). Monthly maintenance: **₹7,475.00** (747,500 paise), status: `UNPAID`.
+- **Swati Joshi** (`dev-token-swati`): Resident & Tenant of **T12-0408** (980 sq ft). Monthly maintenance: **₹6,370.00** (637,000 paise), 47 days overdue, status: `OVERDUE`.
+- **Aamir Shaikh** (`dev-token-aamir`): Resident & Owner of **T21-1601** (1,640 sq ft). Monthly maintenance: **₹10,660.00** (1,066,000 paise), with **₹5,000.00** paid and **₹5,660.00** remaining balance, 18 days overdue, status: `PARTIALLY_PAID` / `OVERDUE`.
+- **Rajesh Shinde** (`dev-token-helpdesk`): Facility management staff (`HELPDESK`), authorized for society billing runs, overview monitoring, and committee reporting.
+
+---
+
+## 6. Phase 2 — Maintenance Billing & Payment Foundation
+
+### Financial Formula & Invariants
+- **Monthly Maintenance Calculation**:
+  $$\text{Maintenance (paise)} = \text{Area (sq ft)} \times 650 \quad (\text{₹}6.50/\text{sq ft})$$
+- **Monetary Precision**: All monetary values are strictly stored as `BIGINT` integer paise (1 INR = 100 paise). Zero floating-point arithmetic.
+- **Append-Only Financial Ledger**: `financial_ledger_entries` is strictly append-only. No financial records are ever updated or deleted. Corrections are applied through explicit compensating reversal or adjustment entries.
+- **Derived Outstanding Balance**:
+  $$\text{Outstanding} = \text{Invoice Total} - \sum \text{Valid Payment Allocations}$$
+  Payments do not overwrite invoice balances directly; invoice status and remaining balance are dynamically derived from validated allocations where `payment.status == 'SUCCESS'`.
+- **Simulated Payment Engine**: Uses `PaymentProvider` interface with `SimulatedPaymentProvider` for demonstration. Supports controlled success/failure outcomes, duplicate submission protection via `Idempotency-Key` headers, and atomic transactional allocations.
+
+### API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/billing/me/summary` | Resident | Live outstanding balance, invoice counts, and next due date |
+| `GET` | `/api/v1/billing/me/invoices` | Resident | List invoices for authorized active flat memberships |
+| `GET` | `/api/v1/billing/me/payments` | Resident | Payment history and allocation details |
+| `GET` | `/api/v1/billing/invoices/{id}` | Resident / Helpdesk | Detailed invoice with line items and allocations |
+| `GET` | `/api/v1/billing/invoices/{id}/receipt` | Authorized User | Official payment receipt for allocated invoice |
+| `POST` | `/api/v1/billing/invoices/{id}/payments` | Resident | Initiate simulated payment (supports full or partial payment) |
+| `GET` | `/api/v1/billing/payments/{id}` | Authorized User | Payment status and allocation breakdown |
+| `GET` | `/api/v1/billing/staff/overview` | Helpdesk | Society-wide billed, collected, outstanding, and overdue totals |
+| `GET` | `/api/v1/billing/staff/invoices` | Helpdesk | Search and filter society invoices by tower, flat, period, status |
+| `POST` | `/api/v1/billing/staff/runs/preview` | Helpdesk | Preview eligible units, expected charges, and excluded units |
+| `POST` | `/api/v1/billing/staff/runs` | Helpdesk | Execute monthly batch billing run (conflict-safe and idempotent) |
+| `GET` | `/api/v1/billing/staff/runs/{id}` | Helpdesk | Inspect billing run execution summary and audit metadata |
+

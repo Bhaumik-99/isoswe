@@ -1,0 +1,404 @@
+"""Billing Domain SQLAlchemy Repository
+
+Provides authoritative data access and database query optimization for:
+- Billing configuration
+- Invoices and line items
+- Payments and allocations
+- Immutable financial ledger entries
+- Batch billing runs
+"""
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload
+
+from app.domains.billing.models import (
+    BillingConfiguration,
+    BillingRun,
+    FinancialLedgerEntry,
+    Invoice,
+    InvoiceLineItem,
+    InvoiceStatus,
+    LedgerEntryType,
+    Payment,
+    PaymentAllocation,
+    PaymentStatus,
+)
+from app.domains.identity.models import (
+    Flat,
+    FlatMembership,
+    MembershipStatus,
+    Society,
+    Tower,
+    User,
+)
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class BillingRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    # -------------------------------------------------------------------------
+    # Configuration
+    # -------------------------------------------------------------------------
+    def get_or_create_billing_config(self, society_id: UUID) -> BillingConfiguration:
+        """Retrieves active billing configuration for society, creating default (₹6.50 / 650 paise) if missing."""
+        stmt = (
+            select(BillingConfiguration)
+            .where(BillingConfiguration.society_id == society_id)
+            .order_by(BillingConfiguration.effective_from.desc())
+        )
+        config = self.db.scalars(stmt).first()
+        if not config:
+            config = BillingConfiguration(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                rate_paise_per_sqft=650,  # ₹6.50 / sq ft = 650 paise
+                currency="INR",
+                effective_from=utc_now(),
+                due_day=10,
+            )
+            self.db.add(config)
+            self.db.flush()
+        return config
+
+    # -------------------------------------------------------------------------
+    # Invoices
+    # -------------------------------------------------------------------------
+    def get_invoice_by_id(self, invoice_id: UUID, society_id: UUID | None = None) -> Invoice | None:
+        """Retrieves invoice with eager loaded line items and allocations."""
+        stmt = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.line_items),
+                joinedload(Invoice.allocations).joinedload(PaymentAllocation.payment),
+            )
+            .where(Invoice.id == invoice_id)
+        )
+        if society_id:
+            stmt = stmt.where(Invoice.society_id == society_id)
+        return self.db.scalars(stmt).unique().first()
+
+    def get_invoice_by_flat_and_period(
+        self, society_id: UUID, flat_id: UUID, billing_period: str
+    ) -> Invoice | None:
+        stmt = select(Invoice).where(
+            Invoice.society_id == society_id,
+            Invoice.flat_id == flat_id,
+            Invoice.billing_period == billing_period,
+        )
+        return self.db.scalars(stmt).first()
+
+    def get_invoices_for_flats(
+        self,
+        flat_ids: list[UUID],
+        billing_period: str | None = None,
+        status: InvoiceStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Invoice]:
+        if not flat_ids:
+            return []
+        stmt = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.line_items),
+                joinedload(Invoice.allocations).joinedload(PaymentAllocation.payment),
+            )
+            .where(Invoice.flat_id.in_(flat_ids))
+        )
+        if billing_period:
+            stmt = stmt.where(Invoice.billing_period == billing_period)
+        if status:
+            stmt = stmt.where(Invoice.status == status)
+        stmt = stmt.order_by(Invoice.billing_period.desc(), Invoice.created_at.desc())
+        stmt = stmt.limit(limit).offset(offset)
+        return list(self.db.scalars(stmt).unique().all())
+
+    def get_invoices_for_society(
+        self,
+        society_id: UUID,
+        billing_period: str | None = None,
+        tower_number: str | None = None,
+        flat_number: str | None = None,
+        status: InvoiceStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Invoice]:
+        stmt = (
+            select(Invoice)
+            .join(Flat, Flat.id == Invoice.flat_id)
+            .join(Tower, Tower.id == Flat.tower_id)
+            .options(
+                joinedload(Invoice.line_items),
+                joinedload(Invoice.allocations).joinedload(PaymentAllocation.payment),
+            )
+            .where(Invoice.society_id == society_id)
+        )
+        if billing_period:
+            stmt = stmt.where(Invoice.billing_period == billing_period)
+        if tower_number:
+            stmt = stmt.where(Tower.tower_number == tower_number)
+        if flat_number:
+            stmt = stmt.where(Flat.flat_number == flat_number)
+        if status:
+            stmt = stmt.where(Invoice.status == status)
+        stmt = stmt.order_by(Invoice.billing_period.desc(), Tower.tower_number, Flat.flat_number)
+        stmt = stmt.limit(limit).offset(offset)
+        return list(self.db.scalars(stmt).unique().all())
+
+    def count_invoices_for_society(
+        self,
+        society_id: UUID,
+        billing_period: str | None = None,
+        tower_number: str | None = None,
+        flat_number: str | None = None,
+        status: InvoiceStatus | None = None,
+    ) -> int:
+        stmt = (
+            select(func.count(Invoice.id))
+            .join(Flat, Flat.id == Invoice.flat_id)
+            .join(Tower, Tower.id == Flat.tower_id)
+            .where(Invoice.society_id == society_id)
+        )
+        if billing_period:
+            stmt = stmt.where(Invoice.billing_period == billing_period)
+        if tower_number:
+            stmt = stmt.where(Tower.tower_number == tower_number)
+        if flat_number:
+            stmt = stmt.where(Flat.flat_number == flat_number)
+        if status:
+            stmt = stmt.where(Invoice.status == status)
+        return self.db.scalar(stmt) or 0
+
+    def create_invoice(
+        self,
+        society_id: UUID,
+        flat_id: UUID,
+        billing_period: str,
+        invoice_number: str,
+        area_sqft_snapshot: int,
+        rate_paise_per_sqft_snapshot: int,
+        subtotal_paise: int,
+        total_paise: int,
+        due_date: datetime,
+        line_items_data: list[dict[str, Any]],
+    ) -> Invoice:
+        invoice = Invoice(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            flat_id=flat_id,
+            billing_period=billing_period,
+            invoice_number=invoice_number,
+            area_sqft_snapshot=area_sqft_snapshot,
+            rate_paise_per_sqft_snapshot=rate_paise_per_sqft_snapshot,
+            subtotal_paise=subtotal_paise,
+            total_paise=total_paise,
+            due_date=due_date,
+            status=InvoiceStatus.UNPAID,
+        )
+        self.db.add(invoice)
+        self.db.flush()
+
+        for item in line_items_data:
+            line_item = InvoiceLineItem(
+                id=uuid.uuid4(),
+                invoice_id=invoice.id,
+                description=item["description"],
+                quantity=item.get("quantity", 1),
+                unit_rate_paise=item["unit_rate_paise"],
+                amount_paise=item["amount_paise"],
+            )
+            self.db.add(line_item)
+
+        self.db.flush()
+        return invoice
+
+    # -------------------------------------------------------------------------
+    # Payments & Allocations
+    # -------------------------------------------------------------------------
+    def get_payment_by_id(self, payment_id: UUID, society_id: UUID | None = None) -> Payment | None:
+        stmt = (
+            select(Payment)
+            .options(
+                joinedload(Payment.allocations).joinedload(PaymentAllocation.invoice),
+            )
+            .where(Payment.id == payment_id)
+        )
+        if society_id:
+            stmt = stmt.where(Payment.society_id == society_id)
+        return self.db.scalars(stmt).unique().first()
+
+    def get_payments_for_flats(
+        self,
+        flat_ids: list[UUID],
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Payment]:
+        if not flat_ids:
+            return []
+        stmt = (
+            select(Payment)
+            .options(
+                joinedload(Payment.allocations).joinedload(PaymentAllocation.invoice),
+            )
+            .where(Payment.flat_id.in_(flat_ids))
+            .order_by(Payment.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(self.db.scalars(stmt).unique().all())
+
+    def create_payment(
+        self,
+        society_id: UUID,
+        flat_id: UUID,
+        amount_paise: int,
+        provider: str,
+        provider_reference: str,
+        status: PaymentStatus,
+        initiated_by: UUID,
+        currency: str = "INR",
+    ) -> Payment:
+        payment = Payment(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            flat_id=flat_id,
+            amount_paise=amount_paise,
+            currency=currency,
+            provider=provider,
+            provider_reference=provider_reference,
+            status=status,
+            initiated_by=initiated_by,
+        )
+        self.db.add(payment)
+        self.db.flush()
+        return payment
+
+    def create_payment_allocation(
+        self,
+        payment_id: UUID,
+        invoice_id: UUID,
+        allocated_paise: int,
+    ) -> PaymentAllocation:
+        allocation = PaymentAllocation(
+            id=uuid.uuid4(),
+            payment_id=payment_id,
+            invoice_id=invoice_id,
+            allocated_paise=allocated_paise,
+        )
+        self.db.add(allocation)
+        self.db.flush()
+        return allocation
+
+    # -------------------------------------------------------------------------
+    # Financial Ledger
+    # -------------------------------------------------------------------------
+    def append_ledger_entry(
+        self,
+        society_id: UUID,
+        flat_id: UUID,
+        entry_type: LedgerEntryType,
+        amount_paise: int,
+        description: str,
+        invoice_id: UUID | None = None,
+        payment_id: UUID | None = None,
+        reference_id: str | None = None,
+    ) -> FinancialLedgerEntry:
+        """Appends an immutable financial transaction journal entry."""
+        entry = FinancialLedgerEntry(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            flat_id=flat_id,
+            invoice_id=invoice_id,
+            payment_id=payment_id,
+            entry_type=entry_type,
+            amount_paise=amount_paise,
+            reference_id=reference_id,
+            description=description,
+        )
+        self.db.add(entry)
+        self.db.flush()
+        return entry
+
+    # -------------------------------------------------------------------------
+    # Batch Billing Runs
+    # -------------------------------------------------------------------------
+    def create_billing_run(
+        self,
+        society_id: UUID,
+        billing_period: str,
+        total_eligible_flats: int,
+        total_invoiced_flats: int,
+        total_skipped_flats: int,
+        total_charges_paise: int,
+        initiated_by: UUID,
+        status: str = "COMPLETED",
+        metadata: dict[str, Any] | None = None,
+    ) -> BillingRun:
+        run = BillingRun(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            billing_period=billing_period,
+            total_eligible_flats=total_eligible_flats,
+            total_invoiced_flats=total_invoiced_flats,
+            total_skipped_flats=total_skipped_flats,
+            total_charges_paise=total_charges_paise,
+            status=status,
+            initiated_by=initiated_by,
+            run_metadata=metadata or {},
+        )
+        self.db.add(run)
+        self.db.flush()
+        return run
+
+    def get_billing_run_by_id(
+        self, run_id: UUID, society_id: UUID | None = None
+    ) -> BillingRun | None:
+        stmt = select(BillingRun).where(BillingRun.id == run_id)
+        if society_id:
+            stmt = stmt.where(BillingRun.society_id == society_id)
+        return self.db.scalars(stmt).first()
+
+    # -------------------------------------------------------------------------
+    # Auxiliary Flat, Society, and Membership Helpers
+    # -------------------------------------------------------------------------
+    def get_flat_with_tower(self, flat_id: UUID) -> tuple[Flat, Tower] | None:
+        stmt = select(Flat, Tower).join(Tower, Tower.id == Flat.tower_id).where(Flat.id == flat_id)
+        result = self.db.execute(stmt).first()
+        if not result:
+            return None
+        return result[0], result[1]
+
+    def get_society(self, society_id: UUID) -> Society | None:
+        return self.db.get(Society, society_id)
+
+    def get_primary_resident_for_flat(self, flat_id: UUID) -> User | None:
+        stmt = (
+            select(User)
+            .join(FlatMembership, FlatMembership.user_id == User.id)
+            .where(
+                FlatMembership.flat_id == flat_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+            )
+            .order_by(FlatMembership.is_primary.desc(), FlatMembership.created_at.asc())
+        )
+        return self.db.scalars(stmt).first()
+
+    def get_flats_in_society(self, society_id: UUID) -> list[tuple[Flat, Tower]]:
+        stmt = (
+            select(Flat, Tower)
+            .join(Tower, Tower.id == Flat.tower_id)
+            .where(Flat.society_id == society_id)
+            .order_by(Tower.tower_number, Flat.flat_number)
+        )
+        rows = self.db.execute(stmt).all()
+        return [(r[0], r[1]) for r in rows]

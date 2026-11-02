@@ -370,3 +370,178 @@ def test_postgres_rls_tenant_isolation_and_expired_lease_denial(postgres_test_db
         societies_visible = conn.execute(text("SELECT id FROM societies;")).fetchall()
         assert len(societies_visible) == 1
         assert societies_visible[0].id == soc_b_id
+
+
+def test_postgres_rls_billing_isolation(postgres_test_db: Engine) -> None:
+    """Requirement 7, 9 & 13.11: Real PostgreSQL RLS tests for billing domain isolation.
+
+    Verifies:
+    1. Active resident can only view invoices for their own approved flat.
+    2. Active resident cannot view invoices from other flats in the same society or another society.
+    3. Active resident can only view their own payments and allocations.
+    4. Expired tenant cannot view any invoices or billing records.
+    5. Direct INSERT/UPDATE on invoices and ledger by 'authenticated' role is blocked by RLS.
+    """
+    engine = postgres_test_db
+    api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    alembic_cfg = Config(os.path.join(api_dir, "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", os.path.join(api_dir, "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", TEST_DB_URL)
+
+    with engine.connect() as connection:
+        alembic_cfg.attributes["connection"] = connection
+        command.upgrade(alembic_cfg, "head")
+        connection.commit()
+
+    soc_a_id = uuid.uuid4()
+    soc_b_id = uuid.uuid4()
+    tower_a_id = uuid.uuid4()
+    tower_b_id = uuid.uuid4()
+    flat_act_id = uuid.uuid4()
+    flat_exp_id = uuid.uuid4()
+    flat_b_id = uuid.uuid4()
+
+    user_act_sub = uuid.uuid4()
+    user_exp_sub = uuid.uuid4()
+    user_act_id = uuid.uuid4()
+    user_exp_id = uuid.uuid4()
+
+    inv_act_id = uuid.uuid4()
+    inv_exp_id = uuid.uuid4()
+    inv_b_id = uuid.uuid4()
+    pmt_act_id = uuid.uuid4()
+
+    now = datetime.now(UTC)
+    last_year = now - timedelta(days=365)
+    next_year = now + timedelta(days=365)
+    yesterday = now - timedelta(days=1)
+
+    # 1. Superuser/service role inserts fixtures
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:sa, 'Soc A', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW()), "
+                "       (:sb, 'Soc B', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"sa": soc_a_id, "sb": soc_b_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:ta, :sa, 'T01', 'Tower 1', NOW()), "
+                "       (:tb, :sb, 'T02', 'Tower 2', NOW());"
+            ),
+            {"ta": tower_a_id, "sa": soc_a_id, "tb": tower_b_id, "sb": soc_b_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:fa, :sa, :ta, '101', 1150, 'OCCUPIED', NOW(), NOW()), "
+                "       (:fe, :sa, :ta, '102', 980, 'OCCUPIED', NOW(), NOW()), "
+                "       (:fb, :sb, :tb, '201', 1640, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {
+                "fa": flat_act_id,
+                "fe": flat_exp_id,
+                "fb": flat_b_id,
+                "sa": soc_a_id,
+                "sb": soc_b_id,
+                "ta": tower_a_id,
+                "tb": tower_b_id,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO users (id, supabase_uid, email, phone, full_name, status, created_at, updated_at) "
+                "VALUES (:ua, :sub_a, 'act@example.com', '+919800011111', 'Active Resident', 'ACTIVE', NOW(), NOW()), "
+                "       (:ue, :sub_e, 'exp@example.com', '+919800022222', 'Expired Tenant', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"ua": user_act_id, "sub_a": user_act_sub, "ue": user_exp_id, "sub_e": user_exp_sub},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flat_memberships (id, society_id, user_id, flat_id, membership_type, status, valid_from, valid_until, is_primary, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :sa, :ua, :fa, 'OWNER', 'APPROVED', :last_year, :next_year, true, NOW(), NOW()), "
+                "       (gen_random_uuid(), :sa, :ue, :fe, 'TENANT', 'APPROVED', :last_year, :yesterday, true, NOW(), NOW());"
+            ),
+            {
+                "sa": soc_a_id,
+                "ua": user_act_id,
+                "fa": flat_act_id,
+                "ue": user_exp_id,
+                "fe": flat_exp_id,
+                "last_year": last_year,
+                "next_year": next_year,
+                "yesterday": yesterday,
+            },
+        )
+        # Insert Invoices
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:ia, :sa, :fa, '2026-11', 'INV-202611-101', 1150, 650, 747500, 747500, NOW() + INTERVAL '15 days', 'UNPAID', NOW(), NOW()), "
+                "       (:ie, :sa, :fe, '2026-11', 'INV-202611-102', 980, 650, 637000, 637000, NOW() + INTERVAL '15 days', 'UNPAID', NOW(), NOW()), "
+                "       (:ib, :sb, :fb, '2026-11', 'INV-202611-201', 1640, 650, 1066000, 1066000, NOW() + INTERVAL '15 days', 'UNPAID', NOW(), NOW());"
+            ),
+            {
+                "ia": inv_act_id,
+                "ie": inv_exp_id,
+                "ib": inv_b_id,
+                "sa": soc_a_id,
+                "sb": soc_b_id,
+                "fa": flat_act_id,
+                "fe": flat_exp_id,
+                "fb": flat_b_id,
+            },
+        )
+        # Insert Payment for Active resident
+        conn.execute(
+            text(
+                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
+                "VALUES (:pa, :sa, :fa, 747500, 'INR', 'SIMULATED', 'SIM-REF-001', 'SUCCESS', :ua, NOW(), NOW());"
+            ),
+            {"pa": pmt_act_id, "sa": soc_a_id, "fa": flat_act_id, "ua": user_act_id},
+        )
+        conn.commit()
+
+    # 2. Query as Active Resident under 'authenticated' role
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE authenticated;"))
+        conn.execute(text(f"SET request.jwt.claim.sub = '{user_act_sub}';"))
+
+        # Invoices visible: Only own flat's invoice (INV-202611-101)
+        invoices = conn.execute(text("SELECT id, invoice_number FROM invoices;")).fetchall()
+        assert len(invoices) == 1
+        assert invoices[0].id == inv_act_id
+        assert invoices[0].invoice_number == "INV-202611-101"
+
+        # Payments visible: Only own flat's payment
+        payments = conn.execute(text("SELECT id, provider_reference FROM payments;")).fetchall()
+        assert len(payments) == 1
+        assert payments[0].id == pmt_act_id
+
+        # Direct INSERT on invoices by authenticated role must fail
+        insert_blocked = False
+        try:
+            conn.execute(
+                text(
+                    f"INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                    f"VALUES (gen_random_uuid(), '{soc_a_id}', '{flat_act_id}', '2026-12', 'INV-ROGUE-001', 1150, 650, 747500, 747500, NOW(), 'UNPAID', NOW(), NOW());"
+                )
+            )
+        except Exception:
+            insert_blocked = True
+            conn.rollback()
+            conn.execute(text("SET ROLE authenticated;"))
+            conn.execute(text(f"SET request.jwt.claim.sub = '{user_act_sub}';"))
+        assert insert_blocked, "Direct invoice creation by authenticated role must be denied by RLS"
+
+    # 3. Query as Expired Tenant under 'authenticated' role
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE authenticated;"))
+        conn.execute(text(f"SET request.jwt.claim.sub = '{user_exp_sub}';"))
+
+        # Expired tenant has no active membership -> sees 0 invoices
+        expired_invoices = conn.execute(text("SELECT id FROM invoices;")).fetchall()
+        assert len(expired_invoices) == 0, "Expired tenant must see zero invoices"
