@@ -7,6 +7,7 @@ Implements identity provider requirements:
 """
 
 from aws_cdk import (
+    Duration,
     RemovalPolicy,
     aws_cognito as cognito,
     aws_kms as kms,
@@ -45,7 +46,7 @@ class AuthConstruct(Construct):
                 require_symbols=True,
                 require_uppercase=True,
                 require_lowercase=True,
-                temp_password_validity_days=7,
+                temp_password_validity=Duration.days(7),
             ),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
             removal_policy=removal_policy,

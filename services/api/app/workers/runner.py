@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 sys.path.insert(0, ".")
 
 # Ensure handlers are imported and registered
-import app.workers.health_worker  # noqa: F401
+from typing import Any
+
+import app.workers  # noqa: F401
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import logger
@@ -40,7 +42,7 @@ class WorkerRunner:
         signal.signal(signal.SIGINT, self._handle_exit)
         signal.signal(signal.SIGTERM, self._handle_exit)
 
-    def _handle_exit(self, signum, frame) -> None:
+    def _handle_exit(self, signum: int, frame: Any) -> None:
         logger.info("[WorkerRunner] Termination signal received. Shutting down gracefully...")
         self.running = False
 

@@ -64,3 +64,92 @@ def test_local_auth_bypass_fails_closed_in_production(monkeypatch: pytest.Monkey
 
     assert "strictly forbidden" in exc_info.value.message
     assert exc_info.value.code == "SECURITY_VIOLATION"
+
+
+def test_cognito_jwt_token_use_and_audience_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies strict validation of ID token 'aud' and Access token 'client_id'."""
+    from unittest.mock import MagicMock
+
+    from app.integrations.cognito import CognitoJwtVerifier
+
+    verifier = CognitoJwtVerifier()
+    verifier.expected_issuer = "https://cognito-idp.ap-south-1.amazonaws.com/test-pool"
+    verifier.app_client_id = "configured-app-client-id"
+
+    # Mock _get_signing_key to return a dummy key
+    dummy_key = MagicMock()
+    dummy_key.key = "test-secret-must-be-32-bytes-long!"
+    monkeypatch.setattr(verifier, "_get_signing_key", lambda token: dummy_key)
+
+    # 1. ID token with wrong audience
+    id_token_payload = {
+        "sub": "user-sub-123",
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "token_use": "id",
+        "aud": "wrong-client-id",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: id_token_payload)
+        with pytest.raises(AuthenticationError) as exc:
+            verifier.verify_id_token("dummy-token")
+        assert exc.value.code == "INVALID_AUDIENCE"
+
+    # 2. Access token with matching client_id
+    access_token_payload = {
+        "sub": "user-sub-123",
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "token_use": "access",
+        "client_id": "configured-app-client-id",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: access_token_payload)
+        res = verifier.verify_access_token("dummy-token")
+        assert res["client_id"] == "configured-app-client-id"
+
+    # 3. Access token passed when ID token expected
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: access_token_payload)
+        with pytest.raises(AuthenticationError) as exc:
+            verifier.verify_id_token("dummy-token")
+        assert exc.value.code == "TOKEN_USE_MISMATCH"
+
+    # 4. Unknown token_use (e.g. 'refresh')
+    refresh_token_payload = {
+        "sub": "user-sub-123",
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "token_use": "refresh",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: refresh_token_payload)
+        with pytest.raises(AuthenticationError) as exc:
+            verifier.verify_token("dummy-token")
+        assert exc.value.code == "INVALID_TOKEN_USE"
+
+
+def test_cognito_jwt_malformed_claims_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that malformed subject or non-numeric exp claims are rejected."""
+    from unittest.mock import MagicMock
+
+    from app.integrations.cognito import CognitoJwtVerifier
+
+    verifier = CognitoJwtVerifier()
+    verifier.expected_issuer = "https://cognito-idp.ap-south-1.amazonaws.com/test-pool"
+    dummy_key = MagicMock()
+    monkeypatch.setattr(verifier, "_get_signing_key", lambda token: dummy_key)
+
+    # Empty sub
+    malformed_sub = {
+        "sub": "   ",
+        "iss": verifier.expected_issuer,
+        "exp": int(time.time()) + 3600,
+        "token_use": "id",
+        "aud": "any",
+    }
+    with monkeypatch.context() as m:
+        m.setattr(jwt, "decode", lambda *args, **kwargs: malformed_sub)
+        with pytest.raises(AuthenticationError) as exc:
+            verifier.verify_token("dummy-token")
+        assert exc.value.code == "MALFORMED_CLAIMS"

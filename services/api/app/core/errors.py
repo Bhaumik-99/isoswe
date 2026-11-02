@@ -91,13 +91,11 @@ def create_error_response(
     details: dict[str, Any] | None = None,
 ) -> JSONResponse:
     """Creates a standardized JSON error response."""
-    payload = {
-        "error": {
-            "code": code,
-            "message": message,
-            "request_id": request_id,
-        }
+    error_content: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": request_id,
     }
     if details:
-        payload["error"]["details"] = details
-    return JSONResponse(status_code=status_code, content=payload)
+        error_content["details"] = details
+    return JSONResponse(status_code=status_code, content={"error": error_content})

@@ -8,6 +8,7 @@
  */
 
 import { ApiErrorResponse } from '../types';
+import { sessionManager } from './sessionManager';
 
 export class ApiClientError extends Error {
   code: string;
@@ -27,25 +28,17 @@ export class ApiClientError extends Error {
 
 class ApiClient {
   private baseUrl: string;
-  private token: string | null = null;
 
   constructor() {
     this.baseUrl = import.meta.env.VITE_API_URL || '';
-    // Check localStorage for saved session token
-    this.token = localStorage.getItem('auth_token');
   }
 
-  setToken(token: string | null) {
-    this.token = token;
-    if (token) {
-      localStorage.setItem('auth_token', token);
-    } else {
-      localStorage.removeItem('auth_token');
-    }
+  setToken(token: string | null, expiresInSeconds?: number) {
+    sessionManager.setSession(token, expiresInSeconds);
   }
 
   getToken(): string | null {
-    return this.token;
+    return sessionManager.getToken();
   }
 
   private generateId(): string {
@@ -64,8 +57,9 @@ class ApiClient {
       ...(options.headers as Record<string, string>),
     };
 
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+    const token = this.getToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     const url = endpoint.startsWith('http') ? endpoint : `${this.baseUrl}${endpoint}`;
@@ -84,6 +78,10 @@ class ApiClient {
       const data = await response.json().catch(() => null);
 
       if (!response.ok) {
+        if (response.status === 401) {
+          sessionManager.clearSession();
+          sessionManager.notifySessionExpired();
+        }
         if (data && data.error) {
           const errData = data as ApiErrorResponse;
           throw new ApiClientError(

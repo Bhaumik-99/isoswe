@@ -131,11 +131,31 @@ def test_tenant_access_stops_after_membership_expiry(
     db_session.commit()
 
     # Query IdentityRepository directly to assert lease validity boundary
+    from unittest.mock import patch
+
     from app.domains.identity.repository import IdentityRepository
 
     repo = IdentityRepository(db_session)
     has_access = repo.verify_flat_access(expired_user.id, uuid.UUID(FLAT_0408_ID))
     assert has_access is False
+
+    # Also verify via API endpoint that expired tenant gets 403 FLAT_ACCESS_DENIED
+    with patch(
+        "app.integrations.cognito.cognito_verifier.verify_token",
+        return_value={
+            "sub": "mock-sub-expired-tenant",
+            "token_use": "id",
+            "aud": "mock-client-id",
+            "exp": 9999999999,
+            "iss": "https://cognito-idp.ap-south-1.amazonaws.com/test-pool",
+        },
+    ):
+        res = client.get(
+            f"/api/v1/flats/{FLAT_0408_ID}",
+            headers={"Authorization": "Bearer expired-tenant-token"},
+        )
+        assert res.status_code == 403
+        assert res.json()["error"]["code"] == "FLAT_ACCESS_DENIED"
 
 
 def test_society_level_isolation_works(client: TestClient) -> None:
@@ -146,3 +166,95 @@ def test_society_level_isolation_works(client: TestClient) -> None:
         headers={"Authorization": "Bearer dev-token-neeraj"},
     )
     assert res.status_code == 403
+
+
+def test_staff_cross_society_flat_access_denied(client: TestClient, db_session: Session) -> None:
+    """Requirement: Staff role in Society A cannot access flats belonging to Society B."""
+    from app.domains.identity.models import Flat, FlatStatus, Society, SocietyStatus, Tower
+
+    # 1. Create a distinct secondary society with its own tower and flat
+    other_society = Society(
+        id=uuid.uuid4(),
+        name="Secondary Township",
+        timezone="Asia/Kolkata",
+        preferred_currency="INR",
+        status=SocietyStatus.ACTIVE,
+    )
+    db_session.add(other_society)
+    db_session.flush()
+
+    other_tower = Tower(
+        id=uuid.uuid4(),
+        society_id=other_society.id,
+        tower_number="T99",
+        name="Tower 99",
+    )
+    db_session.add(other_tower)
+    db_session.flush()
+
+    other_flat = Flat(
+        id=uuid.uuid4(),
+        society_id=other_society.id,
+        tower_id=other_tower.id,
+        flat_number="9901",
+        area_sqft=1200,
+        status=FlatStatus.OCCUPIED,
+    )
+    db_session.add(other_flat)
+    db_session.commit()
+
+    # Helpdesk staff (Rajesh) belongs ONLY to Society 1 (Marvel Greenfield)
+    res = client.get(
+        f"/api/v1/flats/{other_flat.id}",
+        headers={"Authorization": "Bearer dev-token-helpdesk"},
+    )
+    assert res.status_code == 403
+    assert res.json()["error"]["code"] == "CROSS_TENANT_ACCESS_DENIED"
+
+
+def test_platform_admin_scope_allows_cross_society_access(
+    client: TestClient, db_session: Session
+) -> None:
+    """Requirement: Platform admin has platform-wide authority across all societies."""
+    # Vikram (admin) can access any flat
+    res = client.get(
+        f"/api/v1/flats/{FLAT_1203_ID}",
+        headers={"Authorization": "Bearer dev-token-admin"},
+    )
+    assert res.status_code == 200
+    assert res.json()["flat_number"] == "1203"
+
+    # Vikram (admin) can execute restricted finance operations
+    res_finance = client.post(
+        "/api/v1/finance/batch-billing/preview",
+        headers={"Authorization": "Bearer dev-token-admin"},
+    )
+    assert res_finance.status_code == 200
+    assert res_finance.json()["status"] == "AUTHORIZED"
+
+
+def test_canonical_sub_enforced_no_email_fallback(client: TestClient, db_session: Session) -> None:
+    """Requirement: Authentication strictly maps canonical Cognito sub. No fallback to email."""
+    from unittest.mock import patch
+
+    # Mock token with an unknown sub, but an email matching an existing user (Neeraj)
+    unlinked_token_payload = {
+        "sub": "unknown-cognito-sub-attempting-takeover",
+        "email": "neeraj.kulkarni@example.com",
+        "token_use": "id",
+        "aud": "mock-client-id",
+        "exp": 9999999999,
+        "iss": "https://cognito-idp.ap-south-1.amazonaws.com/test-pool",
+    }
+
+    with patch(
+        "app.integrations.cognito.cognito_verifier.verify_token",
+        return_value=unlinked_token_payload,
+    ):
+        res = client.get(
+            "/api/v1/me",
+            headers={"Authorization": "Bearer genuine-cognito-jwt-unlinked"},
+        )
+        # Must be rejected because 'unknown-cognito-sub-attempting-takeover' does not exist in DB
+        assert res.status_code == 401
+        assert res.json()["error"]["code"] == "USER_NOT_REGISTERED"

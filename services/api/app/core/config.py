@@ -5,7 +5,7 @@ Loaded from environment variables with strong validation and fail-closed securit
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,13 +39,16 @@ class Settings(BaseSettings):
                 return []
             if v.startswith("[") and v.endswith("]"):
                 import json
+
                 try:
-                    return json.loads(v)
+                    loaded = json.loads(v)
+                    if isinstance(loaded, list):
+                        return [str(x) for x in loaded]
                 except Exception:
                     pass
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         elif isinstance(v, list):
-            return v
+            return [str(x) for x in v]
         return []
 
     # Local Auth Bypass - strictly prohibited in staging and production
@@ -88,7 +91,7 @@ class Settings(BaseSettings):
 
     @field_validator("ENABLE_LOCAL_AUTH_BYPASS")
     @classmethod
-    def validate_local_auth_bypass(cls, v: bool, info) -> bool:
+    def validate_local_auth_bypass(cls, v: bool, info: ValidationInfo) -> bool:
         """Fail-closed check: Local auth bypass MUST NEVER be enabled in staging or production."""
         env = info.data.get("ENVIRONMENT", "development")
         if v and env in ("staging", "production"):

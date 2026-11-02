@@ -21,7 +21,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 from environments.config import EnvironmentConfig
-from constructs.messaging import QueueWithDLQ
+from township_constructs.messaging import QueueWithDLQ
 
 
 class ComputeConstruct(Construct):
@@ -59,6 +59,22 @@ class ComputeConstruct(Construct):
         for q_wrapper in queues.values():
             q_wrapper.main_queue.grant_send_messages(api_role)
 
+        lambda_asset_exclude = [
+            ".venv",
+            ".venv/**",
+            ".pytest_cache",
+            ".pytest_cache/**",
+            ".mypy_cache",
+            ".mypy_cache/**",
+            ".ruff_cache",
+            ".ruff_cache/**",
+            "__pycache__",
+            "__pycache__/**",
+            "*.pyc",
+            "tests",
+            "tests/**",
+        ]
+
         # 2. FastAPI API Gateway Lambda
         self.api_lambda = _lambda.Function(
             self,
@@ -66,7 +82,7 @@ class ComputeConstruct(Construct):
             function_name=f"township-api-{config.env_name}",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_api.handler",
-            code=_lambda.Code.from_asset("../../services/api"),
+            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
             security_groups=[lambda_sg],
@@ -99,7 +115,7 @@ class ComputeConstruct(Construct):
             function_name=f"township-worker-{config.env_name}",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_sqs.handler",
-            code=_lambda.Code.from_asset("../../services/api"),
+            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
             vpc=vpc,
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
             security_groups=[lambda_sg],
@@ -114,13 +130,12 @@ class ComputeConstruct(Construct):
             },
         )
 
-        # Attach SQS Event Source Mapping with report_batch_item_failures=True
-        notification_queue = queues.get("notification-jobs")
-        if notification_queue:
-            notification_queue.main_queue.grant_consume_messages(worker_role)
+        # Attach SQS Event Source Mapping with report_batch_item_failures=True for all main queues
+        for q_wrapper in queues.values():
+            q_wrapper.main_queue.grant_consume_messages(worker_role)
             self.worker_lambda.add_event_source(
                 lambda_sources.SqsEventSource(
-                    notification_queue.main_queue,
+                    q_wrapper.main_queue,
                     batch_size=10,
                     report_batch_item_failures=True,
                 )

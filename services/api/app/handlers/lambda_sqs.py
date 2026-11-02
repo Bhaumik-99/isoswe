@@ -7,7 +7,7 @@ Ensures batch item failures report correctly back to SQS for automatic retry and
 import json
 from typing import Any
 
-import app.workers.health_worker  # noqa: F401
+import app.workers  # noqa: F401
 from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.messaging.consumer import dispatcher

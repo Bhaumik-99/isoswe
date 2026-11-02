@@ -76,7 +76,7 @@ class SQSQueuePublisher(QueuePublisher):
                 },
             },
         )
-        return response["MessageId"]
+        return str(response["MessageId"])
 
     def get_messages(self, queue_name: str, max_messages: int = 10) -> list[dict[str, Any]]:
         queue_url = self._resolve_queue_url(queue_name)
@@ -101,67 +101,116 @@ class SQSQueuePublisher(QueuePublisher):
         self.sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
 
 
-class LocalQueuePublisher(QueuePublisher):
-    """Deterministic in-memory queue publisher for local developer environments.
+import sqlite3
+import threading
 
-    Preserves exact production interfaces while removing external AWS dependencies.
+
+class DurableLocalQueuePublisher(QueuePublisher):
+    """Durable file-backed queue adapter for local development.
+
+    Persists published queue messages to an atomic, transactional SQLite storage layer,
+    ensuring messages survive process restarts, worker crashes, and local container reboots.
     """
 
-    def __init__(self) -> None:
-        self.queues: dict[str, list[dict[str, Any]]] = {
-            QUEUE_BILLING_JOBS: [],
-            QUEUE_PAYMENT_EVENTS: [],
-            QUEUE_RECONCILIATION_JOBS: [],
-            QUEUE_COMPLAINT_AI_JOBS: [],
-            QUEUE_NOTIFICATION_JOBS: [],
-        }
-        self.dlqs: dict[str, list[dict[str, Any]]] = {f"{q}-dlq": [] for q in self.queues.keys()}
-        self._counter = 0
+    def __init__(self, db_path: str = "durable_local_queue.db") -> None:
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS local_queue_messages (
+                    message_id TEXT PRIMARY KEY,
+                    queue_name TEXT NOT NULL,
+                    receipt_handle TEXT UNIQUE NOT NULL,
+                    body TEXT NOT NULL,
+                    receive_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'AVAILABLE',
+                    dlq_reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lqm_queue_status ON local_queue_messages (queue_name, status);"
+            )
 
     def publish(self, queue_name: str, envelope: EventEnvelope) -> str:
-        if queue_name not in self.queues:
-            self.queues[queue_name] = []
+        msg_id = f"durable-msg-{envelope.event_id}"
+        receipt = f"receipt-{msg_id}"
+        body_json = json.dumps(envelope.model_dump(mode="json"))
 
-        self._counter += 1
-        msg_id = f"local-msg-{self._counter}-{envelope.event_id}"
-        message_data = {
-            "message_id": msg_id,
-            "receipt_handle": f"receipt-{msg_id}",
-            "body": json.dumps(envelope.model_dump(mode="json")),
-            "receive_count": 0,
-        }
-        self.queues[queue_name].append(message_data)
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO local_queue_messages (message_id, queue_name, receipt_handle, body, receive_count, status)
+                VALUES (?, ?, ?, ?, 0, 'AVAILABLE');
+                """,
+                (msg_id, queue_name, receipt, body_json),
+            )
         logger.info(
-            f"[LocalQueuePublisher] Message {msg_id} published to {queue_name} (type: {envelope.event_type})"
+            f"[DurableLocalQueue] Message {msg_id} written durably to {queue_name} (type: {envelope.event_type})"
         )
         return msg_id
 
     def get_messages(self, queue_name: str, max_messages: int = 10) -> list[dict[str, Any]]:
-        if queue_name not in self.queues:
-            return []
-        items = self.queues[queue_name][:max_messages]
-        # Increment receive count
-        for it in items:
-            it["receive_count"] += 1
-        return items
+        with self._lock, self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT message_id, receipt_handle, body, receive_count
+                FROM local_queue_messages
+                WHERE queue_name = ? AND status = 'AVAILABLE'
+                ORDER BY created_at ASC
+                LIMIT ?;
+                """,
+                (queue_name, max_messages),
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                new_count = int(row["receive_count"]) + 1
+                conn.execute(
+                    "UPDATE local_queue_messages SET receive_count = ? WHERE message_id = ?",
+                    (new_count, row["message_id"]),
+                )
+                results.append(
+                    {
+                        "message_id": str(row["message_id"]),
+                        "receipt_handle": str(row["receipt_handle"]),
+                        "body": str(row["body"]),
+                        "receive_count": new_count,
+                    }
+                )
+            return results
 
     def delete_message(self, queue_name: str, receipt_handle: str) -> None:
-        if queue_name in self.queues:
-            self.queues[queue_name] = [
-                m for m in self.queues[queue_name] if m["receipt_handle"] != receipt_handle
-            ]
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                "DELETE FROM local_queue_messages WHERE receipt_handle = ?",
+                (receipt_handle,),
+            )
 
     def send_to_dlq(self, queue_name: str, message: dict[str, Any], reason: str) -> None:
-        dlq_name = f"{queue_name}-dlq"
-        if dlq_name not in self.dlqs:
-            self.dlqs[dlq_name] = []
-        message["dlq_reason"] = reason
-        self.dlqs[dlq_name].append(message)
-        self.delete_message(queue_name, message["receipt_handle"])
+        receipt_handle = message.get("receipt_handle", "")
+        with self._lock, self._get_connection() as conn:
+            conn.execute(
+                "UPDATE local_queue_messages SET status = 'DLQ', dlq_reason = ? WHERE receipt_handle = ?",
+                (reason, receipt_handle),
+            )
         logger.warning(
-            f"[LocalQueuePublisher] Message {message.get('message_id')} routed to {dlq_name}: {reason}"
+            f"[DurableLocalQueue] Message {message.get('message_id')} moved to DLQ: {reason}"
         )
 
+
+# Backward-compatible alias
+LocalQueuePublisher = DurableLocalQueuePublisher
 
 _global_publisher: QueuePublisher | None = None
 
@@ -172,5 +221,5 @@ def get_queue_publisher() -> QueuePublisher:
         if settings.MESSAGING_PROVIDER == "aws":
             _global_publisher = SQSQueuePublisher()
         else:
-            _global_publisher = LocalQueuePublisher()
+            _global_publisher = DurableLocalQueuePublisher()
     return _global_publisher

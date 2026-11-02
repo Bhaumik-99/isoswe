@@ -6,14 +6,14 @@ Assembles the cohesive multi-tier architecture using modular, reusable construct
 from aws_cdk import CfnOutput, Stack
 from constructs import Construct
 from environments.config import EnvironmentConfig
-from constructs.apigateway import ApiGatewayConstruct
-from constructs.auth import AuthConstruct
-from constructs.compute import ComputeConstruct
-from constructs.database import DatabaseConstruct
-from constructs.messaging import MessagingConstruct
-from constructs.network import NetworkConstruct
-from constructs.security import SecurityConstruct
-from constructs.storage import StorageConstruct
+from township_constructs.apigateway import ApiGatewayConstruct
+from township_constructs.auth import AuthConstruct
+from township_constructs.compute import ComputeConstruct
+from township_constructs.database import DatabaseConstruct
+from township_constructs.messaging import MessagingConstruct
+from township_constructs.network import NetworkConstruct
+from township_constructs.security import SecurityConstruct
+from township_constructs.storage import StorageConstruct
 
 
 class TownshipStack(Stack):

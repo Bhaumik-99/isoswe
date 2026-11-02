@@ -57,7 +57,6 @@ def get_current_user(
         )
 
     sub: str
-    email: str
     is_mock: bool = False
 
     # Check for local dev mock token
@@ -68,22 +67,17 @@ def get_current_user(
     ):
         mock_user = mock_auth_provider.verify_dev_token(token)
         sub = mock_user["sub"]
-        email = mock_user["email"]
         is_mock = True
     else:
         # Production Cognito verification
         payload = cognito_verifier.verify_token(token)
         sub = payload.get("sub", "")
-        email = payload.get("email", "")
 
     if not sub:
         raise AuthenticationError("Token subject (sub) claim is missing", code="INVALID_TOKEN_SUB")
 
     repo = IdentityRepository(db)
     user = repo.get_user_by_cognito_sub(sub)
-    if not user:
-        # Fallback to lookup by email if cognito_sub was not yet synced
-        user = repo.get_user_by_email(email)
 
     if not user:
         raise AuthenticationError(
@@ -126,7 +120,7 @@ def get_current_user(
     return claims
 
 
-def require_roles(*required_roles: RoleType) -> Callable:
+def require_roles(*required_roles: RoleType) -> Callable[..., CurrentUserClaims]:
     """FastAPI dependency factory enforcing that the authenticated user possesses at least one of the specified roles."""
 
     def role_checker(claims: CurrentUserClaims = Depends(get_current_user)) -> CurrentUserClaims:
@@ -145,7 +139,7 @@ def require_roles(*required_roles: RoleType) -> Callable:
     return role_checker
 
 
-def require_society_access(society_id: UUID) -> Callable:
+def require_society_access(society_id: UUID) -> Callable[..., CurrentUserClaims]:
     """Verifies that the user belongs to the requested society to prevent cross-tenant data leakage."""
 
     def society_checker(claims: CurrentUserClaims = Depends(get_current_user)) -> CurrentUserClaims:
@@ -166,21 +160,35 @@ def require_flat_access(
     db: Session = Depends(get_db),
     claims: CurrentUserClaims = Depends(get_current_user),
 ) -> CurrentUserClaims:
-    """Verifies that the user has explicit, non-expired rights to access the specified flat."""
-    # Platform Admin and Staff have society-level access verified later
-    if any(
-        r in claims.roles
-        for r in [
-            RoleType.PLATFORM_ADMIN,
-            RoleType.HELPDESK,
-            RoleType.FINANCE,
-            RoleType.COMMITTEE_VIEWER,
-        ]
-    ):
+    """Verifies that the user has explicit, non-expired rights to access the specified flat.
+
+    - Platform Admin has platform-wide authority.
+    - Staff roles (HELPDESK, FINANCE, COMMITTEE_VIEWER) are restricted strictly to flats
+      within societies they are explicitly assigned to.
+    - Residents must possess an active, approved, non-expired membership for this specific flat.
+    """
+    repo = IdentityRepository(db)
+    flat = repo.get_flat_by_id(flat_id)
+    if not flat:
+        raise AuthorizationError(
+            message=f"Flat {flat_id} not found",
+            code="FLAT_NOT_FOUND",
+        )
+
+    # 1. Platform Admin has platform-wide authority
+    if RoleType.PLATFORM_ADMIN in claims.roles:
         return claims
 
-    # Resident must have an active, valid membership for this flat
-    repo = IdentityRepository(db)
+    # 2. Staff roles: check society-level boundary
+    staff_roles = {RoleType.HELPDESK, RoleType.FINANCE, RoleType.COMMITTEE_VIEWER}
+    if any(r in staff_roles for r in claims.roles):
+        if flat.society_id not in claims.society_ids:
+            raise TenantIsolationError(
+                message="Access denied: You do not have permission to access flats in another society"
+            )
+        return claims
+
+    # 3. Resident must have an active, valid membership for this specific flat
     if not repo.verify_flat_access(claims.user_id, flat_id):
         raise AuthorizationError(
             message="You are not authorised to access this flat or your membership lease has expired",

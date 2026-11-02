@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
@@ -53,9 +54,17 @@ class IdempotencyHandler:
             )
             return False
 
-        # Execute the domain operation
-        operation()
+        try:
+            # Execute the domain operation
+            operation()
 
-        # Mark processed within the same atomic transaction
-        cls.mark_event_processed(consumer_name, event_id, db)
-        return True
+            # Mark processed within the same atomic transaction
+            cls.mark_event_processed(consumer_name, event_id, db)
+            db.flush()
+            return True
+        except IntegrityError:
+            db.rollback()
+            logger.info(
+                f"[IdempotencyHandler] Concurrent duplicate event {event_id} intercepted for {consumer_name}"
+            )
+            return False

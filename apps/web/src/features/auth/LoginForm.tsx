@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound, Mail, Sparkles } from 'lucide-react';
+import { KeyRound, Mail, Sparkles, AlertCircle } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { Button } from '../../components/ui/Button';
 import { Alert } from '../../components/ui/Alert';
+import { cognitoAuth } from '../../services/cognitoAuth';
 
 interface DevPersona {
   name: string;
@@ -13,6 +14,8 @@ interface DevPersona {
   description: string;
 }
 
+// Deterministic synthetic developer personas matching Pune township seed dataset
+// These accounts exist strictly for local RBAC and tenancy evaluation
 const DEV_PERSONAS: DevPersona[] = [
   {
     name: 'Neeraj Kulkarni',
@@ -62,55 +65,89 @@ const DEV_PERSONAS: DevPersona[] = [
 ];
 
 export const LoginForm: React.FC = () => {
-  const { login } = useAuth();
+  const isDev = import.meta.env.DEV;
+  const { login, isSessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'dev' | 'otp'>('dev');
+
+  // In production builds, default strictly to genuine Cognito OTP authentication
+  const [activeTab, setActiveTab] = useState<'dev' | 'otp'>(isDev ? 'dev' : 'otp');
   const [emailOrPhone, setEmailOrPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
+  const [cognitoSession, setCognitoSession] = useState<string | null>(null);
   const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const navigateByRole = (role: string) => {
+    if (role.includes('RESIDENT')) {
+      navigate('/resident/overview');
+    } else if (role.includes('COMMITTEE')) {
+      navigate('/committee/overview');
+    } else {
+      navigate('/staff/overview');
+    }
+  };
+
   const handleDevLogin = async (token: string, role: string) => {
+    if (!isDev) {
+      setError('Development mock login is strictly disabled in production builds.');
+      return;
+    }
     setError(null);
+    clearSessionExpired();
     setIsSubmitting(true);
     try {
       await login(token);
-      if (role.includes('RESIDENT')) {
-        navigate('/resident/overview');
-      } else if (role.includes('COMMITTEE')) {
-        navigate('/committee/overview');
-      } else {
-        navigate('/staff/overview');
-      }
+      navigateByRole(role);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : 'Dev login failed');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleSendOtp = (e: React.FormEvent) => {
+  const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!emailOrPhone) {
-      setError('Please provide an email or phone number');
+    if (!emailOrPhone.trim()) {
+      setError('Please provide an email address or mobile phone number');
       return;
     }
+
     setError(null);
-    setOtpSent(true);
+    clearSessionExpired();
+    setIsSubmitting(true);
+
+    try {
+      // Genuine AWS Cognito InitiateAuth call via Cognito adapter
+      const result = await cognitoAuth.requestOtp(emailOrPhone);
+      setCognitoSession(result.session);
+      setOtpSent(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to dispatch authentication code');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!otpCode) {
-      setError('Please enter the OTP verification code');
+    if (!otpCode.trim()) {
+      setError('Please enter the 6-digit OTP code sent to your device');
       return;
     }
+    if (!cognitoSession) {
+      setError('Authentication session expired. Please request a new code.');
+      setOtpSent(false);
+      return;
+    }
+
     setError(null);
     setIsSubmitting(true);
+
     try {
-      // In production, this completes Cognito Custom Auth Challenge flow
-      await login(`otp-token-${emailOrPhone}-${otpCode}`);
+      // Genuine AWS Cognito RespondToAuthChallenge call
+      const tokens = await cognitoAuth.verifyOtp(emailOrPhone, cognitoSession, otpCode);
+      await login(tokens.idToken, tokens.expiresIn);
       navigate('/resident/overview');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'OTP verification failed');
@@ -121,31 +158,48 @@ export const LoginForm: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Tab Switcher */}
-      <div className="flex border-b border-slate-200">
-        <button
-          onClick={() => setActiveTab('dev')}
-          className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
-            activeTab === 'dev'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>Local Dev Personas</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('otp')}
-          className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
-            activeTab === 'otp'
-              ? 'border-indigo-600 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <KeyRound className="w-3.5 h-3.5" />
-          <span>OTP Passwordless</span>
-        </button>
-      </div>
+      {/* Expired Session Alert */}
+      {isSessionExpired && (
+        <Alert variant="warning" title="Session Expired">
+          Your active login session has expired or was terminated. Please sign in again to continue.
+        </Alert>
+      )}
+
+      {/* Environment-Gated Tab Switcher: DEV ONLY */}
+      {isDev && (
+        <div className="flex border-b border-slate-200">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('dev');
+              setError(null);
+            }}
+            className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
+              activeTab === 'dev'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Local Dev Personas</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('otp');
+              setError(null);
+            }}
+            className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
+              activeTab === 'otp'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <KeyRound className="w-3.5 h-3.5" />
+            <span>Cognito OTP</span>
+          </button>
+        </div>
+      )}
 
       {error && (
         <Alert variant="error" title="Authentication Error">
@@ -153,17 +207,21 @@ export const LoginForm: React.FC = () => {
         </Alert>
       )}
 
-      {/* Dev Personas Panel */}
-      {activeTab === 'dev' && (
+      {/* Dev Personas Panel: Statically and Dynamically Excluded in Production */}
+      {isDev && activeTab === 'dev' && (
         <div className="space-y-3">
-          <p className="text-xs text-slate-500 leading-relaxed">
-            Deterministic synthetic accounts seeded in the local PostgreSQL database for testing RBAC and unit boundaries.
-          </p>
+          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-md text-[11px] text-amber-800 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <span>
+              <strong>Local Development Only:</strong> Synthetic accounts mapped to Pune township seed data for testing role permissions and tenancy boundaries.
+            </span>
+          </div>
 
           <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
             {DEV_PERSONAS.map((persona) => (
               <button
                 key={persona.token}
+                type="button"
                 onClick={() => handleDevLogin(persona.token, persona.role)}
                 disabled={isSubmitting}
                 className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-all group focus:outline-none focus:ring-2 focus:ring-indigo-600"
@@ -188,8 +246,8 @@ export const LoginForm: React.FC = () => {
         </div>
       )}
 
-      {/* Production OTP Flow */}
-      {activeTab === 'otp' && (
+      {/* Genuine Production AWS Cognito OTP Flow */}
+      {(!isDev || activeTab === 'otp') && (
         <div>
           {!otpSent ? (
             <form onSubmit={handleSendOtp} className="space-y-4">
@@ -209,11 +267,11 @@ export const LoginForm: React.FC = () => {
                   />
                 </div>
                 <p className="mt-1.5 text-xs text-slate-500">
-                  A 6-digit one-time passcode will be dispatched via SMS / email.
+                  A 6-digit one-time passcode will be securely dispatched via AWS Cognito.
                 </p>
               </div>
 
-              <Button type="submit" variant="primary" className="w-full">
+              <Button type="submit" variant="primary" isLoading={isSubmitting} className="w-full">
                 Request Login OTP
               </Button>
             </form>
@@ -239,7 +297,11 @@ export const LoginForm: React.FC = () => {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setOtpSent(false)}
+                  onClick={() => {
+                    setOtpSent(false);
+                    setCognitoSession(null);
+                    setOtpCode('');
+                  }}
                   className="flex-1"
                 >
                   Change Email/Phone

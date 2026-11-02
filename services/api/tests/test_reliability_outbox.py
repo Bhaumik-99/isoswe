@@ -164,3 +164,43 @@ def test_failed_sqs_publishing_leaves_event_recoverable(db_session: Session) -> 
     assert refetched.attempts == 3
     assert refetched.status == OutboxStatus.FAILED
     assert refetched.published_at is None
+
+
+def test_publisher_crash_duplicate_delivery_produces_single_business_effect(
+    db_session: Session,
+) -> None:
+    """Requirement: Publisher crashes after sending to SQS but before marking outbox event published.
+
+    Subsequent redelivery delivers the same event ID. Consumer must produce exactly one business effect.
+    """
+    event_id = uuid.uuid4()
+    consumer_name = "payment_processor"
+    business_state = {"charge_count": 0}
+
+    def process_charge():
+        business_state["charge_count"] += 1
+
+    # First delivery arrives at worker Lambda/consumer
+    handled_first = IdempotencyHandler.execute_idempotently(
+        consumer_name=consumer_name,
+        event_id=event_id,
+        db=db_session,
+        operation=process_charge,
+    )
+    db_session.commit()
+
+    assert handled_first is True
+    assert business_state["charge_count"] == 1
+
+    # Redelivered event arrives (due to publisher crashing before DB commit, or SQS visibility timeout)
+    handled_second = IdempotencyHandler.execute_idempotently(
+        consumer_name=consumer_name,
+        event_id=event_id,
+        db=db_session,
+        operation=process_charge,
+    )
+    db_session.commit()
+
+    # Must be intercepted as duplicate - business action must NOT run again
+    assert handled_second is False
+    assert business_state["charge_count"] == 1  # Exactly ONE business effect!

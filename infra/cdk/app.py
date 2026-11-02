@@ -8,6 +8,13 @@ Usage:
 """
 
 import os
+import sys
+from pathlib import Path
+
+cdk_dir = str(Path(__file__).resolve().parent)
+if cdk_dir not in sys.path:
+    sys.path.insert(0, cdk_dir)
+
 from aws_cdk import App, Environment
 from environments.config import get_environment_config
 from stacks.township_stack import TownshipStack

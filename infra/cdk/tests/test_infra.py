@@ -14,7 +14,7 @@ from environments.config import get_environment_config
 from stacks.township_stack import TownshipStack
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def prod_template() -> Template:
     app = App()
     config = get_environment_config("prod")

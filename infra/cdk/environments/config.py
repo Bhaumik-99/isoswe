@@ -78,5 +78,21 @@ ENVIRONMENTS: Dict[str, EnvironmentConfig] = {
 }
 
 
+VALID_ENV_ALIASES: Dict[str, str] = {
+    "dev": "dev",
+    "development": "dev",
+    "staging": "staging",
+    "stage": "staging",
+    "prod": "prod",
+    "production": "prod",
+}
+
+
 def get_environment_config(env_name: str = "dev") -> EnvironmentConfig:
-    return ENVIRONMENTS.get(env_name.lower(), ENVIRONMENTS["dev"])
+    normalized = VALID_ENV_ALIASES.get(env_name.lower().strip())
+    if not normalized or normalized not in ENVIRONMENTS:
+        valid_envs = list(ENVIRONMENTS.keys())
+        raise ValueError(
+            f"Unknown CDK environment '{env_name}'. Valid environments are: {valid_envs}"
+        )
+    return ENVIRONMENTS[normalized]

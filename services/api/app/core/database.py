@@ -7,7 +7,7 @@ Provides connection pooling, lifecycle management, and transactional session dep
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -35,7 +35,9 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 def get_db() -> Generator[Session, None, None]:
