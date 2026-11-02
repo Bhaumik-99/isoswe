@@ -9,7 +9,7 @@ Enforces:
 5. Reject malformed, unexpected, or missing claims
 """
 
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
@@ -76,20 +76,17 @@ class CognitoJwtVerifier:
             signing_key = self._get_signing_key(token)
 
             # Strict RS256 verification of signature, expiration, and issuer
-            payload: dict[str, Any] = cast(
-                dict[str, Any],
-                jwt.decode(
-                    token,
-                    signing_key.key,
-                    algorithms=["RS256"],
-                    issuer=self.expected_issuer,
-                    options={
-                        "verify_signature": True,
-                        "verify_exp": True,
-                        "verify_iss": True,
-                        "require": ["exp", "iss", "sub"],
-                    },
-                ),
+            payload: dict[str, Any] = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                issuer=self.expected_issuer,
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_iss": True,
+                    "require": ["exp", "iss", "sub"],
+                },
             )
 
             # Validate subject claim
