@@ -1,0 +1,161 @@
+name: Continuous Integration & Security Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-quality:
+    name: Backend Lint, Type Check & Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: township_ops_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          cd services/api
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff Lint & Formatting Check
+        run: |
+          cd services/api
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy Static Type Analysis
+        run: |
+          cd services/api
+          mypy app --config-file pyproject.toml
+
+      - name: Run Pytest Suite with Coverage
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/township_ops_test
+          ENABLE_LOCAL_AUTH_BYPASS: "true"
+          ENVIRONMENT: "development"
+          MESSAGING_PROVIDER: "local"
+        run: |
+          cd services/api
+          pytest -v --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Dependency Vulnerability Audit (pip-audit)
+        run: |
+          cd services/api
+          pip-audit -r requirements.txt || true
+
+  frontend-quality:
+    name: Frontend Quality, Build & Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: apps/web/package.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd apps/web
+          npm ci
+
+      - name: TypeScript Type Checking
+        run: |
+          cd apps/web
+          npm run build
+
+      - name: NPM Security Audit
+        run: |
+          cd apps/web
+          npm audit --audit-level=high || true
+
+  infra-quality:
+    name: Infrastructure CDK Synthesis & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js for AWS CDK CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install AWS CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Install CDK Python Dependencies
+        run: |
+          cd infra/cdk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Infrastructure Unit Tests
+        run: |
+          cd infra/cdk
+          pytest -v
+
+      - name: CDK Synthesis - Development
+        run: |
+          cd infra/cdk
+          cdk synth -c env=dev
+
+      - name: CDK Synthesis - Staging
+        run: |
+          cd infra/cdk
+          cdk synth -c env=staging
+
+      - name: CDK Synthesis - Production
+        run: |
+          cd infra/cdk
+          cdk synth -c env=prod
+
+  security-scan:
+    name: Secret & Credential Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks Secret Detection
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

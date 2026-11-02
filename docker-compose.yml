@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: township_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: township_ops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d township_ops"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: township_api
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - ENABLE_LOCAL_AUTH_BYPASS=true
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/township_ops
+      - MESSAGING_PROVIDER=local
+      - CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/api:/app
+
+  worker:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: township_worker
+    restart: unless-stopped
+    command: python app/workers/runner.py
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - ENABLE_LOCAL_AUTH_BYPASS=true
+      - DATABASE_URL=postgresql+psycopg://postgres:postgres@postgres:5432/township_ops
+      - MESSAGING_PROVIDER=local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/api:/app
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: township_web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+    driver: local
