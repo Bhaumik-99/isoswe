@@ -14,9 +14,9 @@ interface AuthContextType {
   isLoading: boolean;
   isSessionExpired: boolean;
   clearSessionExpired: () => void;
-  login: (token: string, expiresInSeconds?: number) => Promise<void>;
+  login: (token: string, expiresInSeconds?: number) => Promise<RoleType[]>;
   logout: () => void | Promise<void>;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: () => Promise<RoleType[]>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -29,11 +29,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSessionExpired, setIsSessionExpired] = useState<boolean>(false);
 
-  const fetchProfile = async (): Promise<void> => {
+  const fetchProfile = async (): Promise<RoleType[]> => {
     try {
       const data = await apiClient.get<MeResponse>('/api/v1/me');
       setUser(data.user);
-      setRoles(data.roles.map((r) => r.role));
+      const userRoles = data.roles.map((r) => r.role);
+      setRoles(userRoles);
       setMemberships(data.memberships);
 
       // Auto-select primary or first flat
@@ -42,6 +43,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setSelectedFlat(primary);
       }
       setIsSessionExpired(false);
+      return userRoles;
     } catch {
       // Clear session if profile fetch fails
       apiClient.setToken(null);
@@ -49,6 +51,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRoles([]);
       setMemberships([]);
       setSelectedFlat(null);
+      return [];
     } finally {
       setIsLoading(false);
     }
@@ -108,11 +111,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const login = async (token: string, expiresInSeconds?: number): Promise<void> => {
+  const login = async (token: string, expiresInSeconds?: number): Promise<RoleType[]> => {
     setIsLoading(true);
     setIsSessionExpired(false);
     apiClient.setToken(token, expiresInSeconds);
-    await fetchProfile();
+    return await fetchProfile();
   };
 
   const logout = async (): Promise<void> => {

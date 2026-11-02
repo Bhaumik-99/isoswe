@@ -176,6 +176,29 @@ export class SupabaseAuthAdapter {
   }
 
   /**
+   * Refreshes active Supabase session using stored refresh token.
+   */
+  async refreshSession(): Promise<SupabaseTokens | null> {
+    if (!this.supabase) {
+      return null;
+    }
+    try {
+      const { data, error } = await this.supabase.auth.refreshSession();
+      if (error || !data.session?.access_token) {
+        return null;
+      }
+      return {
+        accessToken: data.session.access_token,
+        expiresIn: data.session.expires_in,
+        userId: data.user?.id,
+        phone: data.user?.phone,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Signs out from Supabase Auth.
    */
   async signOut(): Promise<void> {

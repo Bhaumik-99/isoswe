@@ -9,6 +9,7 @@
 
 import { ApiErrorResponse } from '../types';
 import { sessionManager } from './sessionManager';
+import { supabaseAuth } from './supabaseAuth';
 
 export class ApiClientError extends Error {
   code: string;
@@ -79,6 +80,24 @@ class ApiClient {
 
       if (!response.ok) {
         if (response.status === 401) {
+          const isRetry = Boolean((headers as Record<string, string>)['X-Session-Retry']);
+          if (!isRetry) {
+            // Attempt automatic session recovery via Supabase refresh token
+            const refreshed = await supabaseAuth.refreshSession();
+            if (refreshed?.accessToken) {
+              this.setToken(refreshed.accessToken, refreshed.expiresIn);
+              return this.request<T>(endpoint, {
+                ...options,
+                headers: {
+                  ...(options.headers as Record<string, string>),
+                  'X-Session-Retry': 'true',
+                },
+              });
+            }
+          }
+
+          // If session recovery fails or retry still returned 401, invalidate both in sync
+          await supabaseAuth.signOut();
           sessionManager.clearSession();
           sessionManager.notifySessionExpired();
         }

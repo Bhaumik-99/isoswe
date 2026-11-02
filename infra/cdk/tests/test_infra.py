@@ -64,6 +64,7 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
                         "MESSAGING_PROVIDER": "aws",
                         "DATABASE_SECRET_NAME": Match.any_value(),
                         "SQS_BILLING_JOBS_QUEUE_URL": Match.any_value(),
+                        "CORS_ALLOWED_ORIGINS": Match.any_value(),
                     }
                 )
             },
@@ -142,3 +143,25 @@ def test_api_gateway_rest_api_created(prod_template: Template) -> None:
             "Name": "township-api-prod",
         },
     )
+
+
+def test_lambda_asset_packaging_and_bundler(tmp_path) -> None:
+    """Verifies Lambda bundler packages required application files into output directory."""
+    import os
+    from township_constructs.compute import LambdaLocalBundler
+
+    api_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "api")
+    )
+    bundler = LambdaLocalBundler(source_path=api_dir)
+    out_dir = str(tmp_path / "bundle_output")
+    os.makedirs(out_dir, exist_ok=True)
+
+    success = bundler.try_bundle(out_dir)
+    assert success is True
+    # Verify core application components are bundled into output
+    assert os.path.exists(os.path.join(out_dir, "app", "main.py"))
+    assert os.path.exists(os.path.join(out_dir, "app", "handlers", "lambda_api.py"))
+    assert os.path.exists(os.path.join(out_dir, "requirements.txt"))
+    # Verify tests and local caches are cleanly excluded
+    assert not os.path.exists(os.path.join(out_dir, "tests"))

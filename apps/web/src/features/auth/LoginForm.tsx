@@ -120,8 +120,12 @@ export const LoginForm: React.FC = () => {
     try {
       // Genuine Supabase Auth OTP verification returning signed bearer JWT
       const tokens = await supabaseAuth.verifyPhoneOtp(phoneNumber, otpCode);
-      await login(tokens.accessToken, tokens.expiresIn);
-      navigate('/resident/overview');
+      const userRoles = await login(tokens.accessToken, tokens.expiresIn);
+      if (userRoles.includes('HELPDESK')) {
+        navigate('/staff/overview');
+      } else {
+        navigate('/resident/overview');
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'OTP verification failed');
     } finally {

@@ -6,6 +6,7 @@ Provisions:
 3. AWS WAF Web ACL protecting against SQL injection, common vulnerabilities, and rate limiting
 """
 
+from typing import List, Optional
 from aws_cdk import (
     aws_apigateway as apigw,
     aws_lambda as _lambda,
@@ -22,9 +23,14 @@ class ApiGatewayConstruct(Construct):
         id: str,
         config: EnvironmentConfig,
         api_lambda: _lambda.IFunction,
+        frontend_origins: Optional[List[str]] = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
+
+        cors_origins = frontend_origins if frontend_origins else (
+            apigw.Cors.ALL_ORIGINS if not config.is_production else ["https://township.example.com"]
+        )
 
         # 1. API Gateway REST API with proxy integration
         self.api = apigw.LambdaRestApi(
@@ -42,7 +48,7 @@ class ApiGatewayConstruct(Construct):
                 throttling_burst_limit=2000,
             ),
             default_cors_preflight_options=apigw.CorsOptions(
-                allow_origins=apigw.Cors.ALL_ORIGINS if not config.is_production else ["https://township.example.com"],
+                allow_origins=cors_origins,
                 allow_methods=apigw.Cors.ALL_METHODS,
                 allow_headers=["*"],
             ),

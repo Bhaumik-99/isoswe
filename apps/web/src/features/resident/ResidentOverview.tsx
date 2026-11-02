@@ -53,6 +53,8 @@ export const ResidentOverview: React.FC = () => {
     );
   }
 
+  const monthlyMaintenance = flatDetail?.area_sqft ? Math.round(flatDetail.area_sqft * 6.5) : null;
+
   return (
     <div className="space-y-6">
       {/* Page Title */}
@@ -154,10 +156,15 @@ export const ResidentOverview: React.FC = () => {
           </CardHeader>
           <CardContent className="space-y-3 text-xs text-slate-600">
             <p>
-              Automated monthly maintenance calculations based on carpet area (₹3.50/sq ft formula) and sinking fund contributions.
+              Automated monthly maintenance calculations based on carpet area (₹6.50/sq ft formula) and sinking fund contributions.
             </p>
             <div className="p-3 bg-slate-50 rounded border border-slate-200 space-y-1 font-mono text-[11px]">
               <div>Target Unit: {selectedFlat.tower_number}-{selectedFlat.flat_number}</div>
+              <div>Carpet Area: {flatDetail?.area_sqft || 0} sq ft</div>
+              <div>Maintenance Rate: ₹6.50 / sq ft</div>
+              <div className="font-bold text-slate-900">
+                Monthly Maintenance: {monthlyMaintenance ? `₹${monthlyMaintenance.toLocaleString('en-IN')}` : 'Calculating...'}
+              </div>
               <div>Billing Currency: INR (Paise precision)</div>
               <div>Payment Gateways: UPI, Netbanking, Cards</div>
             </div>

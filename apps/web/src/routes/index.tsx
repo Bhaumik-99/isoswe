@@ -62,7 +62,7 @@ export const AppRoutes: React.FC = () => {
             <UpcomingModuleNotice
               moduleName="Maintenance Invoices & Ledger"
               plannedPhase="Phase 2 - Billing Engine"
-              description="Automated monthly maintenance bill generation per apartment area (1,150 sq ft / ₹3.50 per sq ft + sinking fund formula)."
+              description="Automated monthly maintenance bill generation per apartment area (1,150 sq ft / ₹6.50 per sq ft + sinking fund formula)."
               deliverables={[
                 'Multi-tenant invoice calculation engine',
                 'Integer paise monetary precision to avoid floating-point errors',

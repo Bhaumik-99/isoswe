@@ -15,7 +15,7 @@ The platform is designed to operate:
 - **2,400 apartments** across **28 residential towers**.
 - **180 facility-management staff** and technicians.
 - **Residents Federation** governance and committee auditing.
-- Automated monthly maintenance formula calculations (₹3.50/sq ft + sinking funds).
+- Automated monthly maintenance formula calculations (₹6.50/sq ft + sinking funds).
 - Digital payment collections and daily bank statement reconciliation.
 - Facility helpdesk ticket lifecycle with AI classification.
 

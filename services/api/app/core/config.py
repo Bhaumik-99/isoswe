@@ -88,7 +88,6 @@ class Settings(BaseSettings):
     SUPABASE_JWKS_URL: str = ""
     SUPABASE_JWT_ISSUER: str = ""
     SUPABASE_JWT_AUDIENCE: str = "authenticated"
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # AWS
     AWS_REGION: str = "ap-south-1"
@@ -101,6 +100,9 @@ class Settings(BaseSettings):
     def hydrate_aws_secrets(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+
+        env_raw = data.get("ENVIRONMENT") or os.environ.get("ENVIRONMENT", "development")
+        env = cls.normalize_environment(env_raw)
 
         # Check for Secrets Manager secret ID from data or environment
         secret_id = (
@@ -121,7 +123,6 @@ class Settings(BaseSettings):
                 if secret_str:
                     secret_dict = json.loads(secret_str)
                     for k, val in secret_dict.items():
-                        # Populate if not already explicitly configured with non-default
                         current_val = data.get(k)
                         if val and (
                             not current_val
@@ -129,9 +130,11 @@ class Settings(BaseSettings):
                             == "postgresql+psycopg://postgres:postgres@localhost:5432/township_ops"
                         ):
                             data[k] = val
-            except Exception:
-                # Do not block startup if AWS credentials are not available (e.g. offline tests)
-                pass
+            except Exception as exc:
+                if env in ("staging", "production"):
+                    raise RuntimeError(
+                        f"CRITICAL: Failed to retrieve required secret '{secret_id}' from AWS Secrets Manager in '{env}': {exc}"
+                    ) from exc
 
         # Derive JWKS URL and JWT Issuer if SUPABASE_URL is provided and they are empty
         supabase_url = data.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL", "")
@@ -173,6 +176,39 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SECURITY VIOLATION: ENABLE_LOCAL_AUTH_BYPASS cannot be True in '{env}' environment."
             )
+        return v
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def validate_database_url(cls, v: str, info: ValidationInfo) -> str:
+        """Fail-closed check: DATABASE_URL must not point to localhost in staging or production."""
+        env = info.data.get("ENVIRONMENT", "development")
+        if env in ("staging", "production"):
+            if not v or not v.strip():
+                raise ValueError(
+                    f"SECURITY VIOLATION: DATABASE_URL must be explicitly configured in '{env}'."
+                )
+            v_lower = v.lower()
+            if "localhost" in v_lower or "127.0.0.1" in v_lower:
+                raise ValueError(
+                    f"SECURITY VIOLATION: DATABASE_URL in '{env}' must point to a production PostgreSQL database (e.g. Supabase pooler), not localhost."
+                )
+        return v
+
+    @field_validator("SUPABASE_URL")
+    @classmethod
+    def validate_supabase_url(cls, v: str, info: ValidationInfo) -> str:
+        """Fail-closed check: SUPABASE_URL must be a valid HTTPS URL in staging or production."""
+        env = info.data.get("ENVIRONMENT", "development")
+        if env in ("staging", "production"):
+            if not v or not v.strip():
+                raise ValueError(
+                    f"SECURITY VIOLATION: SUPABASE_URL must be explicitly configured in '{env}'."
+                )
+            if not v.startswith("https://"):
+                raise ValueError(
+                    f"SECURITY VIOLATION: SUPABASE_URL in '{env}' must be a secure HTTPS URL, got '{v}'."
+                )
         return v
 
     @property

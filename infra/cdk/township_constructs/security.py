@@ -5,6 +5,7 @@ Provides cryptographic foundation and audit trail across the stack.
 
 from aws_cdk import (
     RemovalPolicy,
+    SecretValue,
     aws_cloudtrail as cloudtrail,
     aws_kms as kms,
     aws_s3 as s3,
@@ -30,16 +31,17 @@ class SecurityConstruct(Construct):
         )
 
         # 2. Supabase Connection & Credentials Secret (AWS Secrets Manager)
+        # Provisioned as structured JSON template for Supabase pooler connection string and project URL
+        # (SUPABASE_SERVICE_ROLE_KEY removed as backend communicates directly via pooled PostgreSQL TLS)
         self.db_secret = secretsmanager.Secret(
             self,
             "DatabaseSecret",
+            secret_name=f"township-supabase-credentials-{config.env_name}",
             description=f"Supabase PostgreSQL Connection & Credentials - {config.env_name}",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"SUPABASE_URL": "", "SUPABASE_SERVICE_ROLE_KEY": ""}',
-                generate_string_key="DATABASE_URL",
-                exclude_characters=" %+~`#$&*()[]{}|\\;:'\",<>?!@/",
-                password_length=32,
-            ),
+            secret_object_value={
+                "DATABASE_URL": SecretValue.unsafe_plain_text(""),
+                "SUPABASE_URL": SecretValue.unsafe_plain_text(""),
+            },
             encryption_key=self.kms_key,
             removal_policy=removal_policy,
         )

@@ -15,9 +15,9 @@ cdk_dir = str(Path(__file__).resolve().parent)
 if cdk_dir not in sys.path:
     sys.path.insert(0, cdk_dir)
 
-from aws_cdk import App, Environment
-from environments.config import get_environment_config
-from stacks.township_stack import TownshipStack
+from aws_cdk import App, Environment  # noqa: E402
+from environments.config import get_environment_config  # noqa: E402
+from stacks.township_stack import TownshipStack  # noqa: E402
 
 app = App()
 

@@ -34,6 +34,20 @@ class TownshipStack(Stack):
         # 3. Storage & Content Delivery (S3 Private Buckets + CloudFront CDN)
         storage = StorageConstruct(self, "Storage", config=config, kms_key=security.kms_key)
 
+        # Single source of truth for allowed frontend origins across CloudFront, API Gateway, and FastAPI
+        cf_origin = f"https://{storage.distribution.distribution_domain_name}"
+        frontend_origins = [cf_origin]
+        if config.is_production:
+            frontend_origins.append("https://township.example.com")
+        else:
+            frontend_origins.extend(
+                [
+                    "http://localhost:5173",
+                    "http://localhost:3000",
+                    "http://127.0.0.1:5173",
+                ]
+            )
+
         # 4. Serverless Compute (FastAPI Lambda + SQS Worker Lambda)
         compute = ComputeConstruct(
             self,
@@ -42,6 +56,7 @@ class TownshipStack(Stack):
             kms_key=security.kms_key,
             db_secret=security.db_secret,
             queues=messaging.queues,
+            frontend_origins=frontend_origins,
         )
 
         # 5. API Exposure & WAF Protection (API Gateway + WAF)
@@ -50,6 +65,7 @@ class TownshipStack(Stack):
             "ApiGateway",
             config=config,
             api_lambda=compute.api_lambda,
+            frontend_origins=frontend_origins,
         )
 
         # CloudFormation Outputs

@@ -29,6 +29,21 @@ def ensure_utc(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def normalize_phone_e164(phone: str) -> str:
+    """Normalizes phone numbers to standard E.164 international format (+91XXXXXXXXXX)."""
+    cleaned = phone.strip().replace(" ", "").replace("-", "")
+    if not cleaned:
+        return ""
+    if cleaned.startswith("+"):
+        return cleaned
+    digits = "".join(c for c in cleaned if c.isdigit())
+    if len(digits) == 10:
+        return f"+91{digits}"
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    return f"+{digits}" if digits else ""
+
+
 class IdentityRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -45,19 +60,25 @@ class IdentityRepository:
         return self.db.scalars(stmt).unique().first()
 
     def get_user_by_phone(self, phone: str) -> User | None:
-        """Finds user by phone number using normalized formats (E.164, raw 10 digits, hyphenated)."""
-        clean = phone.strip().replace(" ", "").replace("-", "")
-        digits = "".join(c for c in clean if c.isdigit())
-        last_10 = digits[-10:] if len(digits) >= 10 else digits
+        """Finds user by phone number using exact normalized E.164 matching.
 
-        candidates = {
-            phone.strip(),
-            clean,
-            f"+91{last_10}",
-            last_10,
-        }
-        if len(last_10) == 10:
-            candidates.add(f"+91-{last_10[:5]}-{last_10[5:]}")
+        Ambiguous partial or trailing-digit fallbacks are strictly prohibited to prevent
+        cross-identity account hijacking across different international dial codes.
+        """
+        if not phone or not phone.strip():
+            return None
+
+        clean = phone.strip()
+        e164 = normalize_phone_e164(clean)
+
+        candidates = {clean}
+        if e164:
+            candidates.add(e164)
+            digits = "".join(c for c in e164 if c.isdigit())
+            if len(digits) == 12 and digits.startswith("91"):
+                ten_digits = digits[2:]
+                candidates.add(ten_digits)
+                candidates.add(f"+91-{ten_digits[:5]}-{ten_digits[5:]}")
 
         stmt = (
             select(User)
@@ -67,81 +88,44 @@ class IdentityRepository:
             )
             .where(User.phone.in_(list(candidates)), User.status == UserStatus.ACTIVE)
         )
-        found = self.db.scalars(stmt).unique().first()
-        if found:
-            return found
+        return self.db.scalars(stmt).unique().first()
 
-        # Fallback: match by trailing 10 digits across all active users with phones
-        if len(last_10) >= 10:
-            users_with_phone = (
-                self.db.scalars(
-                    select(User)
-                    .options(
-                        joinedload(User.roles).joinedload(UserRole.society),
-                        joinedload(User.memberships).joinedload(FlatMembership.flat),
-                    )
-                    .where(User.phone.isnot(None), User.status == UserStatus.ACTIVE)
-                )
-                .unique()
-                .all()
-            )
-            for u in users_with_phone:
-                if u.phone:
-                    u_digits = "".join(c for c in u.phone if c.isdigit())
-                    if u_digits[-10:] == last_10:
-                        return u
+    def link_verified_supabase_user(
+        self, supabase_uid: UUID, verified_phone: str, full_name: str | None = None
+    ) -> User | None:
+        """Links an existing pre-approved resident or staff member to their verified Supabase Auth UUID.
 
-        return None
+        Strictly enforces:
+        1. Exact match against pre-approved resident/staff registry using verified phone claim.
+        2. Unknown numbers are NEVER auto-provisioned or assigned a society/role here.
+        3. Returns None if phone is unregistered, triggering pending onboarding (HTTP 403).
+        """
+        if not verified_phone:
+            return None
+
+        existing_user = self.get_user_by_phone(verified_phone)
+        if not existing_user:
+            return None
+
+        # Unambiguous match found in pre-approved registry: link Supabase Auth UUID
+        existing_user.supabase_uid = supabase_uid
+        if full_name and (
+            not existing_user.full_name or existing_user.full_name.startswith("Resident")
+        ):
+            existing_user.full_name = full_name
+        self.db.add(existing_user)
+        self.db.commit()
+        return self.get_user_by_supabase_uid(supabase_uid)
 
     def link_or_provision_supabase_user(
         self, supabase_uid: UUID, phone: str | None, full_name: str | None = None
     ) -> User | None:
-        """Links an existing pre-seeded resident to their newly minted Supabase Auth UUID,
-        or auto-provisions a new resident account so real OTP users can reliably access their flat."""
+        """Deprecated compatibility alias for link_verified_supabase_user."""
         if not phone:
             return None
-
-        # 1. Match pre-seeded resident by phone number and link Supabase Auth UID
-        existing_user = self.get_user_by_phone(phone)
-        if existing_user:
-            existing_user.supabase_uid = supabase_uid
-            if full_name and (
-                not existing_user.full_name or existing_user.full_name.startswith("Resident")
-            ):
-                existing_user.full_name = full_name
-            self.db.add(existing_user)
-            self.db.commit()
-            return self.get_user_by_supabase_uid(supabase_uid)
-
-        # 2. If no user exists, auto-provision new resident
-        import uuid as _uuid
-
-        from app.domains.identity.models import RoleType
-
-        clean_phone = phone.strip()
-        new_user = User(
-            id=_uuid.uuid4(),
-            supabase_uid=supabase_uid,
-            phone=clean_phone,
-            full_name=full_name or f"Resident {clean_phone[-4:] if len(clean_phone) >= 4 else ''}",
-            status=UserStatus.ACTIVE,
+        return self.link_verified_supabase_user(
+            supabase_uid=supabase_uid, verified_phone=phone, full_name=full_name
         )
-        self.db.add(new_user)
-        self.db.flush()
-
-        # Link default society if available
-        first_society_id = self.db.scalar(select(Society.id).limit(1))
-        if first_society_id:
-            role = UserRole(
-                id=_uuid.uuid4(),
-                user_id=new_user.id,
-                society_id=first_society_id,
-                role=RoleType.RESIDENT,
-            )
-            self.db.add(role)
-
-        self.db.commit()
-        return self.get_user_by_supabase_uid(supabase_uid)
 
     def get_user_by_id(self, user_id: UUID) -> User | None:
         stmt = (

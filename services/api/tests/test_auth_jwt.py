@@ -182,22 +182,25 @@ def test_real_phone_otp_user_auto_linking(client: TestClient, monkeypatch) -> No
     assert any(m["flat_number"] == "1203" for m in data["memberships"])
 
 
-def test_real_phone_otp_new_resident_provisioning(client: TestClient, monkeypatch) -> None:
-    """Verifies that a brand new resident signing in via Phone OTP is auto-provisioned
-    with an active RESIDENT account."""
+def test_unregistered_phone_otp_routes_to_pending_onboarding(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requirement: Unknown/unregistered phone numbers are NEVER auto-provisioned an active role or society.
+    They must be rejected with 403 Forbidden (UNREGISTERED_PHONE_PENDING_ONBOARDING).
+    """
     from app.core import security
 
     new_sub = str(uuid.uuid4())
-    new_phone = "+919123456789"
+    unknown_phone = "+919123456789"
     verified_payload = {
         "sub": new_sub,
-        "phone": new_phone,
+        "phone": unknown_phone,
         "iss": "https://test.supabase.co/auth/v1",
         "aud": "authenticated",
         "exp": int(time.time()) + 3600,
         "user_metadata": {
-            "phone": new_phone,
-            "full_name": "Pooja Verma",
+            "phone": unknown_phone,
+            "full_name": "Unknown User",
         },
     }
 
@@ -208,8 +211,6 @@ def test_real_phone_otp_new_resident_provisioning(client: TestClient, monkeypatc
     )
 
     res = client.get("/api/v1/me", headers={"Authorization": "Bearer valid-supabase-otp-token"})
-    assert res.status_code == 200
+    assert res.status_code == 403
     data = res.json()
-    assert data["user"]["supabase_uid"] == new_sub
-    assert data["user"]["full_name"] == "Pooja Verma"
-    assert any(r["role"] == "RESIDENT" for r in data["roles"])
+    assert data["error"]["code"] == "UNREGISTERED_PHONE_PENDING_ONBOARDING"

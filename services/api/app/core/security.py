@@ -90,20 +90,25 @@ def get_current_user(
     user = repo.get_user_by_supabase_uid(supabase_uid)
 
     if not user and not is_mock:
-        # Auto-link pre-seeded resident or provision new resident using verified phone from Supabase JWT
-        raw_phone = payload.get("phone")
-        user_metadata = payload.get("user_metadata")
-        if not raw_phone and isinstance(user_metadata, dict):
-            raw_phone = user_metadata.get("phone")
-
-        if isinstance(raw_phone, str) and raw_phone.strip():
-            raw_name = payload.get("name")
-            if not raw_name and isinstance(user_metadata, dict):
-                raw_name = user_metadata.get("full_name")
-            user = repo.link_or_provision_supabase_user(
+        # Check for verified phone claim from signed JWT token (never client-editable user_metadata)
+        verified_phone = payload.get("phone")
+        if isinstance(verified_phone, str) and verified_phone.strip():
+            # Unambiguously match against pre-approved resident/staff registry
+            user = repo.link_verified_supabase_user(
                 supabase_uid=supabase_uid,
-                phone=raw_phone.strip(),
-                full_name=str(raw_name) if raw_name else None,
+                verified_phone=verified_phone.strip(),
+            )
+            if not user:
+                # Unknown phone number: do NOT auto-create account or assign society
+                # Route to pending administrative onboarding
+                raise AuthorizationError(
+                    message="Your mobile number is not yet linked to an approved society or flat. Please contact administration for onboarding.",
+                    code="UNREGISTERED_PHONE_PENDING_ONBOARDING",
+                )
+        else:
+            raise AuthenticationError(
+                message="No active application user mapped to this identity credential",
+                code="USER_NOT_REGISTERED",
             )
 
     if not user:

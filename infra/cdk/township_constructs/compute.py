@@ -7,8 +7,15 @@ Provisions:
 4. Least-privilege IAM roles with access strictly limited to required SQS queues, Secrets, and KMS keys
 """
 
-from typing import Dict, Optional
+import os
+import shutil
+import sys
+from typing import Dict, List, Optional
+
+import jsii
+import aws_cdk as cdk
 from aws_cdk import (
+    BundlingOptions,
     Duration,
     aws_events as events,
     aws_events_targets as targets,
@@ -24,6 +31,46 @@ from environments.config import EnvironmentConfig
 from township_constructs.messaging import QueueWithDLQ
 
 
+@jsii.implements(cdk.ILocalBundling)
+class LambdaLocalBundler:
+    """Local bundler implementation for test synthesis and offline development.
+
+    Bypasses Docker container execution when CDK_SKIP_DOCKER_BUNDLING=true or in test sessions,
+    falling back to direct asset packaging so CDK synthesis remains fast and decoupled from Docker.
+    """
+
+    def __init__(self, source_path: str) -> None:
+        self.source_path = source_path
+
+    def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
+        skip_docker = os.environ.get("CDK_SKIP_DOCKER_BUNDLING", "false").lower() in ("true", "1", "yes")
+        if skip_docker or "pytest" in sys.modules:
+            excluded = {
+                ".venv",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                "__pycache__",
+                "tests",
+            }
+            for item in os.listdir(self.source_path):
+                if item in excluded or item.endswith(".pyc"):
+                    continue
+                s = os.path.join(self.source_path, item)
+                d = os.path.join(output_dir, item)
+                if os.path.isdir(s):
+                    shutil.copytree(
+                        s,
+                        d,
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                    )
+                else:
+                    shutil.copy2(s, d)
+            return True
+        return False
+
+
 class ComputeConstruct(Construct):
     def __init__(
         self,
@@ -33,6 +80,7 @@ class ComputeConstruct(Construct):
         kms_key: kms.IKey,
         db_secret: secretsmanager.ISecret,
         queues: Dict[str, QueueWithDLQ],
+        frontend_origins: Optional[List[str]] = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
@@ -90,6 +138,30 @@ class ComputeConstruct(Construct):
             "SQS_NOTIFICATION_JOBS_QUEUE_URL": queues["notification-jobs"].main_queue.queue_url,
         }
 
+        if frontend_origins:
+            lambda_environment["CORS_ALLOWED_ORIGINS"] = ",".join(frontend_origins)
+
+        # Production Lambda asset with Amazon Linux Python 3.11 Docker bundling and local test fallback
+        api_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "api")
+        )
+
+        bundling_options = BundlingOptions(
+            image=_lambda.Runtime.PYTHON_3_11.bundling_image,
+            command=[
+                "bash",
+                "-c",
+                "pip install --no-cache-dir -r requirements.txt -t /asset-output && cp -au . /asset-output",
+            ],
+            local=LambdaLocalBundler(source_path=api_dir),
+        )
+
+        lambda_code = _lambda.Code.from_asset(
+            api_dir,
+            exclude=lambda_asset_exclude,
+            bundling=bundling_options,
+        )
+
         # 2. FastAPI API Gateway Lambda (Direct TLS to Supabase, no NAT Gateway)
         self.api_lambda = _lambda.Function(
             self,
@@ -97,7 +169,7 @@ class ComputeConstruct(Construct):
             function_name=f"township-api-{config.env_name}",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_api.handler",
-            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
+            code=lambda_code,
             memory_size=1024,
             timeout=Duration.seconds(30),
             role=api_role,
@@ -123,7 +195,7 @@ class ComputeConstruct(Construct):
             function_name=f"township-worker-{config.env_name}",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_sqs.handler",
-            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
+            code=lambda_code,
             memory_size=512,
             timeout=Duration.seconds(60),
             role=worker_role,
@@ -162,7 +234,7 @@ class ComputeConstruct(Construct):
             function_name=f"township-outbox-{config.env_name}",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handlers.lambda_outbox.handler",
-            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
+            code=lambda_code,
             memory_size=512,
             timeout=Duration.seconds(60),
             role=outbox_role,
