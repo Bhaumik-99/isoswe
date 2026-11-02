@@ -50,8 +50,8 @@ def test_secrets_manager_supabase_credentials(prod_template: Template) -> None:
 
 
 def test_serverless_lambda_functions_configured(prod_template: Template) -> None:
-    """Verifies serverless Lambda functions (API + Worker) are configured with least-privilege IAM roles."""
-    # Should have at least API function and Worker function
+    """Verifies serverless Lambda functions (API, Worker, Outbox) are configured with least-privilege IAM roles."""
+    # 1. FastAPI API Lambda
     prod_template.has_resource_properties(
         "AWS::Lambda::Function",
         {
@@ -60,14 +60,17 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
             "Environment": {
                 "Variables": Match.object_like(
                     {
-                        "ENVIRONMENT": "prod",
+                        "ENVIRONMENT": "production",
                         "MESSAGING_PROVIDER": "aws",
+                        "DATABASE_SECRET_NAME": Match.any_value(),
+                        "SQS_BILLING_JOBS_QUEUE_URL": Match.any_value(),
                     }
                 )
             },
         },
     )
 
+    # 2. Worker Lambda
     prod_template.has_resource_properties(
         "AWS::Lambda::Function",
         {
@@ -76,11 +79,42 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
             "Environment": {
                 "Variables": Match.object_like(
                     {
-                        "ENVIRONMENT": "prod",
+                        "ENVIRONMENT": "production",
                         "MESSAGING_PROVIDER": "aws",
+                        "DATABASE_SECRET_NAME": Match.any_value(),
+                        "SQS_BILLING_JOBS_QUEUE_URL": Match.any_value(),
                     }
                 )
             },
+        },
+    )
+
+    # 3. Transactional Outbox Lambda
+    prod_template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "FunctionName": "township-outbox-prod",
+            "Runtime": "python3.11",
+            "Environment": {
+                "Variables": Match.object_like(
+                    {
+                        "ENVIRONMENT": "production",
+                        "MESSAGING_PROVIDER": "aws",
+                        "DATABASE_SECRET_NAME": Match.any_value(),
+                        "SQS_BILLING_JOBS_QUEUE_URL": Match.any_value(),
+                    }
+                )
+            },
+        },
+    )
+
+    # 4. EventBridge Schedule Rule for Outbox
+    prod_template.has_resource_properties(
+        "AWS::Events::Rule",
+        {
+            "Name": "township-outbox-schedule-prod",
+            "ScheduleExpression": "rate(1 minute)",
+            "State": "ENABLED",
         },
     )
 

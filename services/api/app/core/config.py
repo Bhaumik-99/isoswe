@@ -3,9 +3,11 @@
 Loaded from environment variables with strong validation and fail-closed security rules.
 """
 
-from typing import Literal
+import json
+import os
+from typing import Any, Literal
 
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,11 +18,27 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Environment
+    # Environment (supports dev/prod aliases and normalizes to canonical names)
     ENVIRONMENT: Literal["development", "staging", "production", "test"] = "development"
     LOG_LEVEL: str = "INFO"
     APP_NAME: str = "Township Operations Platform"
     APP_VERSION: str = "0.1.0"
+
+    @field_validator("ENVIRONMENT", mode="before")
+    @classmethod
+    def normalize_environment(cls, v: str) -> str:
+        if isinstance(v, str):
+            mapping = {
+                "dev": "development",
+                "development": "development",
+                "staging": "staging",
+                "stage": "staging",
+                "prod": "production",
+                "production": "production",
+                "test": "test",
+            }
+            return mapping.get(v.lower().strip(), v.lower().strip())
+        return v
 
     # Security & CORS
     SECRET_KEY: str = Field(default="dev-secret-key-change-in-production-must-be-32-bytes-long!")
@@ -75,6 +93,56 @@ class Settings(BaseSettings):
     # AWS
     AWS_REGION: str = "ap-south-1"
     AWS_ACCOUNT_ID: str = ""
+    DATABASE_SECRET_NAME: str = ""
+    DATABASE_SECRET_ARN: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def hydrate_aws_secrets(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # Check for Secrets Manager secret ID from data or environment
+        secret_id = (
+            data.get("DATABASE_SECRET_NAME")
+            or data.get("DATABASE_SECRET_ARN")
+            or os.environ.get("DATABASE_SECRET_NAME")
+            or os.environ.get("DATABASE_SECRET_ARN")
+        )
+        region = data.get("AWS_REGION") or os.environ.get("AWS_REGION", "ap-south-1")
+
+        if secret_id:
+            try:
+                import boto3
+
+                client = boto3.client("secretsmanager", region_name=region)
+                res = client.get_secret_value(SecretId=secret_id)
+                secret_str = res.get("SecretString")
+                if secret_str:
+                    secret_dict = json.loads(secret_str)
+                    for k, val in secret_dict.items():
+                        # Populate if not already explicitly configured with non-default
+                        current_val = data.get(k)
+                        if val and (
+                            not current_val
+                            or current_val
+                            == "postgresql+psycopg://postgres:postgres@localhost:5432/township_ops"
+                        ):
+                            data[k] = val
+            except Exception:
+                # Do not block startup if AWS credentials are not available (e.g. offline tests)
+                pass
+
+        # Derive JWKS URL and JWT Issuer if SUPABASE_URL is provided and they are empty
+        supabase_url = data.get("SUPABASE_URL") or os.environ.get("SUPABASE_URL", "")
+        if supabase_url:
+            cleaned_url = supabase_url.rstrip("/")
+            if not data.get("SUPABASE_JWKS_URL"):
+                data["SUPABASE_JWKS_URL"] = f"{cleaned_url}/auth/v1/.well-known/jwks.json"
+            if not data.get("SUPABASE_JWT_ISSUER"):
+                data["SUPABASE_JWT_ISSUER"] = f"{cleaned_url}/auth/v1"
+
+        return data
 
     # SQS Queue URLs
     SQS_BILLING_JOBS_QUEUE_URL: str = ""

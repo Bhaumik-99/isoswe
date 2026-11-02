@@ -138,6 +138,44 @@ export class SupabaseAuthAdapter {
   }
 
   /**
+   * Retrieves current active Supabase session if present.
+   */
+  async getSession(): Promise<{ accessToken: string; expiresIn?: number } | null> {
+    if (!this.supabase) {
+      return null;
+    }
+    const { data } = await this.supabase.auth.getSession();
+    if (data.session?.access_token) {
+      return {
+        accessToken: data.session.access_token,
+        expiresIn: data.session.expires_in,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Subscribes to Supabase authentication state events (TOKEN_REFRESHED, SIGNED_OUT, etc.).
+   */
+  onAuthStateChange(
+    callback: (
+      event: string,
+      session: { access_token?: string; expires_in?: number } | null
+    ) => void
+  ): (() => void) | undefined {
+    if (!this.supabase) {
+      return undefined;
+    }
+    const { data } = this.supabase.auth.onAuthStateChange((event, session) => {
+      callback(
+        event,
+        session ? { access_token: session.access_token, expires_in: session.expires_in } : null
+      );
+    });
+    return () => data.subscription.unsubscribe();
+  }
+
+  /**
    * Signs out from Supabase Auth.
    */
   async signOut(): Promise<void> {

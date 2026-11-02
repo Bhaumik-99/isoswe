@@ -146,3 +146,70 @@ def test_supabase_jwt_malformed_claims_rejected(monkeypatch: pytest.MonkeyPatch)
         with pytest.raises(AuthenticationError) as exc:
             verifier.verify_token("dummy-token")
         assert exc.value.code == "MALFORMED_CLAIMS"
+
+
+def test_real_phone_otp_user_auto_linking(client: TestClient, monkeypatch) -> None:
+    """Verifies that an existing pre-seeded resident signing in via Phone OTP for the first time
+    is linked to their Supabase Auth UUID via their verified phone number and accesses their flats."""
+    from app.core import security
+
+    new_sub = str(uuid.uuid4())
+    verified_payload = {
+        "sub": new_sub,
+        "phone": "+919800000001",  # Matches seeded Neeraj Kulkarni (+91-98000-00001)
+        "iss": "https://test.supabase.co/auth/v1",
+        "aud": "authenticated",
+        "exp": int(time.time()) + 3600,
+        "user_metadata": {
+            "phone": "+919800000001",
+            "full_name": "Neeraj Kulkarni",
+        },
+    }
+
+    monkeypatch.setattr(
+        security.supabase_verifier,
+        "verify_token",
+        lambda token: verified_payload,
+    )
+
+    res = client.get("/api/v1/me", headers={"Authorization": "Bearer valid-supabase-otp-token"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["user"]["supabase_uid"] == new_sub
+    assert data["user"]["full_name"] == "Neeraj Kulkarni"
+    assert len(data["memberships"]) >= 1
+    # Check flat 1203 is accessible
+    assert any(m["flat_number"] == "1203" for m in data["memberships"])
+
+
+def test_real_phone_otp_new_resident_provisioning(client: TestClient, monkeypatch) -> None:
+    """Verifies that a brand new resident signing in via Phone OTP is auto-provisioned
+    with an active RESIDENT account."""
+    from app.core import security
+
+    new_sub = str(uuid.uuid4())
+    new_phone = "+919123456789"
+    verified_payload = {
+        "sub": new_sub,
+        "phone": new_phone,
+        "iss": "https://test.supabase.co/auth/v1",
+        "aud": "authenticated",
+        "exp": int(time.time()) + 3600,
+        "user_metadata": {
+            "phone": new_phone,
+            "full_name": "Pooja Verma",
+        },
+    }
+
+    monkeypatch.setattr(
+        security.supabase_verifier,
+        "verify_token",
+        lambda token: verified_payload,
+    )
+
+    res = client.get("/api/v1/me", headers={"Authorization": "Bearer valid-supabase-otp-token"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["user"]["supabase_uid"] == new_sub
+    assert data["user"]["full_name"] == "Pooja Verma"
+    assert any(r["role"] == "RESIDENT" for r in data["roles"])

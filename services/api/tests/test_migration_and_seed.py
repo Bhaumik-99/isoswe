@@ -1,17 +1,14 @@
-"""Database Schema and Idempotent Seed Test Suite
+import os
 
-Mandatory Tests:
-12. Database migration works from an empty database
-13. Seed script is idempotent
-"""
-
+from alembic import command
+from alembic.config import Config
 from scripts.seed import (
     FLAT_0408_ID,
     FLAT_1203_ID,
     FLAT_1601_ID,
     seed_database,
 )
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -27,29 +24,52 @@ from app.domains.identity.models import (
 
 
 def test_database_migration_works_from_empty_database() -> None:
-    """Requirement 13.12: Database migration works from an empty database."""
+    """Requirement 13.12: Database migration works from an empty database using real Alembic migrations."""
     engine = create_engine("sqlite:///:memory:", poolclass=StaticPool)
-    # Create all schema tables from metadata
-    Base.metadata.create_all(bind=engine)
 
-    # Assert that all 10 core tables exist in the metadata
-    table_names = Base.metadata.tables.keys()
-    required_tables = [
-        "societies",
-        "towers",
-        "flats",
-        "users",
-        "flat_memberships",
-        "user_roles",
-        "audit_events",
-        "outbox_events",
-        "idempotency_keys",
-        "processed_events",
-    ]
-    for tbl in required_tables:
-        assert tbl in table_names, f"Table {tbl} must be created during initial migration"
+    test_dir = os.path.dirname(__file__)
+    api_dir = os.path.abspath(os.path.join(test_dir, ".."))
+    alembic_ini_path = os.path.join(api_dir, "alembic.ini")
 
-    Base.metadata.drop_all(bind=engine)
+    alembic_cfg = Config(alembic_ini_path)
+    alembic_cfg.set_main_option("script_location", os.path.join(api_dir, "migrations"))
+
+    with engine.connect() as connection:
+        alembic_cfg.attributes["connection"] = connection
+
+        # 1. Run Alembic upgrade head from empty database
+        command.upgrade(alembic_cfg, "head")
+
+        inspector = inspect(connection)
+        table_names = inspector.get_table_names()
+        required_tables = [
+            "societies",
+            "towers",
+            "flats",
+            "users",
+            "flat_memberships",
+            "user_roles",
+            "audit_events",
+            "outbox_events",
+            "idempotency_keys",
+            "processed_events",
+        ]
+        for tbl in required_tables:
+            assert tbl in table_names, f"Table '{tbl}' must be created by Alembic upgrade head"
+
+        # 2. Test Alembic downgrade to base
+        command.downgrade(alembic_cfg, "base")
+        connection.commit()
+        inspector_after = inspect(engine)
+        table_names_after_downgrade = inspector_after.get_table_names()
+        for tbl in required_tables:
+            assert tbl not in table_names_after_downgrade, (
+                f"Table '{tbl}' must be dropped by Alembic downgrade base"
+            )
+
+        # 3. Upgrade back to head to verify re-application works idempotently
+        command.upgrade(alembic_cfg, "head")
+        connection.commit()
 
 
 def test_seed_script_is_idempotent(monkeypatch) -> None:

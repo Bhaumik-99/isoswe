@@ -68,6 +68,7 @@ def get_current_user(
         and token in ["neeraj", "swati", "aamir", "helpdesk"]
     ):
         mock_user = mock_auth_provider.verify_dev_token(token)
+        payload = mock_user
         sub = mock_user["sub"]
         is_mock = True
     else:
@@ -87,6 +88,23 @@ def get_current_user(
 
     repo = IdentityRepository(db)
     user = repo.get_user_by_supabase_uid(supabase_uid)
+
+    if not user and not is_mock:
+        # Auto-link pre-seeded resident or provision new resident using verified phone from Supabase JWT
+        raw_phone = payload.get("phone")
+        user_metadata = payload.get("user_metadata")
+        if not raw_phone and isinstance(user_metadata, dict):
+            raw_phone = user_metadata.get("phone")
+
+        if isinstance(raw_phone, str) and raw_phone.strip():
+            raw_name = payload.get("name")
+            if not raw_name and isinstance(user_metadata, dict):
+                raw_name = user_metadata.get("full_name")
+            user = repo.link_or_provision_supabase_user(
+                supabase_uid=supabase_uid,
+                phone=raw_phone.strip(),
+                full_name=str(raw_name) if raw_name else None,
+            )
 
     if not user:
         raise AuthenticationError(

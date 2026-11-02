@@ -44,6 +44,105 @@ class IdentityRepository:
         )
         return self.db.scalars(stmt).unique().first()
 
+    def get_user_by_phone(self, phone: str) -> User | None:
+        """Finds user by phone number using normalized formats (E.164, raw 10 digits, hyphenated)."""
+        clean = phone.strip().replace(" ", "").replace("-", "")
+        digits = "".join(c for c in clean if c.isdigit())
+        last_10 = digits[-10:] if len(digits) >= 10 else digits
+
+        candidates = {
+            phone.strip(),
+            clean,
+            f"+91{last_10}",
+            last_10,
+        }
+        if len(last_10) == 10:
+            candidates.add(f"+91-{last_10[:5]}-{last_10[5:]}")
+
+        stmt = (
+            select(User)
+            .options(
+                joinedload(User.roles).joinedload(UserRole.society),
+                joinedload(User.memberships).joinedload(FlatMembership.flat),
+            )
+            .where(User.phone.in_(list(candidates)), User.status == UserStatus.ACTIVE)
+        )
+        found = self.db.scalars(stmt).unique().first()
+        if found:
+            return found
+
+        # Fallback: match by trailing 10 digits across all active users with phones
+        if len(last_10) >= 10:
+            users_with_phone = (
+                self.db.scalars(
+                    select(User)
+                    .options(
+                        joinedload(User.roles).joinedload(UserRole.society),
+                        joinedload(User.memberships).joinedload(FlatMembership.flat),
+                    )
+                    .where(User.phone.isnot(None), User.status == UserStatus.ACTIVE)
+                )
+                .unique()
+                .all()
+            )
+            for u in users_with_phone:
+                if u.phone:
+                    u_digits = "".join(c for c in u.phone if c.isdigit())
+                    if u_digits[-10:] == last_10:
+                        return u
+
+        return None
+
+    def link_or_provision_supabase_user(
+        self, supabase_uid: UUID, phone: str | None, full_name: str | None = None
+    ) -> User | None:
+        """Links an existing pre-seeded resident to their newly minted Supabase Auth UUID,
+        or auto-provisions a new resident account so real OTP users can reliably access their flat."""
+        if not phone:
+            return None
+
+        # 1. Match pre-seeded resident by phone number and link Supabase Auth UID
+        existing_user = self.get_user_by_phone(phone)
+        if existing_user:
+            existing_user.supabase_uid = supabase_uid
+            if full_name and (
+                not existing_user.full_name or existing_user.full_name.startswith("Resident")
+            ):
+                existing_user.full_name = full_name
+            self.db.add(existing_user)
+            self.db.commit()
+            return self.get_user_by_supabase_uid(supabase_uid)
+
+        # 2. If no user exists, auto-provision new resident
+        import uuid as _uuid
+
+        from app.domains.identity.models import RoleType
+
+        clean_phone = phone.strip()
+        new_user = User(
+            id=_uuid.uuid4(),
+            supabase_uid=supabase_uid,
+            phone=clean_phone,
+            full_name=full_name or f"Resident {clean_phone[-4:] if len(clean_phone) >= 4 else ''}",
+            status=UserStatus.ACTIVE,
+        )
+        self.db.add(new_user)
+        self.db.flush()
+
+        # Link default society if available
+        first_society_id = self.db.scalar(select(Society.id).limit(1))
+        if first_society_id:
+            role = UserRole(
+                id=_uuid.uuid4(),
+                user_id=new_user.id,
+                society_id=first_society_id,
+                role=RoleType.RESIDENT,
+            )
+            self.db.add(role)
+
+        self.db.commit()
+        return self.get_user_by_supabase_uid(supabase_uid)
+
     def get_user_by_id(self, user_id: UUID) -> User | None:
         stmt = (
             select(User)

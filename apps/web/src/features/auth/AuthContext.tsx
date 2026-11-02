@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { apiClient } from '../../services/apiClient';
 import { sessionManager } from '../../services/sessionManager';
+import { supabaseAuth } from '../../services/supabaseAuth';
 import { FlatMembership, MeResponse, RoleType, UserProfile } from '../../types';
 
 interface AuthContextType {
@@ -14,7 +15,7 @@ interface AuthContextType {
   isSessionExpired: boolean;
   clearSessionExpired: () => void;
   login: (token: string, expiresInSeconds?: number) => Promise<void>;
-  logout: () => void;
+  logout: () => void | Promise<void>;
   refreshProfile: () => Promise<void>;
 }
 
@@ -54,8 +55,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    // Listen for session expiry from sessionManager or 401s
-    const unsubscribe = sessionManager.onSessionExpired(() => {
+    // 1. Listen for session expiry from sessionManager or 401s
+    const unsubscribeSession = sessionManager.onSessionExpired(() => {
       setUser(null);
       setRoles([]);
       setMemberships([]);
@@ -63,14 +64,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsSessionExpired(true);
     });
 
-    const existingToken = apiClient.getToken();
-    if (existingToken) {
-      fetchProfile();
-    } else {
-      setIsLoading(false);
-    }
+    // 2. Listen for Supabase session refresh and sign-out events
+    const unsubscribeSupabase = supabaseAuth.onAuthStateChange((event, session) => {
+      if (event === 'TOKEN_REFRESHED' && session?.access_token) {
+        apiClient.setToken(session.access_token, session.expires_in);
+      } else if (event === 'SIGNED_OUT') {
+        apiClient.setToken(null);
+        setUser(null);
+        setRoles([]);
+        setMemberships([]);
+        setSelectedFlat(null);
+      }
+    });
 
-    return unsubscribe;
+    // 3. Hydrate session on initial mount
+    const initSession = async () => {
+      const existingToken = apiClient.getToken();
+      if (existingToken) {
+        await fetchProfile();
+      } else {
+        // Try hydrating from Supabase client session if available
+        try {
+          const session = await supabaseAuth.getSession();
+          if (session?.accessToken) {
+            apiClient.setToken(session.accessToken, session.expiresIn);
+            await fetchProfile();
+            return;
+          }
+        } catch {
+          // Ignore
+        }
+        setIsLoading(false);
+      }
+    };
+
+    initSession();
+
+    return () => {
+      unsubscribeSession();
+      if (unsubscribeSupabase) {
+        unsubscribeSupabase();
+      }
+    };
   }, []);
 
   const login = async (token: string, expiresInSeconds?: number): Promise<void> => {
@@ -80,7 +115,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await fetchProfile();
   };
 
-  const logout = () => {
+  const logout = async (): Promise<void> => {
+    try {
+      await supabaseAuth.signOut();
+    } catch {
+      // Ignore network errors on logout
+    }
     apiClient.setToken(null);
     setUser(null);
     setRoles([]);

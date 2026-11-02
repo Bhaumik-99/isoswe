@@ -46,18 +46,28 @@ class SQSQueuePublisher(QueuePublisher):
         self.sqs = boto3.client("sqs", region_name=settings.AWS_REGION)
         self.queue_url_map = {
             QUEUE_BILLING_JOBS: settings.SQS_BILLING_JOBS_QUEUE_URL,
+            "billing_jobs": settings.SQS_BILLING_JOBS_QUEUE_URL,
             QUEUE_PAYMENT_EVENTS: settings.SQS_PAYMENT_EVENTS_QUEUE_URL,
+            "payment_events": settings.SQS_PAYMENT_EVENTS_QUEUE_URL,
             QUEUE_RECONCILIATION_JOBS: settings.SQS_RECONCILIATION_JOBS_QUEUE_URL,
+            "reconciliation_jobs": settings.SQS_RECONCILIATION_JOBS_QUEUE_URL,
             QUEUE_COMPLAINT_AI_JOBS: settings.SQS_COMPLAINT_AI_JOBS_QUEUE_URL,
+            "complaint_ai_jobs": settings.SQS_COMPLAINT_AI_JOBS_QUEUE_URL,
             QUEUE_NOTIFICATION_JOBS: settings.SQS_NOTIFICATION_JOBS_QUEUE_URL,
+            "notification_jobs": settings.SQS_NOTIFICATION_JOBS_QUEUE_URL,
         }
 
     def _resolve_queue_url(self, queue_name: str) -> str:
         url = self.queue_url_map.get(queue_name)
         if not url:
-            # Fallback to fetching queue URL by name
-            res = self.sqs.get_queue_url(QueueName=queue_name)
-            url = res["QueueUrl"]
+            # Fallback to fetching queue URL by name or environment-suffixed name
+            try:
+                res = self.sqs.get_queue_url(QueueName=queue_name)
+                url = res["QueueUrl"]
+            except Exception:
+                env_queue_name = f"{queue_name}-{settings.ENVIRONMENT}"
+                res = self.sqs.get_queue_url(QueueName=env_queue_name)
+                url = res["QueueUrl"]
             self.queue_url_map[queue_name] = url
         return url
 

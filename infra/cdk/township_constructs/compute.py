@@ -10,6 +10,8 @@ Provisions:
 from typing import Dict, Optional
 from aws_cdk import (
     Duration,
+    aws_events as events,
+    aws_events_targets as targets,
     aws_iam as iam,
     aws_kms as kms,
     aws_lambda as _lambda,
@@ -71,6 +73,23 @@ class ComputeConstruct(Construct):
             "tests/**",
         ]
 
+        canonical_env = "production" if config.is_production else ("staging" if config.env_name == "staging" else "development")
+
+        # Common environment variables for all serverless application Lambdas
+        lambda_environment = {
+            "ENVIRONMENT": canonical_env,
+            "LOG_LEVEL": "INFO",
+            "MESSAGING_PROVIDER": "aws",
+            "SUPABASE_JWT_AUDIENCE": "authenticated",
+            "DATABASE_SECRET_NAME": db_secret.secret_name,
+            "DATABASE_SECRET_ARN": db_secret.secret_arn,
+            "SQS_BILLING_JOBS_QUEUE_URL": queues["billing-jobs"].main_queue.queue_url,
+            "SQS_PAYMENT_EVENTS_QUEUE_URL": queues["payment-events"].main_queue.queue_url,
+            "SQS_RECONCILIATION_JOBS_QUEUE_URL": queues["reconciliation-jobs"].main_queue.queue_url,
+            "SQS_COMPLAINT_AI_JOBS_QUEUE_URL": queues["complaint-ai-jobs"].main_queue.queue_url,
+            "SQS_NOTIFICATION_JOBS_QUEUE_URL": queues["notification-jobs"].main_queue.queue_url,
+        }
+
         # 2. FastAPI API Gateway Lambda (Direct TLS to Supabase, no NAT Gateway)
         self.api_lambda = _lambda.Function(
             self,
@@ -83,12 +102,7 @@ class ComputeConstruct(Construct):
             timeout=Duration.seconds(30),
             role=api_role,
             log_retention=log_retention,
-            environment={
-                "ENVIRONMENT": config.env_name,
-                "LOG_LEVEL": "INFO",
-                "MESSAGING_PROVIDER": "aws",
-                "SUPABASE_JWT_AUDIENCE": "authenticated",
-            },
+            environment=lambda_environment,
         )
 
         # 3. SQS Asynchronous Worker Lambda
@@ -114,12 +128,7 @@ class ComputeConstruct(Construct):
             timeout=Duration.seconds(60),
             role=worker_role,
             log_retention=log_retention,
-            environment={
-                "ENVIRONMENT": config.env_name,
-                "LOG_LEVEL": "INFO",
-                "MESSAGING_PROVIDER": "aws",
-                "SUPABASE_JWT_AUDIENCE": "authenticated",
-            },
+            environment=lambda_environment,
         )
 
         # Attach SQS Event Source Mapping with report_batch_item_failures=True for all main queues
@@ -132,3 +141,41 @@ class ComputeConstruct(Construct):
                     report_batch_item_failures=True,
                 )
             )
+
+        # 4. Transactional Outbox Publisher Lambda (Scheduled via EventBridge)
+        outbox_role = iam.Role(
+            self,
+            "OutboxLambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
+            ],
+        )
+        db_secret.grant_read(outbox_role)
+        kms_key.grant_encrypt_decrypt(outbox_role)
+        for q_wrapper in queues.values():
+            q_wrapper.main_queue.grant_send_messages(outbox_role)
+
+        self.outbox_lambda = _lambda.Function(
+            self,
+            "OutboxFunction",
+            function_name=f"township-outbox-{config.env_name}",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="app.handlers.lambda_outbox.handler",
+            code=_lambda.Code.from_asset("../../services/api", exclude=lambda_asset_exclude),
+            memory_size=512,
+            timeout=Duration.seconds(60),
+            role=outbox_role,
+            log_retention=log_retention,
+            environment=lambda_environment,
+        )
+
+        # EventBridge Schedule Rule: triggers outbox drain every 1 minute
+        events.Rule(
+            self,
+            "OutboxScheduleRule",
+            rule_name=f"township-outbox-schedule-{config.env_name}",
+            description=f"Scheduled trigger for Transactional Outbox publisher ({config.env_name})",
+            schedule=events.Schedule.rate(Duration.minutes(1)),
+            targets=[targets.LambdaFunction(self.outbox_lambda)],
+        )
