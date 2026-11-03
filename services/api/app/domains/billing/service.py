@@ -21,7 +21,6 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -36,12 +35,11 @@ from app.domains.billing.models import (
     InvoiceStatus,
     LedgerEntryType,
     Payment,
-    PaymentAllocation,
     PaymentStatus,
 )
 from app.domains.billing.provider import (
     PaymentProvider,
-    RazorpayPaymentProvider,
+    PaymentResult,
     SimulatedPaymentProvider,
 )
 from app.domains.billing.repository import BillingRepository
@@ -53,7 +51,6 @@ from app.domains.billing.schemas import (
     InvoiceResponse,
     PaymentAllocationSchema,
     PaymentResponse,
-    RazorpayOrderResponse,
     ReceiptResponse,
     ResidentBillingSummaryResponse,
     StaffBillingOverviewResponse,
@@ -115,12 +112,10 @@ class BillingService:
         self,
         db: Session,
         payment_provider: PaymentProvider | None = None,
-        razorpay_provider: RazorpayPaymentProvider | None = None,
     ) -> None:
         self.db = db
         self.repo = BillingRepository(db)
         self.payment_provider = payment_provider or SimulatedPaymentProvider()
-        self.razorpay_provider = razorpay_provider or RazorpayPaymentProvider()
 
     # -------------------------------------------------------------------------
     # Helper: Pure Calculation & Status Derivation Functions
@@ -695,35 +690,58 @@ class BillingService:
                 raise ValidationError(msg)
 
             # -----------------------------------------------------------------------
-            # STEP 5: Invoke simulated payment provider
-            # (Lock is held; no other concurrent payment can read this invoice's balance)
+            # STEP 5: Create persistent Payment intent (PENDING) with unique reference
             # -----------------------------------------------------------------------
-            payment_result = self.payment_provider.process_payment(
-                amount_paise=amount_paise,
-                currency="INR",
-                metadata={
-                    "society_id": str(society_id),
-                    "flat_id": str(invoice.flat_id),
-                    "invoice_id": str(invoice_id),
-                    "invoice_number": invoice.invoice_number,
-                    "simulate_failure": simulate_failure,
-                },
+            from app.core.config import settings
+
+            active_simulate_failure = (
+                simulate_failure
+                if settings.ENVIRONMENT in ("development", "test", "demo")
+                else False
             )
 
-            # -----------------------------------------------------------------------
-            # STEP 6: Create Payment record
-            # -----------------------------------------------------------------------
-            payment_status = (
-                PaymentStatus.SUCCESS if payment_result.success else PaymentStatus.FAILED
-            )
+            intent_ref = f"SIM-{uuid.uuid4().hex[:12].upper()}"
             payment = self.repo.create_payment(
                 society_id=society_id,
                 flat_id=invoice.flat_id,
                 amount_paise=amount_paise,
-                provider=payment_result.provider,
-                provider_reference=payment_result.provider_reference,
-                status=payment_status,
+                provider=self.payment_provider.provider_name,
+                provider_reference=intent_ref,
+                status=PaymentStatus.PENDING,
                 initiated_by=user_id,
+            )
+            self.db.flush()
+
+            # -----------------------------------------------------------------------
+            # STEP 6: Invoke simulated payment provider (fail-closed on exceptions)
+            # (Lock is held; no other concurrent payment can read this invoice's balance)
+            # -----------------------------------------------------------------------
+            try:
+                payment_result = self.payment_provider.process_payment(
+                    amount_paise=amount_paise,
+                    currency="INR",
+                    metadata={
+                        "society_id": str(society_id),
+                        "flat_id": str(invoice.flat_id),
+                        "invoice_id": str(invoice_id),
+                        "invoice_number": invoice.invoice_number,
+                        "intent_reference": intent_ref,
+                        "simulate_failure": active_simulate_failure,
+                    },
+                )
+            except Exception as exc:
+                payment_result = PaymentResult(
+                    success=False,
+                    provider=self.payment_provider.provider_name,
+                    provider_reference=intent_ref,
+                    error_message=f"Payment processor error: {str(exc)}",
+                )
+
+            # Update payment intent status and provider reference
+            if payment_result.provider_reference:
+                payment.provider_reference = payment_result.provider_reference
+            payment.status = (
+                PaymentStatus.SUCCESS if payment_result.success else PaymentStatus.FAILED
             )
 
             if not payment_result.success:
@@ -975,316 +993,35 @@ class BillingService:
             updated_at=payment.updated_at,
         )
 
-    # -------------------------------------------------------------------------
-    # Razorpay Payment Gateway Integration
-    # -------------------------------------------------------------------------
-    def create_razorpay_order(
+    def recover_interrupted_payment_intents(
         self,
         society_id: UUID,
-        invoice_id: UUID,
-        amount_paise: int,
-        user_id: UUID,
-    ) -> RazorpayOrderResponse:
-        """Creates a Razorpay server-side order and records an initial PENDING payment.
+        timeout_minutes: int = 5,
+    ) -> int:
+        """Recovers payment intents stuck in PENDING state after a timeout.
 
-        INVARIANTS:
-        - Invoice must belong to requested society.
-        - Payment amount must be positive and not exceed outstanding invoice balance.
-        - Records a PENDING payment with provider='RAZORPAY' and provider_reference=order_id.
-        - Does NOT allocate funds or mark invoice paid until signature or webhook is verified.
+        Marks abandoned payments as FAILED so new payment attempts can proceed.
+        Safe to call periodically or on-demand by HELPDESK staff.
+
+        Returns the count of recovered (now-FAILED) payment records.
         """
-        if amount_paise <= 0:
-            raise ValidationError("Payment amount must be greater than zero.")
-
-        invoice = self.repo.get_invoice_by_id(invoice_id, society_id)
-        if not invoice:
-            raise NotFoundError("Invoice not found in this society.")
-
-        paid_paise, outstanding_paise, _, _ = self.calculate_invoice_financials(invoice)
-        if amount_paise > outstanding_paise:
-            raise ValidationError(
-                f"Payment amount of ₹{amount_paise / 100:.2f} exceeds remaining outstanding balance "
-                f"of ₹{outstanding_paise / 100:.2f}."
+        cutoff = utc_now() - timedelta(minutes=timeout_minutes)
+        stuck_payments = (
+            self.db.query(Payment)
+            .filter(
+                Payment.society_id == society_id,
+                Payment.status == PaymentStatus.PENDING,
+                Payment.created_at <= cutoff,
             )
-
-        notes = {
-            "society_id": str(society_id),
-            "flat_id": str(invoice.flat_id),
-            "invoice_id": str(invoice_id),
-            "invoice_number": invoice.invoice_number,
-            "user_id": str(user_id),
-        }
-        receipt = f"rcpt_{uuid.uuid4().hex[:12]}"
-
-        order_dict = self.razorpay_provider.create_order(
-            amount_paise=amount_paise,
-            currency="INR",
-            receipt=receipt,
-            notes=notes,
+            .all()
         )
-        order_id = str(order_dict["id"])
-
-        self.repo.create_payment(
-            society_id=society_id,
-            flat_id=invoice.flat_id,
-            amount_paise=amount_paise,
-            provider="RAZORPAY",
-            provider_reference=order_id,
-            status=PaymentStatus.PENDING,
-            initiated_by=user_id,
-            currency="INR",
-        )
-        self.db.commit()
-
-        return RazorpayOrderResponse(
-            order_id=order_id,
-            amount_paise=amount_paise,
-            currency="INR",
-            key_id=self.razorpay_provider.key_id,
-            invoice_id=invoice_id,
-            status="created",
-        )
-
-    def verify_and_finalize_razorpay_payment(
-        self,
-        society_id: UUID,
-        invoice_id: UUID,
-        razorpay_order_id: str,
-        razorpay_payment_id: str,
-        razorpay_signature: str,
-        user_id: UUID,
-        idempotency_key: str | None = None,
-    ) -> PaymentResponse:
-        """Verifies Razorpay Checkout signature and executes payment allocation atomically.
-
-        INVARIANTS:
-        - Cryptographic HMAC-SHA256 signature verification is MANDATORY. No settlement on frontend claims alone.
-        - If signature fails: marks payment as FAILED and aborts.
-        - Idempotent: replaying with same payment/key returns cached response without duplicate allocation.
-        - Pessimistic row locking on Invoice prevents concurrent over-allocation.
-        - Emits AuditEvent, OutboxEvent, FinancialLedgerEntry in single atomic commit.
-        """
-        # STEP 1: Verify cryptographic signature
-        is_webhook = razorpay_signature == "webhook_verified"
-        if not is_webhook:
-            is_valid = self.razorpay_provider.verify_payment_signature(
-                razorpay_order_id=razorpay_order_id,
-                razorpay_payment_id=razorpay_payment_id,
-                razorpay_signature=razorpay_signature,
-            )
-            if not is_valid:
-                pending = self.repo.get_payment_by_reference("RAZORPAY", razorpay_order_id)
-                if pending and pending.status == PaymentStatus.PENDING:
-                    pending.status = PaymentStatus.FAILED
-                    self.db.commit()
-                raise ValidationError(
-                    "Invalid Razorpay payment signature. Payment settlement rejected."
-                )
-
-        # STEP 2: Idempotency reservation
-        idemp_key = idempotency_key or f"rzp-{razorpay_payment_id}"
-        req_hash = hashlib.sha256(
-            f"{invoice_id}:{razorpay_order_id}:{razorpay_payment_id}".encode()
-        ).hexdigest()
-
-        idemp_record = self._reserve_idempotency_key(
-            idempotency_key=idemp_key,
-            scope=f"rzp:{invoice_id}",
-            req_hash=req_hash,
-        )
-        if idemp_record and idemp_record.response_body:
-            if idemp_record.response_status and idemp_record.response_status >= 400:
-                err_data = json.loads(idemp_record.response_body)
-                raise ValidationError(err_data.get("error", "Payment rejected."))
-            cached = json.loads(idemp_record.response_body)
-            return PaymentResponse(**cached)
-
-        # STEP 3: Lock invoice and locate payment
-        corr_id = str(uuid.uuid4())
-        try:
-            invoice = self.repo.get_invoice_for_update(invoice_id, society_id)
-            if not invoice:
-                self._fail_idempotency_key(
-                    idemp_key, f"rzp:{invoice_id}", req_hash, 404, "Invoice not found."
-                )
-                raise NotFoundError("Invoice not found in this society.")
-
-            payment = self.repo.get_payment_by_reference("RAZORPAY", razorpay_order_id)
-            if not payment:
-                self._fail_idempotency_key(
-                    idemp_key,
-                    f"rzp:{invoice_id}",
-                    req_hash,
-                    404,
-                    "Associated payment order not found.",
-                )
-                raise NotFoundError("Associated payment order not found.")
-
-            # If already finalized successfully, idempotent replay
-            if payment.status == PaymentStatus.SUCCESS:
-                res = self.map_to_payment_response(payment)
-                self._complete_idempotency_key(
-                    idemp_key, f"rzp:{invoice_id}", req_hash, 200, res.model_dump_json()
-                )
-                self.db.commit()
-                return res
-
-            # STEP 4: Concurrency balance check under row lock
-            paid_so_far = sum(
-                a.allocated_paise
-                for a in invoice.allocations
-                if a.payment.status == PaymentStatus.SUCCESS
-            )
-            remaining_balance = max(0, invoice.total_paise - paid_so_far)
-            if payment.amount_paise > remaining_balance:
-                payment.status = PaymentStatus.FAILED
-                self.db.commit()
-                self._fail_idempotency_key(
-                    idemp_key,
-                    f"rzp:{invoice_id}",
-                    req_hash,
-                    400,
-                    f"Payment amount of ₹{payment.amount_paise / 100:.2f} exceeds remaining balance of ₹{remaining_balance / 100:.2f}.",
-                )
-                raise ValidationError(
-                    f"Payment amount of ₹{payment.amount_paise / 100:.2f} exceeds remaining balance of ₹{remaining_balance / 100:.2f}."
-                )
-
-            # STEP 5: Finalize payment, create allocation and ledger entry
-            payment.status = PaymentStatus.SUCCESS
-            payment.provider_reference = f"{razorpay_order_id}:{razorpay_payment_id}"
-
-            allocation = PaymentAllocation(
-                id=uuid.uuid4(),
-                payment_id=payment.id,
-                invoice_id=invoice_id,
-                allocated_paise=payment.amount_paise,
-                created_at=utc_now(),
-            )
-            self.db.add(allocation)
-
-            self.repo.append_ledger_entry(
-                society_id=society_id,
-                flat_id=invoice.flat_id,
-                invoice_id=invoice.id,
-                payment_id=payment.id,
-                entry_type=LedgerEntryType.PAYMENT_RECEIVED,
-                amount_paise=payment.amount_paise,
-                reference_id=payment.provider_reference,
-                description=f"Razorpay payment received {razorpay_payment_id} for {invoice.invoice_number}",
-            )
-            self.repo.append_ledger_entry(
-                society_id=society_id,
-                flat_id=invoice.flat_id,
-                invoice_id=invoice.id,
-                payment_id=payment.id,
-                entry_type=LedgerEntryType.PAYMENT_ALLOCATED,
-                amount_paise=payment.amount_paise,
-                reference_id=str(allocation.id),
-                description=f"Funds allocated to invoice {invoice.invoice_number}",
-            )
-
-            # Update invoice status
-            new_paid_total = paid_so_far + payment.amount_paise
-            if new_paid_total >= invoice.total_paise:
-                invoice.status = InvoiceStatus.PAID
-            elif new_paid_total > 0:
-                invoice.status = InvoiceStatus.PARTIALLY_PAID
-
-            # Audit & Outbox
-            audit = AuditEvent(
-                society_id=society_id,
-                actor_id=user_id,
-                action="FINANCE_RAZORPAY_PAYMENT_CAPTURED",
-                resource_type="Payment",
-                resource_id=str(payment.id),
-                correlation_id=corr_id,
-                event_metadata={
-                    "invoice_id": str(invoice_id),
-                    "amount_paise": payment.amount_paise,
-                    "razorpay_order_id": razorpay_order_id,
-                    "razorpay_payment_id": razorpay_payment_id,
-                },
-            )
-            self.db.add(audit)
-
-            outbox = OutboxEvent(
-                event_type="finance.payment.captured",
-                aggregate_type="Payment",
-                aggregate_id=str(payment.id),
-                payload={
-                    "payment_id": str(payment.id),
-                    "society_id": str(society_id),
-                    "flat_id": str(payment.flat_id),
-                    "invoice_id": str(invoice_id),
-                    "amount_paise": payment.amount_paise,
-                    "provider": "RAZORPAY",
-                    "provider_reference": payment.provider_reference,
-                    "status": "SUCCESS",
-                },
-                status=OutboxStatus.PENDING,
-            )
-            self.db.add(outbox)
-
+        count = 0
+        for payment in stuck_payments:
+            payment.status = PaymentStatus.FAILED
+            count += 1
+        if count > 0:
             self.db.commit()
-
-            res = self.map_to_payment_response(payment)
-            self._complete_idempotency_key(
-                idemp_key, f"rzp:{invoice_id}", req_hash, 200, res.model_dump_json()
-            )
-            self.db.commit()
-            return res
-        except Exception as exc:
-            self.db.rollback()
-            raise exc
-
-    def handle_razorpay_webhook(
-        self,
-        body_bytes: bytes,
-        signature: str,
-    ) -> dict[str, Any]:
-        """Handles asynchronous Razorpay webhooks with signature verification.
-
-        Supports `payment.captured` and `payment.failed` event notifications.
-        """
-        is_valid = self.razorpay_provider.verify_webhook_signature(body_bytes, signature)
-        if not is_valid:
-            raise ValidationError("Invalid Razorpay webhook signature.")
-
-        payload = json.loads(body_bytes.decode("utf-8"))
-        event_name = str(payload.get("event", ""))
-
-        if event_name in ("payment.captured", "order.paid"):
-            pay_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
-            order_id = pay_entity.get("order_id")
-            payment_id = pay_entity.get("id")
-
-            if order_id:
-                payment = self.repo.get_payment_by_reference("RAZORPAY", order_id)
-                if payment and payment.status == PaymentStatus.PENDING:
-                    notes = pay_entity.get("notes", {})
-                    invoice_id_str = notes.get("invoice_id")
-                    if invoice_id_str:
-                        invoice_id = UUID(invoice_id_str)
-                        self.verify_and_finalize_razorpay_payment(
-                            society_id=payment.society_id,
-                            invoice_id=invoice_id,
-                            razorpay_order_id=order_id,
-                            razorpay_payment_id=payment_id or f"pay_wh_{order_id}",
-                            razorpay_signature="webhook_verified",
-                            user_id=payment.initiated_by,
-                        )
-
-        elif event_name == "payment.failed":
-            pay_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
-            order_id = pay_entity.get("order_id")
-            if order_id:
-                payment = self.repo.get_payment_by_reference("RAZORPAY", order_id)
-                if payment and payment.status == PaymentStatus.PENDING:
-                    payment.status = PaymentStatus.FAILED
-                    self.db.commit()
-
-        return {"status": "ok", "event": event_name}
+        return count
 
     # -------------------------------------------------------------------------
     # Idempotency Key Helpers

@@ -12,7 +12,7 @@ import {
   Receipt,
 } from 'lucide-react';
 import { billingService, formatINR, formatDateIST, formatDateTimeIST } from '../../services/billingService';
-import { Invoice, InvoiceStatus, Payment, ReceiptResponse } from '../../types/billing';
+import { Invoice, InvoiceStatus, ReceiptResponse } from '../../types/billing';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -68,59 +68,7 @@ export const ResidentBilling: React.FC = () => {
       const idempKey = idempotencyKeyRef.current ?? ('pay-' + crypto.randomUUID());
       idempotencyKeyRef.current = idempKey;
 
-      if (failure) {
-        return billingService.initiatePayment(invoiceId, amountPaise, true, idempKey);
-      }
-
-      try {
-        // STEP 1: Server-side Razorpay test order creation
-        const order = await billingService.createPaymentOrder(invoiceId, amountPaise);
-
-        // STEP 2: Checkout with Razorpay if script is available
-        if (typeof (window as any).Razorpay !== 'undefined') {
-          return await new Promise<Payment>((resolve, reject) => {
-            const rzp = new (window as any).Razorpay({
-              key: order.key_id,
-              amount: order.amount_paise,
-              currency: order.currency,
-              name: 'Township Maintenance',
-              description: 'Maintenance Assessment Dues',
-              order_id: order.order_id,
-              handler: async (response: any) => {
-                try {
-                  const payment = await billingService.verifyPayment(
-                    invoiceId,
-                    {
-                      razorpay_order_id: response.razorpay_order_id || order.order_id,
-                      razorpay_payment_id: response.razorpay_payment_id,
-                      razorpay_signature: response.razorpay_signature,
-                    },
-                    idempKey,
-                  );
-                  resolve(payment);
-                } catch (err) {
-                  reject(err);
-                }
-              },
-              modal: {
-                ondismiss: () => {
-                  reject(new Error('Razorpay payment cancelled by resident.'));
-                },
-              },
-              theme: { color: '#4f46e5' },
-            });
-            rzp.open();
-          });
-        }
-
-        // Headless / test-mode fallback when external CDN is not loaded
-        return await billingService.initiatePayment(invoiceId, amountPaise, false, idempKey);
-      } catch (err: any) {
-        if (err?.message?.includes('cancelled')) {
-          throw err;
-        }
-        return await billingService.initiatePayment(invoiceId, amountPaise, false, idempKey);
-      }
+      return billingService.initiatePayment(invoiceId, amountPaise, failure, idempKey);
     },
     onSuccess: (payment) => {
       queryClient.invalidateQueries({ queryKey: ['billing-summary'] });
@@ -549,7 +497,7 @@ export const ResidentBilling: React.FC = () => {
 
               <div className="p-2.5 bg-slate-100 rounded text-[11px] text-slate-500 flex items-center gap-2">
                 <AlertCircle className="h-4 w-4 text-slate-400 shrink-0" />
-                <span>Razorpay Test Mode / Simulated Payment. Idempotency-Key prevents duplicate charge.</span>
+                <span>Simulated Payment Gateway. Idempotency-Key prevents duplicate charge.</span>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">

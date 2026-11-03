@@ -189,31 +189,3 @@ class StaffBillingOverviewResponse(BaseModel):
     overdue_invoices_count: int
     active_rate_paise_per_sqft: int
     current_period: str
-
-
-class CreateRazorpayOrderRequest(BaseModel):
-    amount_paise: int = Field(
-        ..., gt=0, description="Amount to be paid in integer paise (1 INR = 100 paise)"
-    )
-
-
-class RazorpayOrderResponse(BaseModel):
-    order_id: str
-    amount_paise: int
-    currency: str = "INR"
-    key_id: str
-    invoice_id: UUID
-    status: str = "created"
-
-
-class VerifyRazorpayPaymentRequest(BaseModel):
-    razorpay_order_id: str = Field(
-        ..., description="Razorpay order ID returned during order creation"
-    )
-    razorpay_payment_id: str = Field(..., description="Razorpay payment ID returned by Checkout")
-    razorpay_signature: str = Field(..., description="HMAC SHA256 signature returned by Checkout")
-
-
-class RazorpayWebhookResponse(BaseModel):
-    status: str
-    event: str

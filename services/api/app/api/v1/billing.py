@@ -8,7 +8,7 @@ Provides versioned REST endpoints for:
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, Request, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -18,18 +18,14 @@ from app.domains.billing.models import InvoiceStatus
 from app.domains.billing.schemas import (
     BillingRunPreviewResponse,
     BillingRunResponse,
-    CreateRazorpayOrderRequest,
     ExecuteBillingRunRequest,
     InitiatePaymentRequest,
     InvoiceResponse,
     PaymentAllocationSchema,
     PaymentResponse,
-    RazorpayOrderResponse,
-    RazorpayWebhookResponse,
     ReceiptResponse,
     ResidentBillingSummaryResponse,
     StaffBillingOverviewResponse,
-    VerifyRazorpayPaymentRequest,
 )
 from app.domains.billing.service import BillingService
 from app.domains.identity.models import RoleType
@@ -236,106 +232,6 @@ def initiate_invoice_payment(
 
 
 @router.post(
-    "/invoices/{invoice_id}/order",
-    response_model=RazorpayOrderResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Create Razorpay test mode order for invoice payment",
-)
-def create_invoice_payment_order(
-    invoice_id: UUID,
-    payload: CreateRazorpayOrderRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.RESIDENT))],
-    db: Session = Depends(get_db),
-) -> RazorpayOrderResponse:
-    """Creates a server-side order with Razorpay test environment and sets up a PENDING payment record.
-
-    AUTHORIZATION & CONSTRAINTS:
-    - Resident must have approved active membership for this invoice's flat.
-    - Amount must be positive and not exceed outstanding invoice balance.
-    """
-    service = BillingService(db)
-    invoice = service.repo.get_invoice_by_id(invoice_id)
-    if not invoice:
-        raise NotFoundError("Invoice not found")
-
-    if invoice.flat_id not in claims.active_flat_ids:
-        raise AuthorizationError("Access denied: You can only pay invoices for your own apartment")
-
-    return service.create_razorpay_order(
-        society_id=invoice.society_id,
-        invoice_id=invoice_id,
-        amount_paise=payload.amount_paise,
-        user_id=claims.user_id,
-    )
-
-
-@router.post(
-    "/invoices/{invoice_id}/verify",
-    response_model=PaymentResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Verify Razorpay Checkout signature and finalize payment",
-)
-def verify_invoice_payment(
-    invoice_id: UUID,
-    payload: VerifyRazorpayPaymentRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.RESIDENT))],
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-    db: Session = Depends(get_db),
-) -> PaymentResponse:
-    """Verifies HMAC SHA-256 signature from Razorpay Checkout and executes financial transaction.
-
-    SECURITY INVARIANTS:
-    - Never settles invoice based on client success claims alone; cryptographic signature verification is mandatory.
-    - Idempotent and concurrency-safe via row-level locks on the invoice.
-    """
-    service = BillingService(db)
-    invoice = service.repo.get_invoice_by_id(invoice_id)
-    if not invoice:
-        raise NotFoundError("Invoice not found")
-
-    if invoice.flat_id not in claims.active_flat_ids:
-        raise AuthorizationError(
-            "Access denied: You can only verify payments for your own apartment"
-        )
-
-    return service.verify_and_finalize_razorpay_payment(
-        society_id=invoice.society_id,
-        invoice_id=invoice_id,
-        razorpay_order_id=payload.razorpay_order_id,
-        razorpay_payment_id=payload.razorpay_payment_id,
-        razorpay_signature=payload.razorpay_signature,
-        user_id=claims.user_id,
-        idempotency_key=idempotency_key,
-    )
-
-
-@router.post(
-    "/webhook/razorpay",
-    response_model=RazorpayWebhookResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Razorpay asynchronous webhook callback handler",
-)
-async def razorpay_webhook(
-    request: Request,
-    x_razorpay_signature: str | None = Header(None, alias="X-Razorpay-Signature"),
-    db: Session = Depends(get_db),
-) -> RazorpayWebhookResponse:
-    """Handles asynchronous webhook notifications from Razorpay (e.g. payment.captured, payment.failed).
-
-    Validates HMAC SHA256 signature using RAZORPAY_WEBHOOK_SECRET.
-    """
-    body_bytes = await request.body()
-    service = BillingService(db)
-    result = service.handle_razorpay_webhook(
-        body_bytes=body_bytes,
-        signature=x_razorpay_signature or "",
-    )
-    return RazorpayWebhookResponse(
-        status=str(result.get("status", "ok")), event=str(result.get("event", ""))
-    )
-
-
-@router.post(
     "/idempotency/cleanup",
     status_code=status.HTTP_200_OK,
     summary="Clean up expired idempotency keys",
@@ -348,6 +244,29 @@ def cleanup_idempotency_keys(
     service = BillingService(db)
     deleted = service.cleanup_expired_idempotency_records()
     return {"deleted_count": deleted}
+
+
+@router.post(
+    "/admin/payments/recover-interrupted",
+    status_code=status.HTTP_200_OK,
+    summary="Recover payment intents stuck in PENDING state",
+)
+def recover_interrupted_payments(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    timeout_minutes: int = Query(5, ge=1, le=60),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Marks abandoned PENDING payment records as FAILED after a configurable timeout.
+    Safe for helpdesk staff to call when payments appear stuck.
+    """
+    if not claims.society_ids:
+        raise AuthorizationError("No authorized society associated with your staff account")
+    service = BillingService(db)
+    recovered = service.recover_interrupted_payment_intents(
+        society_id=claims.society_ids[0],
+        timeout_minutes=timeout_minutes,
+    )
+    return {"recovered_count": recovered}
 
 
 @router.get(

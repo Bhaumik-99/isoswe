@@ -1,6 +1,5 @@
 """Integration tests for Phase 2 Maintenance Billing & Payment Endpoints."""
 
-import json
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,9 +11,11 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, ValidationError
 from app.domains.billing.models import (
+    FinancialLedgerEntry,
     Invoice,
     InvoiceStatus,
     Payment,
+    PaymentAllocation,
     PaymentStatus,
 )
 from app.domains.billing.repository import BillingRepository
@@ -784,171 +785,171 @@ def _create_test_invoice(db_session: Session, flat_id: str, period: str = "2026-
     return inv
 
 
-def test_razorpay_order_creation_and_overpayment_validation(
-    client: TestClient, db_session: Session
-) -> None:
-    """Item 3: Resident creates a Razorpay server-side test order; overpayment is rejected."""
-    # 1. Create a dedicated test invoice for Neeraj
+def test_successful_full_payment(client: TestClient, db_session: Session) -> None:
+    """Requirement: Pay exact outstanding, invoice becomes PAID, DB allocation equals total_paise."""
     inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-08")
     inv_id = str(inv.id)
-    outstanding = inv.total_paise
+    pay_amount = inv.total_paise
 
-    # 2. Valid order creation
-    pay_amount = 500000
-    res_order = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/order",
-        headers=AUTH_NEERAJ,
-        json={"amount_paise": pay_amount},
+    res = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": f"idemp-full-{uuid.uuid4()}"},
+        json={"amount_paise": pay_amount, "simulate_failure": False},
     )
-    assert res_order.status_code == 200
-    order_data = res_order.json()
-    assert order_data["order_id"].startswith("order_")
-    assert order_data["amount_paise"] == pay_amount
-    assert order_data["currency"] == "INR"
-    assert order_data["invoice_id"] == inv_id
+    assert res.status_code == 200
+    payment_data = res.json()
+    assert payment_data["status"] == "SUCCESS"
+    assert payment_data["amount_paise"] == pay_amount
 
-    # 3. Overpayment rejected
-    res_overpay = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/order",
-        headers=AUTH_NEERAJ,
-        json={"amount_paise": outstanding + 100000},
+    # Verify DB state
+    db_session.expire_all()
+    db_invoice = db_session.get(Invoice, inv.id)
+    assert db_invoice is not None
+    assert db_invoice.status == InvoiceStatus.PAID
+
+    allocations = (
+        db_session.query(PaymentAllocation).filter(PaymentAllocation.invoice_id == inv.id).all()
     )
-    assert res_overpay.status_code in (400, 422)
+    assert len(allocations) == 1
+    assert allocations[0].allocated_paise == pay_amount
 
 
-def test_razorpay_payment_verification_and_settlement(
-    client: TestClient, db_session: Session
-) -> None:
-    """Item 3: Valid Razorpay checkout signature is verified and finalizes payment atomically."""
-    # 1. Create a dedicated test invoice for Neeraj
+def test_successful_partial_payment(client: TestClient, db_session: Session) -> None:
+    """Requirement: Pay less than outstanding, invoice becomes PARTIALLY_PAID."""
     inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-09")
     inv_id = str(inv.id)
-    pay_amount = inv.total_paise
+    pay_amount = 300000
 
-    # 2. Create Razorpay order
-    res_order = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/order",
-        headers=AUTH_NEERAJ,
-        json={"amount_paise": pay_amount},
+    res = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": f"idemp-partial-{uuid.uuid4()}"},
+        json={"amount_paise": pay_amount, "simulate_failure": False},
     )
-    assert res_order.status_code == 200
-    order_id = res_order.json()["order_id"]
-    payment_id = f"pay_test_{uuid.uuid4().hex[:10]}"
+    assert res.status_code == 200
+    assert res.json()["status"] == "SUCCESS"
 
-    # Generate valid signature using provider helper
-    service = BillingService(db_session)
-    valid_sig = service.razorpay_provider.generate_test_signature(order_id, payment_id)
+    db_session.expire_all()
+    db_invoice = db_session.get(Invoice, inv.id)
+    assert db_invoice is not None
+    assert db_invoice.status == InvoiceStatus.PARTIALLY_PAID
 
-    # 3. Verify and finalize payment
-    res_verify = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/verify",
-        headers=AUTH_NEERAJ,
-        json={
-            "razorpay_order_id": order_id,
-            "razorpay_payment_id": payment_id,
-            "razorpay_signature": valid_sig,
-        },
+    allocations = (
+        db_session.query(PaymentAllocation).filter(PaymentAllocation.invoice_id == inv.id).all()
     )
-    assert res_verify.status_code == 200
-    verify_data = res_verify.json()
-    assert verify_data["status"] == "SUCCESS"
-    assert verify_data["provider"] == "RAZORPAY"
-    assert verify_data["amount_paise"] == pay_amount
-
-    # 4. Invariant: Invoice is now PAID
-    res_inv = client.get(f"/api/v1/billing/invoices/{inv_id}", headers=AUTH_NEERAJ)
-    assert res_inv.json()["status"] == "PAID"
-    assert res_inv.json()["outstanding_paise"] == 0
-
-    # 5. Invariant: Receipt can be generated
-    res_receipt = client.get(f"/api/v1/billing/invoices/{inv_id}/receipt", headers=AUTH_NEERAJ)
-    assert res_receipt.status_code == 200
-    assert res_receipt.json()["amount_paid_paise"] == pay_amount
+    assert len(allocations) == 1
+    assert allocations[0].allocated_paise == pay_amount
 
 
-def test_razorpay_invalid_signature_rejected(client: TestClient, db_session: Session) -> None:
-    """Item 3: Invalid signature is rejected, payment marked FAILED, invoice remains UNPAID."""
-    # 1. Create a dedicated test invoice for Swati
-    inv = _create_test_invoice(db_session, FLAT_0408_ID, period="2026-09")
+def test_simulated_payment_failure_and_db_state(client: TestClient, db_session: Session) -> None:
+    """Requirement: simulate_failure=True results in FAILED payment, 0 allocations, ledger unchanged."""
+    inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-10")
     inv_id = str(inv.id)
-    pay_amount = inv.total_paise
 
-    # 2. Create Razorpay order
-    res_order = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/order",
-        headers=AUTH_SWATI,
-        json={"amount_paise": pay_amount},
+    ledger_count_before = (
+        db_session.query(FinancialLedgerEntry)
+        .filter(FinancialLedgerEntry.invoice_id == inv.id)
+        .count()
     )
-    order_id = res_order.json()["order_id"]
 
-    # 3. Submit invalid signature
-    res_verify = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/verify",
-        headers=AUTH_SWATI,
-        json={
-            "razorpay_order_id": order_id,
-            "razorpay_payment_id": "pay_fake_123",
-            "razorpay_signature": "invalid_forged_signature_hex",
-        },
+    res = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": f"idemp-fail-{uuid.uuid4()}"},
+        json={"amount_paise": 200000, "simulate_failure": True},
     )
-    assert res_verify.status_code in (400, 422)
+    assert res.status_code == 200
+    assert res.json()["status"] == "FAILED"
 
-    # 4. Invariant: Invoice balance remains UNPAID
-    res_inv = client.get(f"/api/v1/billing/invoices/{inv_id}", headers=AUTH_SWATI)
-    assert res_inv.json()["status"] == "UNPAID"
-    assert res_inv.json()["outstanding_paise"] == pay_amount
+    db_session.expire_all()
+    db_invoice = db_session.get(Invoice, inv.id)
+    assert db_invoice is not None
+    assert db_invoice.status == InvoiceStatus.UNPAID
+
+    # Verify no allocation created
+    alloc_count = (
+        db_session.query(PaymentAllocation).filter(PaymentAllocation.invoice_id == inv.id).count()
+    )
+    assert alloc_count == 0
+
+    # Verify ledger entries for this invoice unchanged
+    ledger_count_after = (
+        db_session.query(FinancialLedgerEntry)
+        .filter(FinancialLedgerEntry.invoice_id == inv.id)
+        .count()
+    )
+    assert ledger_count_after == ledger_count_before
 
 
-def test_razorpay_webhook_signature_and_event_flow(client: TestClient, db_session: Session) -> None:
-    """Item 3: Razorpay webhook callback with verified HMAC signature finalizes payment."""
-    # 1. Create a dedicated test invoice for Aamir
-    inv = _create_test_invoice(db_session, FLAT_1601_ID, period="2026-09")
+def test_receipt_generated_only_after_success(client: TestClient, db_session: Session) -> None:
+    """Requirement: Receipt generation is 404 for invoice without successful payment."""
+    inv = _create_test_invoice(db_session, FLAT_0408_ID, period="2026-10")
     inv_id = str(inv.id)
-    pay_amount = inv.total_paise
 
-    # 2. Create Razorpay order
-    res_order = client.post(
-        f"/api/v1/billing/invoices/{inv_id}/order",
-        headers=AUTH_AAMIR,
-        json={"amount_paise": pay_amount},
+    res = client.get(f"/api/v1/billing/invoices/{inv_id}/receipt", headers=AUTH_SWATI)
+    assert res.status_code == 404
+
+
+def test_interrupted_payment_intent_recovery(client: TestClient, db_session: Session) -> None:
+    """Requirement: Payment intents stuck in PENDING state can be recovered by helpdesk staff."""
+    inv = _create_test_invoice(db_session, FLAT_1601_ID, period="2026-10")
+    society_id = uuid.UUID(SOCIETY_ID)
+
+    # Insert a simulated stuck payment in PENDING state created 10 minutes ago
+    ten_min_ago = datetime.now(UTC) - timedelta(minutes=10)
+    stuck_payment = Payment(
+        id=uuid.uuid4(),
+        society_id=society_id,
+        flat_id=inv.flat_id,
+        amount_paise=400000,
+        currency="INR",
+        provider="SIMULATED",
+        provider_reference=f"SIM-STUCK-{uuid.uuid4().hex[:6]}",
+        status=PaymentStatus.PENDING,
+        initiated_by=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        created_at=ten_min_ago,
+        updated_at=ten_min_ago,
     )
-    order_id = res_order.json()["order_id"]
-    payment_id = f"pay_wh_{uuid.uuid4().hex[:8]}"
+    db_session.add(stuck_payment)
+    db_session.commit()
 
-    service = BillingService(db_session)
-    webhook_payload = json.dumps(
-        {
-            "event": "payment.captured",
-            "payload": {
-                "payment": {
-                    "entity": {
-                        "id": payment_id,
-                        "order_id": order_id,
-                        "amount": pay_amount,
-                        "status": "captured",
-                        "notes": {"invoice_id": inv_id},
-                    }
-                }
-            },
-        }
-    ).encode("utf-8")
-
-    # Generate valid webhook signature
-    valid_sig = service.razorpay_provider.generate_webhook_signature(webhook_payload)
-
-    # 3. Call webhook with valid signature
-    res_wh = client.post(
-        "/api/v1/billing/webhook/razorpay",
-        content=webhook_payload,
-        headers={"Content-Type": "application/json", "X-Razorpay-Signature": valid_sig},
+    # Call staff recovery endpoint
+    res_recover = client.post(
+        "/api/v1/billing/admin/payments/recover-interrupted?timeout_minutes=5",
+        headers=AUTH_HELPDESK,
     )
-    assert res_wh.status_code == 200
-    assert res_wh.json()["status"] == "ok"
+    assert res_recover.status_code == 200
+    assert res_recover.json()["recovered_count"] >= 1
 
-    # 4. Call webhook with INVALID signature -> rejected
-    res_bad_wh = client.post(
-        "/api/v1/billing/webhook/razorpay",
-        content=webhook_payload,
-        headers={"Content-Type": "application/json", "X-Razorpay-Signature": "bad_sig"},
+    # Verify payment status is now FAILED
+    db_session.expire_all()
+    p_refreshed = db_session.get(Payment, stuck_payment.id)
+    assert p_refreshed is not None
+    assert p_refreshed.status == PaymentStatus.FAILED
+
+
+def test_simulated_provider_exception_fails_closed(db_session: Session) -> None:
+    """Requirement: When payment provider raises an exception, payment fails closed without allocation."""
+    inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-12")
+
+    class CrashingProvider:
+        @property
+        def provider_name(self) -> str:
+            return "CRASHING"
+
+        def process_payment(self, *args, **kwargs):
+            raise TimeoutError("Simulated gateway network timeout")
+
+    service = BillingService(db_session, payment_provider=CrashingProvider())
+    resp = service.process_invoice_payment(
+        society_id=inv.society_id,
+        invoice_id=inv.id,
+        amount_paise=100000,
+        user_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        idempotency_key=f"idemp-crash-{uuid.uuid4()}",
     )
-    assert res_bad_wh.status_code in (400, 422)
+    assert resp.status == PaymentStatus.FAILED
+
+    db_session.expire_all()
+    alloc_count = (
+        db_session.query(PaymentAllocation).filter(PaymentAllocation.invoice_id == inv.id).count()
+    )
+    assert alloc_count == 0

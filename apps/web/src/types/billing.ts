@@ -151,18 +151,3 @@ export interface BillingRun {
   created_at: string;
 }
 
-export interface RazorpayOrderResponse {
-  order_id: string;
-  amount_paise: number;
-  currency: string;
-  key_id: string;
-  invoice_id: string;
-  status: string;
-}
-
-export interface VerifyRazorpayPaymentRequest {
-  razorpay_order_id: string;
-  razorpay_payment_id: string;
-  razorpay_signature: string;
-}
-
