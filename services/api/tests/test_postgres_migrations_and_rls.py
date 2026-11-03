@@ -680,6 +680,7 @@ def test_postgres_cross_flat_allocation_rejected_by_trigger(postgres_test_db: En
     tow_id = uuid.uuid4()
     flat1_id = uuid.uuid4()
     flat2_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     inv_id = uuid.uuid4()
     pay_id = uuid.uuid4()
     alloc_id = uuid.uuid4()
@@ -692,6 +693,18 @@ def test_postgres_cross_flat_allocation_rejected_by_trigger(postgres_test_db: En
                 "VALUES (:s, 'Trigger Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
             ),
             {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO users (id, cognito_sub, email, phone, full_name, status, created_at, updated_at) "
+                "VALUES (:u, :sub, :email, :phone, 'Trigger User', 'ACTIVE', NOW(), NOW());"
+            ),
+            {
+                "u": user_id,
+                "sub": f"sub-{uuid.uuid4()}",
+                "email": f"trg-{uuid.uuid4().hex[:6]}@example.com",
+                "phone": f"+9198{uuid.uuid4().int % 100000000:08d}",
+            },
         )
         conn.execute(
             text(
@@ -717,10 +730,10 @@ def test_postgres_cross_flat_allocation_rejected_by_trigger(postgres_test_db: En
         )
         conn.execute(
             text(
-                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, created_at, updated_at) "
-                "VALUES (:p, :s, :f2, 650000, 'INR', 'SIMULATED', 'SIM-TRG-001', 'SUCCESS', NOW(), NOW());"
+                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
+                "VALUES (:p, :s, :f2, 650000, 'INR', 'SIMULATED', 'SIM-TRG-001', 'SUCCESS', :u, NOW(), NOW());"
             ),
-            {"p": pay_id, "s": soc_id, "f2": flat2_id},
+            {"p": pay_id, "s": soc_id, "f2": flat2_id, "u": user_id},
         )
         conn.commit()
 
@@ -810,9 +823,10 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
     soc_id = uuid.uuid4()
     tow_id = uuid.uuid4()
     flat_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     inv_id = uuid.uuid4()
 
-    # 1. Setup society, tower, flat, and ₹10,000 (1,000,000 paise) invoice
+    # 1. Setup society, tower, flat, user, and ₹10,000 (1,000,000 paise) invoice
     with engine.connect() as conn:
         conn.execute(text("RESET ROLE;"))
         conn.execute(
@@ -821,6 +835,18 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
                 "VALUES (:s, 'Conc Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
             ),
             {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO users (id, cognito_sub, email, phone, full_name, status, created_at, updated_at) "
+                "VALUES (:u, :sub, :email, :phone, 'Conc User', 'ACTIVE', NOW(), NOW());"
+            ),
+            {
+                "u": user_id,
+                "sub": f"sub-{uuid.uuid4()}",
+                "email": f"conc-{uuid.uuid4().hex[:6]}@example.com",
+                "phone": f"+9198{uuid.uuid4().int % 100000000:08d}",
+            },
         )
         conn.execute(
             text(
@@ -850,6 +876,7 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
     def attempt_payment(worker_name: str) -> bool:
         with engine.connect() as conn:
             conn.execute(text("RESET ROLE;"))
+            conn.commit()  # commit RESET ROLE to clear transaction state before explicit begin
             trans = conn.begin()
             try:
                 # STEP 1: Lock the invoice row exclusively
@@ -879,8 +906,8 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
                 pay_id = uuid.uuid4()
                 conn.execute(
                     text(
-                        "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, created_at, updated_at) "
-                        "VALUES (:p, :s, :f, :amt, 'INR', 'SIMULATED', :ref, 'SUCCESS', NOW(), NOW());"
+                        "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
+                        "VALUES (:p, :s, :f, :amt, 'INR', 'SIMULATED', :ref, 'SUCCESS', :u, NOW(), NOW());"
                     ),
                     {
                         "p": pay_id,
@@ -888,6 +915,7 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
                         "f": flat_id,
                         "amt": requested,
                         "ref": f"REF-{worker_name}",
+                        "u": user_id,
                     },
                 )
                 conn.execute(
