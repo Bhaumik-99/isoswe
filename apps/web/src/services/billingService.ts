@@ -10,9 +10,11 @@ import {
   BillingRunPreview,
   Invoice,
   Payment,
+  RazorpayOrderResponse,
   ReceiptResponse,
   ResidentBillingSummary,
   StaffBillingOverview,
+  VerifyRazorpayPaymentRequest,
 } from '../types/billing';
 
 export function formatINR(paise: number): string {
@@ -97,6 +99,24 @@ export const billingService = {
       },
       { headers },
     );
+  },
+
+  async createPaymentOrder(invoiceId: string, amountPaise: number): Promise<RazorpayOrderResponse> {
+    return apiClient.post<RazorpayOrderResponse>(`/api/v1/billing/invoices/${invoiceId}/order`, {
+      amount_paise: amountPaise,
+    });
+  },
+
+  async verifyPayment(
+    invoiceId: string,
+    data: VerifyRazorpayPaymentRequest,
+    idempotencyKey?: string,
+  ): Promise<Payment> {
+    const headers: Record<string, string> = {};
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = idempotencyKey;
+    }
+    return apiClient.post<Payment>(`/api/v1/billing/invoices/${invoiceId}/verify`, data, { headers });
   },
 
   // Staff endpoints

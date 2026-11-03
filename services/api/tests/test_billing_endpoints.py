@@ -1,15 +1,16 @@
 """Integration tests for Phase 2 Maintenance Billing & Payment Endpoints."""
 
+import json
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.errors import ConflictError
+from app.core.errors import ConflictError, ValidationError
 from app.domains.billing.models import (
     Invoice,
     InvoiceStatus,
@@ -19,6 +20,7 @@ from app.domains.billing.models import (
 from app.domains.billing.repository import BillingRepository
 from app.domains.billing.service import BillingService
 from app.domains.identity.models import Flat, FlatStatus, Society, SocietyStatus, Tower
+from app.domains.reliability.models import IdempotencyKey
 
 SOCIETY_ID = "11111111-1111-1111-1111-111111111111"
 FLAT_1203_ID = "33333333-3333-3333-3333-333333331203"
@@ -610,6 +612,14 @@ def test_billing_generation_2400_flats_batch_performance(db_session: Session) ->
     db_session.commit()
 
     service = BillingService(db_session)
+    # Explicitly configure rate before execution (no silent side effects)
+    service.repo.create_default_billing_config(
+        society_id=soc_id, effective_from=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+
+    # Invariant: Verify chunk size is bounded to 500
+    assert service.CHUNK_SIZE == 500
+
     start = time.perf_counter()
     run = service.execute_billing_run(
         society_id=soc_id,
@@ -620,4 +630,325 @@ def test_billing_generation_2400_flats_batch_performance(db_session: Session) ->
 
     assert run.total_invoiced_flats == 2400
     assert run.status == "COMPLETED"
-    assert elapsed < 15.0, f"2,400 flat billing took too long: {elapsed:.2f}s"
+    assert elapsed < 10.0, f"2,400 flat billing took too long: {elapsed:.2f}s"
+
+
+def test_billing_preview_has_no_side_effects_on_unconfigured_society(db_session: Session) -> None:
+    """Item 4: preview_billing_run() must be read-only and never silently create billing configurations."""
+    soc_id = uuid.uuid4()
+    soc = Society(id=soc_id, name="Unconfigured Society", status=SocietyStatus.ACTIVE)
+    db_session.add(soc)
+    db_session.commit()
+
+    service = BillingService(db_session)
+
+    # Calling preview on an unconfigured society must raise ValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        service.preview_billing_run(society_id=soc_id, billing_period="2026-11")
+
+    assert "no billing configuration found" in str(exc_info.value).lower()
+
+    # Invariant: Database must have ZERO billing configuration rows for this society (no mutation)
+    configs = service.repo.get_all_billing_configs(soc_id)
+    assert len(configs) == 0, "preview_billing_run must not insert billing configuration rows"
+
+
+def test_idempotency_key_expiry_allows_new_reservation(db_session: Session) -> None:
+    """Item 1: Idempotency keys past their 24-hour expiry must be purged and not block new operations."""
+    service = BillingService(db_session)
+    expired_key = f"exp-key-{uuid.uuid4()}"
+    req_hash = "hash-exp-123"
+
+    # Insert an expired idempotency record (expired 1 hour ago)
+    expired_record = IdempotencyKey(
+        id=uuid.uuid4(),
+        scope="billing_payment",
+        idempotency_key=expired_key,
+        request_hash=req_hash,
+        response_status=200,
+        response_body='{"status": "OLD_CACHED_RESULT"}',
+        created_at=datetime.now(UTC) - timedelta(hours=25),
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    db_session.add(expired_record)
+    db_session.commit()
+
+    # Reserving the expired key must succeed as None (fresh reservation, clearing old record)
+    res = service._reserve_idempotency_key(
+        idempotency_key=expired_key,
+        scope="billing_payment",
+        req_hash=req_hash,
+    )
+    assert res is None, "Expired idempotency key must allow fresh reservation"
+
+    # Active key in database must now have a future expiry
+    active = (
+        db_session.query(IdempotencyKey)
+        .filter_by(scope="billing_payment", idempotency_key=expired_key)
+        .first()
+    )
+    assert active is not None
+    assert service._to_utc(active.expires_at) > datetime.now(UTC)
+
+
+def test_idempotency_stuck_in_flight_timeout_recovery(db_session: Session) -> None:
+    """Item 1: In-flight requests older than 2 minutes (crashed process) are safely recovered."""
+    service = BillingService(db_session)
+    stuck_key = f"stuck-key-{uuid.uuid4()}"
+    req_hash = "hash-stuck-123"
+
+    # Insert a hung in-flight record (started 5 minutes ago without completing)
+    stuck_record = IdempotencyKey(
+        id=uuid.uuid4(),
+        scope="billing_payment",
+        idempotency_key=stuck_key,
+        request_hash=req_hash,
+        response_status=None,
+        response_body=None,
+        created_at=datetime.now(UTC) - timedelta(minutes=5),
+        expires_at=datetime.now(UTC) + timedelta(hours=23),
+    )
+    db_session.add(stuck_record)
+    db_session.commit()
+
+    # Reserving must recover from the hung reservation
+    res = service._reserve_idempotency_key(
+        idempotency_key=stuck_key,
+        scope="billing_payment",
+        req_hash=req_hash,
+    )
+    assert res is None, "Hung in-flight key must be recovered"
+
+
+def test_cleanup_expired_idempotency_records(db_session: Session) -> None:
+    """Item 1: Database cleanup helper purges expired records and leaves active ones untouched."""
+    service = BillingService(db_session)
+    now = datetime.now(UTC)
+
+    # 2 expired records
+    for i in range(2):
+        db_session.add(
+            IdempotencyKey(
+                id=uuid.uuid4(),
+                scope="cleanup_test",
+                idempotency_key=f"exp-{i}-{uuid.uuid4()}",
+                request_hash=f"h-exp-{i}",
+                response_status=200,
+                response_body="{}",
+                created_at=now - timedelta(hours=30),
+                expires_at=now - timedelta(hours=5),
+            )
+        )
+    # 2 active records
+    for i in range(2):
+        db_session.add(
+            IdempotencyKey(
+                id=uuid.uuid4(),
+                scope="cleanup_test",
+                idempotency_key=f"act-{i}-{uuid.uuid4()}",
+                request_hash=f"h-act-{i}",
+                response_status=200,
+                response_body="{}",
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+    db_session.commit()
+
+    deleted_count = service.cleanup_expired_idempotency_records()
+    assert deleted_count >= 2
+
+    # Verify active records still remain
+    active_remaining = (
+        db_session.query(IdempotencyKey).filter(IdempotencyKey.scope == "cleanup_test").count()
+    )
+    assert active_remaining == 2
+
+
+def _create_test_invoice(db_session: Session, flat_id: str, period: str = "2026-11") -> Invoice:
+    inv = Invoice(
+        id=uuid.uuid4(),
+        society_id=uuid.UUID(SOCIETY_ID),
+        flat_id=uuid.UUID(flat_id),
+        billing_period=period,
+        invoice_number=f"INV-TEST-{uuid.uuid4().hex[:6]}",
+        area_sqft_snapshot=1150,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=747500,
+        total_paise=747500,
+        due_date=datetime(2026, 12, 10, 18, 29, 59, tzinfo=UTC),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(inv)
+    db_session.commit()
+    return inv
+
+
+def test_razorpay_order_creation_and_overpayment_validation(
+    client: TestClient, db_session: Session
+) -> None:
+    """Item 3: Resident creates a Razorpay server-side test order; overpayment is rejected."""
+    # 1. Create a dedicated test invoice for Neeraj
+    inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-08")
+    inv_id = str(inv.id)
+    outstanding = inv.total_paise
+
+    # 2. Valid order creation
+    pay_amount = 500000
+    res_order = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/order",
+        headers=AUTH_NEERAJ,
+        json={"amount_paise": pay_amount},
+    )
+    assert res_order.status_code == 200
+    order_data = res_order.json()
+    assert order_data["order_id"].startswith("order_")
+    assert order_data["amount_paise"] == pay_amount
+    assert order_data["currency"] == "INR"
+    assert order_data["invoice_id"] == inv_id
+
+    # 3. Overpayment rejected
+    res_overpay = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/order",
+        headers=AUTH_NEERAJ,
+        json={"amount_paise": outstanding + 100000},
+    )
+    assert res_overpay.status_code in (400, 422)
+
+
+def test_razorpay_payment_verification_and_settlement(
+    client: TestClient, db_session: Session
+) -> None:
+    """Item 3: Valid Razorpay checkout signature is verified and finalizes payment atomically."""
+    # 1. Create a dedicated test invoice for Neeraj
+    inv = _create_test_invoice(db_session, FLAT_1203_ID, period="2026-09")
+    inv_id = str(inv.id)
+    pay_amount = inv.total_paise
+
+    # 2. Create Razorpay order
+    res_order = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/order",
+        headers=AUTH_NEERAJ,
+        json={"amount_paise": pay_amount},
+    )
+    assert res_order.status_code == 200
+    order_id = res_order.json()["order_id"]
+    payment_id = f"pay_test_{uuid.uuid4().hex[:10]}"
+
+    # Generate valid signature using provider helper
+    service = BillingService(db_session)
+    valid_sig = service.razorpay_provider.generate_test_signature(order_id, payment_id)
+
+    # 3. Verify and finalize payment
+    res_verify = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/verify",
+        headers=AUTH_NEERAJ,
+        json={
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": valid_sig,
+        },
+    )
+    assert res_verify.status_code == 200
+    verify_data = res_verify.json()
+    assert verify_data["status"] == "SUCCESS"
+    assert verify_data["provider"] == "RAZORPAY"
+    assert verify_data["amount_paise"] == pay_amount
+
+    # 4. Invariant: Invoice is now PAID
+    res_inv = client.get(f"/api/v1/billing/invoices/{inv_id}", headers=AUTH_NEERAJ)
+    assert res_inv.json()["status"] == "PAID"
+    assert res_inv.json()["outstanding_paise"] == 0
+
+    # 5. Invariant: Receipt can be generated
+    res_receipt = client.get(f"/api/v1/billing/invoices/{inv_id}/receipt", headers=AUTH_NEERAJ)
+    assert res_receipt.status_code == 200
+    assert res_receipt.json()["amount_paid_paise"] == pay_amount
+
+
+def test_razorpay_invalid_signature_rejected(client: TestClient, db_session: Session) -> None:
+    """Item 3: Invalid signature is rejected, payment marked FAILED, invoice remains UNPAID."""
+    # 1. Create a dedicated test invoice for Swati
+    inv = _create_test_invoice(db_session, FLAT_0408_ID, period="2026-09")
+    inv_id = str(inv.id)
+    pay_amount = inv.total_paise
+
+    # 2. Create Razorpay order
+    res_order = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/order",
+        headers=AUTH_SWATI,
+        json={"amount_paise": pay_amount},
+    )
+    order_id = res_order.json()["order_id"]
+
+    # 3. Submit invalid signature
+    res_verify = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/verify",
+        headers=AUTH_SWATI,
+        json={
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": "pay_fake_123",
+            "razorpay_signature": "invalid_forged_signature_hex",
+        },
+    )
+    assert res_verify.status_code in (400, 422)
+
+    # 4. Invariant: Invoice balance remains UNPAID
+    res_inv = client.get(f"/api/v1/billing/invoices/{inv_id}", headers=AUTH_SWATI)
+    assert res_inv.json()["status"] == "UNPAID"
+    assert res_inv.json()["outstanding_paise"] == pay_amount
+
+
+def test_razorpay_webhook_signature_and_event_flow(client: TestClient, db_session: Session) -> None:
+    """Item 3: Razorpay webhook callback with verified HMAC signature finalizes payment."""
+    # 1. Create a dedicated test invoice for Aamir
+    inv = _create_test_invoice(db_session, FLAT_1601_ID, period="2026-09")
+    inv_id = str(inv.id)
+    pay_amount = inv.total_paise
+
+    # 2. Create Razorpay order
+    res_order = client.post(
+        f"/api/v1/billing/invoices/{inv_id}/order",
+        headers=AUTH_AAMIR,
+        json={"amount_paise": pay_amount},
+    )
+    order_id = res_order.json()["order_id"]
+    payment_id = f"pay_wh_{uuid.uuid4().hex[:8]}"
+
+    service = BillingService(db_session)
+    webhook_payload = json.dumps(
+        {
+            "event": "payment.captured",
+            "payload": {
+                "payment": {
+                    "entity": {
+                        "id": payment_id,
+                        "order_id": order_id,
+                        "amount": pay_amount,
+                        "status": "captured",
+                        "notes": {"invoice_id": inv_id},
+                    }
+                }
+            },
+        }
+    ).encode("utf-8")
+
+    # Generate valid webhook signature
+    valid_sig = service.razorpay_provider.generate_webhook_signature(webhook_payload)
+
+    # 3. Call webhook with valid signature
+    res_wh = client.post(
+        "/api/v1/billing/webhook/razorpay",
+        content=webhook_payload,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": valid_sig},
+    )
+    assert res_wh.status_code == 200
+    assert res_wh.json()["status"] == "ok"
+
+    # 4. Call webhook with INVALID signature -> rejected
+    res_bad_wh = client.post(
+        "/api/v1/billing/webhook/razorpay",
+        content=webhook_payload,
+        headers={"Content-Type": "application/json", "X-Razorpay-Signature": "bad_sig"},
+    )
+    assert res_bad_wh.status_code in (400, 422)

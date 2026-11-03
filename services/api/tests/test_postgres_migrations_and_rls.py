@@ -21,6 +21,19 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, inspect, pool, text
+from sqlalchemy.orm import Session
+
+from app.domains.billing.models import Invoice, InvoiceStatus, PaymentStatus
+from app.domains.billing.service import BillingService
+from app.domains.identity.models import (
+    Flat,
+    FlatStatus,
+    Society,
+    SocietyStatus,
+    Tower,
+    User,
+    UserStatus,
+)
 
 POSTGRES_BASE_URL = os.environ.get(
     "TEST_POSTGRES_URL",
@@ -815,9 +828,9 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
     """Requirement: Two independent PostgreSQL sessions attempting ₹7,000 simultaneously against a ₹10,000 invoice.
 
     Only one should succeed due to SELECT ... FOR UPDATE row locking and balance re-check.
+    Calls actual BillingService.process_invoice_payment to verify transaction boundaries and concurrency safety.
     """
     import concurrent.futures
-    import time
 
     engine = postgres_test_db
     soc_id = uuid.uuid4()
@@ -827,117 +840,71 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
     inv_id = uuid.uuid4()
 
     # 1. Setup society, tower, flat, user, and ₹10,000 (1,000,000 paise) invoice
-    with engine.connect() as conn:
-        conn.execute(text("RESET ROLE;"))
-        conn.execute(
-            text(
-                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
-                "VALUES (:s, 'Conc Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
-            ),
-            {"s": soc_id},
+    with Session(engine) as session:
+        session.execute(text("RESET ROLE;"))
+        soc = Society(id=soc_id, name="Conc Soc", status=SocietyStatus.ACTIVE)
+        session.add(soc)
+        user = User(
+            id=user_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"conc-{uuid.uuid4().hex[:6]}@example.com",
+            phone=f"+9198{uuid.uuid4().int % 100000000:08d}",
+            full_name="Conc User",
+            status=UserStatus.ACTIVE,
         )
-        conn.execute(
-            text(
-                "INSERT INTO users (id, supabase_uid, email, phone, full_name, status, created_at, updated_at) "
-                "VALUES (:u, :sub, :email, :phone, 'Conc User', 'ACTIVE', NOW(), NOW());"
-            ),
-            {
-                "u": user_id,
-                "sub": uuid.uuid4(),
-                "email": f"conc-{uuid.uuid4().hex[:6]}@example.com",
-                "phone": f"+9198{uuid.uuid4().int % 100000000:08d}",
-            },
+        session.add(user)
+        tow = Tower(id=tow_id, society_id=soc_id, tower_number="T01", name="Tower 1")
+        session.add(tow)
+        flat = Flat(
+            id=flat_id,
+            society_id=soc_id,
+            tower_id=tow_id,
+            flat_number="701",
+            area_sqft=1000,
+            status=FlatStatus.OCCUPIED,
         )
-        conn.execute(
-            text(
-                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
-                "VALUES (:t, :s, 'T01', 'Tower 1', NOW());"
-            ),
-            {"t": tow_id, "s": soc_id},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
-                "VALUES (:f, :s, :t, '701', 1000, 'OCCUPIED', NOW(), NOW());"
-            ),
-            {"f": flat_id, "s": soc_id, "t": tow_id},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
-                "VALUES (:inv, :s, :f, '2026-11', 'INV-CONC-001', 1000, 1000, 1000000, 1000000, NOW(), 'UNPAID', NOW(), NOW());"
-            ),
-            {"inv": inv_id, "s": soc_id, "f": flat_id},
-        )
-        conn.commit()
+        session.add(flat)
+        session.commit()
 
-    # Worker function simulating payment service logic with SELECT ... FOR UPDATE
+        # Insert ₹10,000 invoice
+        inv = Invoice(
+            id=inv_id,
+            society_id=soc_id,
+            flat_id=flat_id,
+            billing_period="2026-11",
+            invoice_number="INV-CONC-001",
+            area_sqft_snapshot=1000,
+            rate_paise_per_sqft_snapshot=1000,
+            subtotal_paise=1000000,
+            total_paise=1000000,
+            due_date=datetime.now(UTC),
+            status=InvoiceStatus.UNPAID,
+        )
+        session.add(inv)
+        session.commit()
+
+    # Worker function executing real BillingService.process_invoice_payment
     # Payment amount = 700,000 paise (₹7,000)
-    def attempt_payment(worker_name: str) -> bool:
-        with engine.connect() as conn:
-            conn.execute(text("RESET ROLE;"))
-            conn.commit()  # commit RESET ROLE to clear transaction state before explicit begin
-            trans = conn.begin()
+    def attempt_payment(worker_name: str, idemp_key: str) -> bool:
+        with Session(engine) as session:
+            session.execute(text("RESET ROLE;"))
+            service = BillingService(session)
             try:
-                # STEP 1: Lock the invoice row exclusively
-                conn.execute(
-                    text("SELECT id, total_paise FROM invoices WHERE id = :inv FOR UPDATE;"),
-                    {"inv": inv_id},
+                res = service.process_invoice_payment(
+                    society_id=soc_id,
+                    invoice_id=inv_id,
+                    amount_paise=700000,
+                    user_id=user_id,
+                    simulate_failure=False,
+                    idempotency_key=idemp_key,
                 )
-
-                # STEP 2: Re-read existing allocations for this invoice while holding lock
-                allocated_row = conn.execute(
-                    text(
-                        "SELECT COALESCE(SUM(allocated_paise), 0) FROM payment_allocations WHERE invoice_id = :inv;"
-                    ),
-                    {"inv": inv_id},
-                ).scalar()
-                allocated_so_far = allocated_row or 0
-                outstanding = 1000000 - allocated_so_far
-
-                # STEP 3: Validate requested allocation against locked outstanding balance
-                requested = 700000  # ₹7,000
-                if requested > outstanding:
-                    # Over-allocation prevented!
-                    trans.rollback()
-                    return False
-
-                # STEP 4: Insert payment and allocation
-                pay_id = uuid.uuid4()
-                conn.execute(
-                    text(
-                        "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
-                        "VALUES (:p, :s, :f, :amt, 'INR', 'SIMULATED', :ref, 'SUCCESS', :u, NOW(), NOW());"
-                    ),
-                    {
-                        "p": pay_id,
-                        "s": soc_id,
-                        "f": flat_id,
-                        "amt": requested,
-                        "ref": f"REF-{worker_name}",
-                        "u": user_id,
-                    },
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO payment_allocations (id, payment_id, invoice_id, allocated_paise, created_at) "
-                        "VALUES (gen_random_uuid(), :p, :inv, :amt, NOW());"
-                    ),
-                    {"p": pay_id, "inv": inv_id, "amt": requested},
-                )
-
-                # Small sleep to simulate payment gateway latency while holding lock
-                time.sleep(0.1)
-
-                trans.commit()
-                return True
+                return res.status == PaymentStatus.SUCCESS
             except Exception:
-                trans.rollback()
                 return False
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        f1 = executor.submit(attempt_payment, "Worker-1")
-        f2 = executor.submit(attempt_payment, "Worker-2")
+        f1 = executor.submit(attempt_payment, "Worker-1", f"conc-key-1-{uuid.uuid4()}")
+        f2 = executor.submit(attempt_payment, "Worker-2", f"conc-key-2-{uuid.uuid4()}")
         results = [f1.result(), f2.result()]
 
     # Exactly ONE session must succeed and one must be rejected!
@@ -947,12 +914,83 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
     )
 
     # Verify final total allocated in PostgreSQL is strictly 700,000 paise (₹7,000), NOT 1,400,000 paise!
-    with engine.connect() as conn:
-        conn.execute(text("RESET ROLE;"))
-        total_allocated = conn.execute(
+    with Session(engine) as session:
+        session.execute(text("RESET ROLE;"))
+        total_allocated = session.execute(
             text("SELECT SUM(allocated_paise) FROM payment_allocations WHERE invoice_id = :inv;"),
             {"inv": inv_id},
         ).scalar()
         assert total_allocated == 700000, (
             f"Expected exactly 700000 allocated, got {total_allocated}"
         )
+
+
+def test_postgres_batch_billing_generation_bounded_operations(postgres_test_db: Engine) -> None:
+    """Requirement: Verify batch billing generation with bounded operations and CHUNK_SIZE=500 in PostgreSQL."""
+    import time
+
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    admin_id = uuid.uuid4()
+
+    with Session(engine) as session:
+        session.execute(text("RESET ROLE;"))
+        soc = Society(id=soc_id, name="PG Bounded Batch Township", status=SocietyStatus.ACTIVE)
+        session.add(soc)
+
+        # Create 5 towers with 100 flats each = 500 flats (one full chunk)
+        flats = []
+        for t_idx in range(5):
+            tow_id = uuid.uuid4()
+            tow = Tower(
+                id=tow_id,
+                society_id=soc_id,
+                tower_number=f"PG-T{t_idx:02d}",
+                name=f"PG Tower {t_idx}",
+            )
+            session.add(tow)
+            for f_idx in range(100):
+                flat = Flat(
+                    id=uuid.uuid4(),
+                    society_id=soc_id,
+                    tower_id=tow_id,
+                    flat_number=f"{t_idx:02d}-{f_idx:03d}",
+                    area_sqft=1000 + (f_idx % 5) * 50,
+                    status=FlatStatus.OCCUPIED,
+                )
+                flats.append(flat)
+        session.add_all(flats)
+        session.commit()
+
+        service = BillingService(session)
+        service.repo.create_default_billing_config(
+            society_id=soc_id,
+            effective_from=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        # Invariant 1: CHUNK_SIZE must be bounded to 500
+        assert service.CHUNK_SIZE == 500
+
+        # Invariant 2: Execution across 500 flats in PostgreSQL completes efficiently (< 5.0 seconds)
+        start_time = time.perf_counter()
+        run = service.execute_billing_run(
+            society_id=soc_id,
+            billing_period="2027-02",
+            actor_id=admin_id,
+        )
+        elapsed = time.perf_counter() - start_time
+
+        assert run.total_invoiced_flats == 500
+        assert run.status == "COMPLETED"
+        assert elapsed < 5.0, (
+            f"500-flat PostgreSQL batch generation took {elapsed:.2f}s, exceeding 5.0s threshold"
+        )
+
+        # Verify database invoice count matches exactly 500
+        count = session.execute(
+            text(
+                "SELECT COUNT(*) FROM invoices WHERE society_id = :soc AND billing_period = '2027-02';"
+            ),
+            {"soc": soc_id},
+        ).scalar()
+        assert count == 500

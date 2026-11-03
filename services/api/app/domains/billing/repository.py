@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.errors import ConflictError
@@ -37,6 +37,7 @@ from app.domains.identity.models import (
     Tower,
     User,
 )
+from app.domains.reliability.models import IdempotencyKey
 
 
 def utc_now() -> datetime:
@@ -357,6 +358,20 @@ class BillingRepository:
             stmt = stmt.where(Payment.society_id == society_id)
         return self.db.scalars(stmt).unique().first()
 
+    def get_payment_by_reference(self, provider: str, provider_reference: str) -> Payment | None:
+        """Finds a payment record by payment provider and reference (e.g. Razorpay order_id or payment_id)."""
+        stmt = (
+            select(Payment)
+            .options(
+                joinedload(Payment.allocations).joinedload(PaymentAllocation.invoice),
+            )
+            .where(
+                Payment.provider == provider,
+                Payment.provider_reference == provider_reference,
+            )
+        )
+        return self.db.scalars(stmt).unique().first()
+
     def get_payments_for_flats(
         self,
         flat_ids: list[UUID],
@@ -566,3 +581,14 @@ class BillingRepository:
             "paid_count": agg.paid_count or 0,
             "overdue_count": agg.overdue_count or 0,
         }
+
+    def cleanup_expired_idempotency_keys(self) -> int:
+        """Deletes expired idempotency records from the database.
+
+        Returns the number of deleted records.
+        """
+        now = utc_now()
+        stmt = delete(IdempotencyKey).where(IdempotencyKey.expires_at <= now)
+        res = self.db.execute(stmt)
+        self.db.commit()
+        return res.rowcount or 0
