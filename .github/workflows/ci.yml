@@ -69,6 +69,7 @@ jobs:
           MESSAGING_PROVIDER: "local"
         run: |
           cd services/api
+          set -eo pipefail
           pytest -v --cov=app --cov-report=term-missing --cov-report=xml --tb=short 2>&1 | tee pytest_output.log
 
       - name: Publish Pytest Failure to Step Summary

@@ -16,7 +16,6 @@ FINANCIAL INVARIANTS:
 - Billing configuration is selected by effective_from <= period_start for historical accuracy.
 """
 
-import contextlib
 import hashlib
 import json
 import re
@@ -30,7 +29,9 @@ from sqlalchemy.orm import Session
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.domains.billing.models import (
     BillingRun,
+    FinancialLedgerEntry,
     Invoice,
+    InvoiceLineItem,
     InvoiceStatus,
     LedgerEntryType,
     PaymentStatus,
@@ -253,8 +254,16 @@ class BillingService:
         # Fetch period-effective configuration (historical rate correctness)
         config = self.repo.get_billing_config_for_period(society_id, period_start)
         if not config:
-            # Fall back to create/get default if no config at all
-            config = self.repo.get_or_create_billing_config(society_id)
+            existing_configs = self.repo.get_all_billing_configs(society_id)
+            if existing_configs:
+                earliest_date = existing_configs[0].effective_from.strftime("%Y-%m-%d")
+                raise ValidationError(
+                    f"No billing configuration is effective for period {billing_period} (starts {period_start.strftime('%Y-%m-%d')}). "
+                    f"Earliest configured rate takes effect on {earliest_date}. Retroactive application of future rates is prohibited."
+                )
+            config = self.repo.create_default_billing_config(
+                society_id, effective_from=period_start
+            )
 
         rate = config.rate_paise_per_sqft
         due_date = _calculate_due_date_utc(year, month, config.due_day)
@@ -370,7 +379,16 @@ class BillingService:
         period_start = _billing_period_start_utc(year, month)
         config = self.repo.get_billing_config_for_period(society_id, period_start)
         if not config:
-            config = self.repo.get_or_create_billing_config(society_id)
+            existing_configs = self.repo.get_all_billing_configs(society_id)
+            if existing_configs:
+                earliest_date = existing_configs[0].effective_from.strftime("%Y-%m-%d")
+                raise ValidationError(
+                    f"No billing configuration is effective for period {billing_period} (starts {period_start.strftime('%Y-%m-%d')}). "
+                    f"Earliest configured rate takes effect on {earliest_date}. Retroactive application of future rates is prohibited."
+                )
+            config = self.repo.create_default_billing_config(
+                society_id, effective_from=period_start
+            )
         rate = config.rate_paise_per_sqft
 
         invoiced_count = 0
@@ -378,31 +396,22 @@ class BillingService:
         generated_invoice_ids: list[str] = []
 
         try:
-            # PERFORMANCE: Accumulate objects; single flush at end instead of per-flat flush
+            # PERFORMANCE: Bounded batch insertions (CHUNK_SIZE = 500) to eliminate thousands of per-flat flushes
+            CHUNK_SIZE = 500
+            chunk_invoices: list[Invoice] = []
+            chunk_line_items: list[InvoiceLineItem] = []
+            chunk_ledger_entries: list[FinancialLedgerEntry] = []
             audit_events = []
             outbox_events = []
 
             for item in preview.eligible_flats:
-                # Generate unique invoice number: INV-YYYYMM-TOW-FLAT
                 clean_period = billing_period.replace("-", "")
                 invoice_num = f"INV-{clean_period}-{item.tower_number}-{item.flat_number}"
-
-                # Calculate maintenance charge
                 charge_paise = item.area_sqft * rate
+                inv_id = uuid.uuid4()
 
-                # CORRECTNESS FIX: quantity = area_sqft, unit_rate = rate per sqft
-                # Previously used quantity=1 and total as unit_rate (incorrect display).
-                line_items = [
-                    {
-                        "description": f"Monthly Maintenance — {billing_period}",
-                        "quantity": item.area_sqft,  # sq ft as quantity
-                        "unit_rate_paise": rate,  # paise per sq ft
-                        "amount_paise": charge_paise,  # area × rate
-                    }
-                ]
-
-                # 1. Persist Invoice and Line Item (no per-flat flush)
-                invoice = self.repo.create_invoice(
+                invoice = Invoice(
+                    id=inv_id,
                     society_id=society_id,
                     flat_id=item.flat_id,
                     billing_period=billing_period,
@@ -412,21 +421,33 @@ class BillingService:
                     subtotal_paise=charge_paise,
                     total_paise=charge_paise,
                     due_date=due_date,
-                    line_items_data=line_items,
+                    status=InvoiceStatus.UNPAID,
                 )
+                chunk_invoices.append(invoice)
 
-                # 2. Append to immutable financial ledger
-                self.repo.append_ledger_entry(
+                line_item = InvoiceLineItem(
+                    id=uuid.uuid4(),
+                    invoice_id=inv_id,
+                    description=f"Monthly Maintenance ({billing_period}) - {item.area_sqft} sq ft @ ₹{rate / 100:.2f}/sq ft",
+                    quantity=item.area_sqft,
+                    unit_rate_paise=rate,
+                    amount_paise=charge_paise,
+                )
+                chunk_line_items.append(line_item)
+
+                ledger_entry = FinancialLedgerEntry(
+                    id=uuid.uuid4(),
                     society_id=society_id,
                     flat_id=item.flat_id,
-                    invoice_id=invoice.id,
+                    invoice_id=inv_id,
+                    payment_id=None,
                     entry_type=LedgerEntryType.CHARGE,
                     amount_paise=charge_paise,
                     description=f"Monthly maintenance charge for {item.tower_number}-{item.flat_number} ({billing_period})",
-                    reference_id=invoice.invoice_number,
+                    reference_id=invoice_num,
                 )
+                chunk_ledger_entries.append(ledger_entry)
 
-                # 3. Accumulate Audit + Outbox events (add all at end for bulk insert)
                 audit_events.append(
                     AuditEvent(
                         id=uuid.uuid4(),
@@ -434,10 +455,10 @@ class BillingService:
                         actor_id=actor_id,
                         action="INVOICE_GENERATED",
                         resource_type="invoice",
-                        resource_id=str(invoice.id),
+                        resource_id=str(inv_id),
                         correlation_id=corr_id,
                         event_metadata={
-                            "invoice_number": invoice.invoice_number,
+                            "invoice_number": invoice_num,
                             "flat_id": str(item.flat_id),
                             "total_paise": charge_paise,
                             "billing_period": billing_period,
@@ -451,9 +472,9 @@ class BillingService:
                         id=uuid.uuid4(),
                         event_type="billing.invoice_generated",
                         aggregate_type="invoice",
-                        aggregate_id=str(invoice.id),
+                        aggregate_id=str(inv_id),
                         payload={
-                            "invoice_id": str(invoice.id),
+                            "invoice_id": str(inv_id),
                             "society_id": str(society_id),
                             "flat_id": str(item.flat_id),
                             "billing_period": billing_period,
@@ -466,9 +487,24 @@ class BillingService:
 
                 invoiced_count += 1
                 total_charges_paise += charge_paise
-                generated_invoice_ids.append(str(invoice.id))
+                generated_invoice_ids.append(str(inv_id))
 
-            # PERFORMANCE: Bulk add all events in one operation
+                if len(chunk_invoices) >= CHUNK_SIZE:
+                    self.repo.create_invoices_batch(
+                        chunk_invoices, chunk_line_items, chunk_ledger_entries
+                    )
+                    chunk_invoices.clear()
+                    chunk_line_items.clear()
+                    chunk_ledger_entries.clear()
+
+            if chunk_invoices:
+                self.repo.create_invoices_batch(
+                    chunk_invoices, chunk_line_items, chunk_ledger_entries
+                )
+                chunk_invoices.clear()
+                chunk_line_items.clear()
+                chunk_ledger_entries.clear()
+
             self.db.add_all(audit_events)
             self.db.add_all(outbox_events)
 
@@ -573,8 +609,12 @@ class BillingService:
                     "Idempotency key reuse with differing request payload is prohibited."
                 )
             if idemp_record.response_body:
-                # Return the stored response from the completed prior request
                 data = json.loads(idemp_record.response_body)
+                if idemp_record.response_status and idemp_record.response_status >= 400:
+                    error_msg = data.get("error", "Payment validation failed")
+                    if idemp_record.response_status == 404:
+                        raise NotFoundError(error_msg)
+                    raise ValidationError(error_msg)
                 return PaymentResponse(**data)
             # Key exists but no response yet → concurrent in-flight request
             raise ConflictError(
@@ -925,8 +965,8 @@ class BillingService:
                 expires_at=utc_now() + timedelta(hours=24),
             )
             self.db.add(record)
-            self.db.flush()
-            return None  # Successfully reserved — this is the first caller
+            self.db.commit()
+            return None  # Successfully reserved and committed — this is the first caller
         except IntegrityError:
             self.db.rollback()
             # Another concurrent request inserted the same key just before us
@@ -976,7 +1016,11 @@ class BillingService:
         status: int,
         message: str,
     ) -> None:
-        """Persists a validation failure response to the idempotency record."""
+        """Persists a validation failure response to the idempotency record.
+
+        Ensures the failed outcome survives the rollback of the payment transaction.
+        """
+        self.db.rollback()
         self._complete_idempotency_key(
             idempotency_key=idempotency_key,
             scope=scope,
@@ -984,8 +1028,7 @@ class BillingService:
             status=status,
             body=json.dumps({"error": message}),
         )
-        with contextlib.suppress(Exception):
-            self.db.flush()
+        self.db.commit()
 
     # -------------------------------------------------------------------------
     # Receipt Details

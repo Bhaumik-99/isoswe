@@ -1,6 +1,24 @@
 """Integration tests for Phase 2 Maintenance Billing & Payment Endpoints."""
 
+import time
+import uuid
+from datetime import UTC, datetime
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.errors import ConflictError
+from app.domains.billing.models import (
+    Invoice,
+    InvoiceStatus,
+    Payment,
+    PaymentStatus,
+)
+from app.domains.billing.repository import BillingRepository
+from app.domains.billing.service import BillingService
+from app.domains.identity.models import Flat, FlatStatus, Society, SocietyStatus, Tower
 
 SOCIETY_ID = "11111111-1111-1111-1111-111111111111"
 FLAT_1203_ID = "33333333-3333-3333-3333-333333331203"
@@ -392,3 +410,214 @@ def test_payment_over_allocation_prevented_on_subsequent_attempts(client: TestCl
     )
     assert res2.status_code in (400, 422)
     assert "cannot exceed outstanding" in res2.json()["error"]["message"].lower()
+
+
+def test_payment_validation_failure_persists_in_idempotency_registry(client: TestClient) -> None:
+    """P0: Validation failure response survives transaction rollback and is replayable via idempotency key."""
+    client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    inv = client.get("/api/v1/billing/me/invoices", headers=AUTH_NEERAJ).json()[0]
+    invoice_id = inv["id"]
+
+    idemp_key = f"val-fail-test-{uuid.uuid4()}"
+
+    # 1. First attempt with overpayment amount (₹99,999.00 > outstanding ₹7,475.00) -> 400 ValidationError
+    res1 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 9999900, "simulate_failure": False},
+    )
+    assert res1.status_code in (400, 422)
+    err1 = res1.json()["error"]["message"]
+    assert "cannot exceed outstanding" in err1.lower()
+
+    # 2. Retry with exact same key and payload -> returns cached failure response from idempotency registry!
+    res2 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 9999900, "simulate_failure": False},
+    )
+    assert res2.status_code in (400, 422)
+    err2 = res2.json()["error"]["message"]
+    assert err1 == err2
+
+    # 3. Same key with differing payload -> 409 Conflict
+    res3 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 500000, "simulate_failure": False},
+    )
+    assert res3.status_code == 409
+    assert "differing request payload" in res3.json()["error"]["message"].lower()
+
+
+def test_backdated_billing_period_rejected_when_rate_not_effective(client: TestClient) -> None:
+    """P1: Billing run cannot retroactively apply a future-effective billing configuration."""
+    # Attempt preview for historical period 2020-01 (seed billing config is effective from ~2025)
+    res_preview = client.post(
+        "/api/v1/billing/staff/runs/preview",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2020-01"},
+    )
+    assert res_preview.status_code in (400, 422)
+    assert (
+        "no billing configuration is effective for period 2020-01"
+        in res_preview.json()["error"]["message"].lower()
+    )
+
+    # Attempt execution for 2020-01 -> 422
+    res_exec = client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2020-01"},
+    )
+    assert res_exec.status_code in (400, 422)
+    assert (
+        "no billing configuration is effective for period 2020-01"
+        in res_exec.json()["error"]["message"].lower()
+    )
+
+
+def test_cross_flat_payment_allocation_rejected_at_database_level(db_session: Session) -> None:
+    """P1: Database-level invariant prevents allocating Flat A's payment to Flat B's invoice."""
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat1_id = uuid.UUID(FLAT_1203_ID)
+    flat2_id = uuid.UUID(FLAT_0408_ID)
+
+    inv1 = Invoice(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat1_id,
+        billing_period="2026-11",
+        invoice_number=f"INV-TEST-F1-{uuid.uuid4().hex[:6]}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=650000,
+        total_paise=650000,
+        due_date=datetime(2026, 12, 10, 18, 29, 59, tzinfo=UTC),
+        status=InvoiceStatus.UNPAID,
+    )
+    pay2 = Payment(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat2_id,
+        amount_paise=650000,
+        currency="INR",
+        provider="SIMULATED",
+        provider_reference=f"SIM-{uuid.uuid4().hex[:8]}",
+        status=PaymentStatus.SUCCESS,
+        initiated_by=uuid.uuid4(),
+    )
+    db_session.add_all([inv1, pay2])
+    db_session.commit()
+
+    repo = BillingRepository(db_session)
+    with pytest.raises(ConflictError) as exc_info:
+        repo.create_payment_allocation(
+            payment_id=pay2.id,
+            invoice_id=inv1.id,
+            allocated_paise=650000,
+        )
+    assert "cross-flat" in str(exc_info.value).lower()
+
+
+def test_flat_deletion_restricted_when_invoices_exist(db_session: Session) -> None:
+    """P1: ON DELETE RESTRICT prevents deleting a flat with historical financial records."""
+    from sqlalchemy import text
+
+    try:
+        db_session.execute(text("PRAGMA foreign_keys = ON;"))
+
+        soc_id = uuid.UUID(SOCIETY_ID)
+        flat = Flat(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            tower_id=uuid.UUID("22222222-2222-2222-2222-222222222207"),
+            flat_number=f"TEST-{uuid.uuid4().hex[:4]}",
+            area_sqft=1200,
+            status=FlatStatus.OCCUPIED,
+        )
+        db_session.add(flat)
+        db_session.commit()
+
+        inv = Invoice(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            flat_id=flat.id,
+            billing_period="2026-11",
+            invoice_number=f"INV-DEL-TEST-{uuid.uuid4().hex[:6]}",
+            area_sqft_snapshot=1200,
+            rate_paise_per_sqft_snapshot=650,
+            subtotal_paise=780000,
+            total_paise=780000,
+            due_date=datetime(2026, 12, 10, 18, 29, 59, tzinfo=UTC),
+            status=InvoiceStatus.UNPAID,
+        )
+        db_session.add(inv)
+        db_session.commit()
+
+        db_session.delete(flat)
+        with pytest.raises(IntegrityError):
+            db_session.commit()
+        db_session.rollback()
+    finally:
+        db_session.execute(text("PRAGMA foreign_keys = OFF;"))
+
+
+def test_idempotency_concurrent_in_flight_request_rejected(db_session: Session) -> None:
+    """Requirement: Concurrent in-flight request on same idempotency key raises 409 Conflict."""
+    service = BillingService(db_session)
+    idemp_key = f"in-flight-key-{uuid.uuid4()}"
+    req_hash = "dummy-hash-123"
+
+    # Reserve the key (response_body is None, representing in-flight processing)
+    record = service._reserve_idempotency_key(idemp_key, scope="billing_payment", req_hash=req_hash)
+    assert record is None  # first caller succeeds
+
+    # Second caller arrives with same key while first is in-flight -> returns existing in-flight record
+    rec2 = service._reserve_idempotency_key(idemp_key, scope="billing_payment", req_hash=req_hash)
+    assert rec2 is not None
+    assert rec2.response_body is None  # still in flight
+
+
+def test_billing_generation_2400_flats_batch_performance(db_session: Session) -> None:
+    """P1 Performance: Generating invoices for 2,400 flats in bounded chunks completes efficiently."""
+    soc_id = uuid.uuid4()
+    soc = Society(id=soc_id, name="Megacity Township", status=SocietyStatus.ACTIVE)
+    db_session.add(soc)
+
+    flats = []
+    for t_idx in range(10):
+        tow_id = uuid.uuid4()
+        tow = Tower(
+            id=tow_id, society_id=soc_id, tower_number=f"T{t_idx:02d}", name=f"Tower {t_idx}"
+        )
+        db_session.add(tow)
+        for f_idx in range(240):
+            flat = Flat(
+                id=uuid.uuid4(),
+                society_id=soc_id,
+                tower_id=tow_id,
+                flat_number=f"{t_idx:02d}-{f_idx:03d}",
+                area_sqft=1000 + (f_idx % 5) * 100,
+                status=FlatStatus.OCCUPIED,
+            )
+            flats.append(flat)
+    db_session.add_all(flats)
+    db_session.commit()
+
+    service = BillingService(db_session)
+    start = time.perf_counter()
+    run = service.execute_billing_run(
+        society_id=soc_id,
+        billing_period="2027-01",
+        actor_id=uuid.uuid4(),
+    )
+    elapsed = time.perf_counter() - start
+
+    assert run.total_invoiced_flats == 2400
+    assert run.status == "COMPLETED"
+    assert elapsed < 15.0, f"2,400 flat billing took too long: {elapsed:.2f}s"

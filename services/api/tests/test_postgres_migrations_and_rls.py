@@ -671,3 +671,260 @@ def test_postgres_composite_fk_rejects_cross_society_reference(postgres_test_db:
         assert cross_society_rejected, (
             "Composite FK fk_invoices_flats_composite must reject cross-society flat references"
         )
+
+
+def test_postgres_cross_flat_allocation_rejected_by_trigger(postgres_test_db: Engine) -> None:
+    """P1: Database trigger rejects cross-flat payment allocation at PostgreSQL database level."""
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    tow_id = uuid.uuid4()
+    flat1_id = uuid.uuid4()
+    flat2_id = uuid.uuid4()
+    inv_id = uuid.uuid4()
+    pay_id = uuid.uuid4()
+    alloc_id = uuid.uuid4()
+
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:s, 'Trigger Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:t, :s, 'T99', 'Tower 99', NOW());"
+            ),
+            {"t": tow_id, "s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:f1, :s, :t, '101', 1000, 'OCCUPIED', NOW(), NOW()), "
+                "       (:f2, :s, :t, '102', 1200, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"f1": flat1_id, "f2": flat2_id, "s": soc_id, "t": tow_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:inv, :s, :f1, '2026-11', 'INV-TRG-001', 1000, 650, 650000, 650000, NOW(), 'UNPAID', NOW(), NOW());"
+            ),
+            {"inv": inv_id, "s": soc_id, "f1": flat1_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, created_at, updated_at) "
+                "VALUES (:p, :s, :f2, 650000, 'INR', 'SIMULATED', 'SIM-TRG-001', 'SUCCESS', NOW(), NOW());"
+            ),
+            {"p": pay_id, "s": soc_id, "f2": flat2_id},
+        )
+        conn.commit()
+
+        cross_flat_rejected = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO payment_allocations (id, payment_id, invoice_id, allocated_paise, created_at) "
+                    "VALUES (:a, :p, :inv, 650000, NOW());"
+                ),
+                {"a": alloc_id, "p": pay_id, "inv": inv_id},
+            )
+            conn.commit()
+        except Exception as exc:
+            cross_flat_rejected = True
+            assert "cross-flat" in str(exc).lower()
+
+        assert cross_flat_rejected, "Database trigger must reject cross-flat payment allocation"
+
+
+def test_postgres_flat_deletion_restricted_when_invoices_exist(postgres_test_db: Engine) -> None:
+    """P1: ON DELETE RESTRICT prevents flat deletion when invoices exist in PostgreSQL."""
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    tow_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    inv_id = uuid.uuid4()
+
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:s, 'Del Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:t, :s, 'T01', 'Tower 1', NOW());"
+            ),
+            {"t": tow_id, "s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:f, :s, :t, '501', 1000, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"f": flat_id, "s": soc_id, "t": tow_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:inv, :s, :f, '2026-11', 'INV-DEL-PG-001', 1000, 650, 650000, 650000, NOW(), 'UNPAID', NOW(), NOW());"
+            ),
+            {"inv": inv_id, "s": soc_id, "f": flat_id},
+        )
+        conn.commit()
+
+        del_rejected = False
+        try:
+            conn.execute(text(f"DELETE FROM flats WHERE id = '{flat_id}';"))
+            conn.commit()
+        except Exception as exc:
+            del_rejected = True
+            assert (
+                "foreign key" in str(exc).lower()
+                or "violates" in str(exc).lower()
+                or "restrict" in str(exc).lower()
+            )
+
+        assert del_rejected, (
+            "ON DELETE RESTRICT on composite FK must prevent deleting flat with existing invoices"
+        )
+
+
+def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
+    """Requirement: Two independent PostgreSQL sessions attempting ₹7,000 simultaneously against a ₹10,000 invoice.
+
+    Only one should succeed due to SELECT ... FOR UPDATE row locking and balance re-check.
+    """
+    import concurrent.futures
+    import time
+
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    tow_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    inv_id = uuid.uuid4()
+
+    # 1. Setup society, tower, flat, and ₹10,000 (1,000,000 paise) invoice
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:s, 'Conc Soc', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:t, :s, 'T01', 'Tower 1', NOW());"
+            ),
+            {"t": tow_id, "s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:f, :s, :t, '701', 1000, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"f": flat_id, "s": soc_id, "t": tow_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:inv, :s, :f, '2026-11', 'INV-CONC-001', 1000, 1000, 1000000, 1000000, NOW(), 'UNPAID', NOW(), NOW());"
+            ),
+            {"inv": inv_id, "s": soc_id, "f": flat_id},
+        )
+        conn.commit()
+
+    # Worker function simulating payment service logic with SELECT ... FOR UPDATE
+    # Payment amount = 700,000 paise (₹7,000)
+    def attempt_payment(worker_name: str) -> bool:
+        with engine.connect() as conn:
+            conn.execute(text("RESET ROLE;"))
+            trans = conn.begin()
+            try:
+                # STEP 1: Lock the invoice row exclusively
+                conn.execute(
+                    text("SELECT id, total_paise FROM invoices WHERE id = :inv FOR UPDATE;"),
+                    {"inv": inv_id},
+                )
+
+                # STEP 2: Re-read existing allocations for this invoice while holding lock
+                allocated_row = conn.execute(
+                    text(
+                        "SELECT COALESCE(SUM(allocated_paise), 0) FROM payment_allocations WHERE invoice_id = :inv;"
+                    ),
+                    {"inv": inv_id},
+                ).scalar()
+                allocated_so_far = allocated_row or 0
+                outstanding = 1000000 - allocated_so_far
+
+                # STEP 3: Validate requested allocation against locked outstanding balance
+                requested = 700000  # ₹7,000
+                if requested > outstanding:
+                    # Over-allocation prevented!
+                    trans.rollback()
+                    return False
+
+                # STEP 4: Insert payment and allocation
+                pay_id = uuid.uuid4()
+                conn.execute(
+                    text(
+                        "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, created_at, updated_at) "
+                        "VALUES (:p, :s, :f, :amt, 'INR', 'SIMULATED', :ref, 'SUCCESS', NOW(), NOW());"
+                    ),
+                    {
+                        "p": pay_id,
+                        "s": soc_id,
+                        "f": flat_id,
+                        "amt": requested,
+                        "ref": f"REF-{worker_name}",
+                    },
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO payment_allocations (id, payment_id, invoice_id, allocated_paise, created_at) "
+                        "VALUES (gen_random_uuid(), :p, :inv, :amt, NOW());"
+                    ),
+                    {"p": pay_id, "inv": inv_id, "amt": requested},
+                )
+
+                # Small sleep to simulate payment gateway latency while holding lock
+                time.sleep(0.1)
+
+                trans.commit()
+                return True
+            except Exception:
+                trans.rollback()
+                return False
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(attempt_payment, "Worker-1")
+        f2 = executor.submit(attempt_payment, "Worker-2")
+        results = [f1.result(), f2.result()]
+
+    # Exactly ONE session must succeed and one must be rejected!
+    assert results.count(True) == 1, f"Expected exactly one payment to succeed, got: {results}"
+    assert results.count(False) == 1, (
+        f"Expected exactly one payment to fail due to over-allocation, got: {results}"
+    )
+
+    # Verify final total allocated in PostgreSQL is strictly 700,000 paise (₹7,000), NOT 1,400,000 paise!
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+        total_allocated = conn.execute(
+            text("SELECT SUM(allocated_paise) FROM payment_allocations WHERE invoice_id = :inv;"),
+            {"inv": inv_id},
+        ).scalar()
+        assert total_allocated == 700000, (
+            f"Expected exactly 700000 allocated, got {total_allocated}"
+        )

@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.errors import ConflictError
 from app.domains.billing.models import (
     BillingConfiguration,
     BillingRun,
@@ -94,6 +95,31 @@ class BillingRepository:
             .order_by(BillingConfiguration.effective_from.desc())
         )
         return self.db.scalars(stmt).first()
+
+    def get_all_billing_configs(self, society_id: UUID) -> list[BillingConfiguration]:
+        """Returns all billing configurations for a society ordered by effective date ascending."""
+        stmt = (
+            select(BillingConfiguration)
+            .where(BillingConfiguration.society_id == society_id)
+            .order_by(BillingConfiguration.effective_from.asc())
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def create_default_billing_config(
+        self, society_id: UUID, effective_from: datetime | None = None
+    ) -> BillingConfiguration:
+        """Creates the initial default billing configuration with an explicit effective date."""
+        config = BillingConfiguration(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            rate_paise_per_sqft=650,  # ₹6.50 / sq ft = 650 paise
+            currency="INR",
+            effective_from=effective_from or utc_now(),
+            due_day=10,
+        )
+        self.db.add(config)
+        self.db.flush()
+        return config
 
     def get_latest_billing_config(self, society_id: UUID) -> BillingConfiguration | None:
         """Returns the most recently created configuration WITHOUT creating a default.
@@ -304,6 +330,18 @@ class BillingRepository:
         self.db.flush()
         return invoice
 
+    def create_invoices_batch(
+        self,
+        invoices: list[Invoice],
+        line_items: list[InvoiceLineItem],
+        ledger_entries: list[FinancialLedgerEntry],
+    ) -> None:
+        """Batch persists invoices, line items, and ledger entries in bounded chunks without per-flat flushes."""
+        self.db.add_all(invoices)
+        self.db.add_all(line_items)
+        self.db.add_all(ledger_entries)
+        self.db.flush()
+
     # -------------------------------------------------------------------------
     # Payments & Allocations
     # -------------------------------------------------------------------------
@@ -371,6 +409,15 @@ class BillingRepository:
         invoice_id: UUID,
         allocated_paise: int,
     ) -> PaymentAllocation:
+        # Enforce that payment and invoice belong to identical society and flat
+        payment = self.db.get(Payment, payment_id)
+        invoice = self.db.get(Invoice, invoice_id)
+        if payment and invoice:
+            if payment.society_id != invoice.society_id:
+                raise ConflictError("Cross-society payment allocation rejected: society mismatch")
+            if payment.flat_id != invoice.flat_id:
+                raise ConflictError("Cross-flat payment allocation rejected: flat mismatch")
+
         allocation = PaymentAllocation(
             id=uuid.uuid4(),
             payment_id=payment_id,
