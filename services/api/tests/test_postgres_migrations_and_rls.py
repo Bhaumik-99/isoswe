@@ -900,6 +900,7 @@ def test_postgres_concurrent_payment_locking(postgres_test_db: Engine) -> None:
                 )
                 return res.status == PaymentStatus.SUCCESS
             except Exception:
+                # ValidationError is expected for the losing concurrent session (over-allocation prevented)
                 return False
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -937,6 +938,16 @@ def test_postgres_batch_billing_generation_bounded_operations(postgres_test_db: 
         session.execute(text("RESET ROLE;"))
         soc = Society(id=soc_id, name="PG Bounded Batch Township", status=SocietyStatus.ACTIVE)
         session.add(soc)
+
+        admin_user = User(
+            id=admin_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"admin-{uuid.uuid4().hex[:6]}@example.com",
+            phone=f"+9197{uuid.uuid4().int % 100000000:08d}",
+            full_name="Batch Admin",
+            status=UserStatus.ACTIVE,
+        )
+        session.add(admin_user)
 
         # Create 5 towers with 100 flats each = 500 flats (one full chunk)
         flats = []
