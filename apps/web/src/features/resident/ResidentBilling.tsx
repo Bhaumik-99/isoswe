@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard,
@@ -29,6 +29,12 @@ export const ResidentBilling: React.FC = () => {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [paymentSuccessNotice, setPaymentSuccessNotice] = useState<string | null>(null);
 
+  // IDEMPOTENCY: Store a stable key per payment attempt. The same key is reused
+  // for retries of the same logical payment. It is regenerated only when the user
+  // opens a new payment modal (i.e., starts a new payment attempt).
+  // Generating a new random key on every mutation call would defeat idempotency guarantees.
+  const idempotencyKeyRef = useRef<string | null>(null);
+
   // Queries
   const {
     data: summary,
@@ -58,7 +64,10 @@ export const ResidentBilling: React.FC = () => {
       amountPaise: number;
       failure: boolean;
     }) => {
-      const idempKey = 'idemp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+      // IDEMPOTENCY: Reuse the stable key for retries of this payment attempt.
+      // A new key is generated only when the user opens the payment modal (handleOpenPaymentModal).
+      const idempKey = idempotencyKeyRef.current ?? ('pay-' + crypto.randomUUID());
+      idempotencyKeyRef.current = idempKey;
       return billingService.initiatePayment(invoiceId, amountPaise, failure, idempKey);
     },
     onSuccess: (payment) => {
@@ -83,6 +92,9 @@ export const ResidentBilling: React.FC = () => {
   });
 
   const handleOpenPaymentModal = (invoice: Invoice) => {
+    // Generate a fresh idempotency key when the user opens a NEW payment attempt.
+    // This key is stable for retries of this specific attempt (see paymentMutation above).
+    idempotencyKeyRef.current = 'pay-' + crypto.randomUUID();
     setSelectedInvoiceForPayment(invoice);
     setPaymentAmountRupees((invoice.outstanding_paise / 100).toString());
     setPaymentError(null);
@@ -212,7 +224,7 @@ export const ResidentBilling: React.FC = () => {
                 <Calendar className="h-5 w-5" />
               </div>
             </div>
-            <p className="text-[11px] text-slate-500 mt-3">Monthly cycle due on 15th</p>
+            <p className="text-[11px] text-slate-500 mt-3">Monthly cycle due date as per society policy</p>
           </CardContent>
         </Card>
 
@@ -591,7 +603,7 @@ export const ResidentBilling: React.FC = () => {
                     {selectedInvoiceForDetail.line_items.map((item) => (
                       <tr key={item.id}>
                         <td className="py-2 px-3 font-medium text-slate-900">{item.description}</td>
-                        <td className="py-2 px-3 text-center text-slate-600">{item.quantity} sq ft</td>
+                        <td className="py-2 px-3 text-center text-slate-600">{item.quantity.toLocaleString()} sq ft</td>
                         <td className="py-2 px-3 text-right font-mono text-slate-600">
                           ₹{(item.unit_rate_paise / 100).toFixed(2)}
                         </td>

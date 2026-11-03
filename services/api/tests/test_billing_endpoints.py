@@ -153,7 +153,7 @@ def test_simulated_payment_partial_and_full_lifecycle(client: TestClient) -> Non
     # 1. Overpayment rejection: Attempt to pay 1,500,000 paise (> 1,066,000)
     overpay_res = client.post(
         f"/api/v1/billing/invoices/{invoice_id}/payments",
-        headers=AUTH_AAMIR,
+        headers={**AUTH_AAMIR, "Idempotency-Key": "idemp-overpay-001"},
         json={"amount_paise": 1500000, "simulate_failure": False},
     )
     assert overpay_res.status_code in (400, 422)
@@ -162,7 +162,7 @@ def test_simulated_payment_partial_and_full_lifecycle(client: TestClient) -> Non
     # 2. Simulated payment failure: Invoice status and outstanding must remain unchanged
     fail_res = client.post(
         f"/api/v1/billing/invoices/{invoice_id}/payments",
-        headers=AUTH_AAMIR,
+        headers={**AUTH_AAMIR, "Idempotency-Key": "idemp-fail-001"},
         json={"amount_paise": 500000, "simulate_failure": True},
     )
     assert fail_res.status_code == 200
@@ -208,7 +208,7 @@ def test_simulated_payment_partial_and_full_lifecycle(client: TestClient) -> Non
     # 5. Full payment: Pay remaining outstanding ₹5,660 (566,000 paise)
     full_res = client.post(
         f"/api/v1/billing/invoices/{invoice_id}/payments",
-        headers=AUTH_AAMIR,
+        headers={**AUTH_AAMIR, "Idempotency-Key": "idemp-full-001"},
         json={"amount_paise": 566000, "simulate_failure": False},
     )
     assert full_res.status_code == 200
@@ -244,3 +244,151 @@ def test_resident_cannot_execute_staff_billing_run(client: TestClient) -> None:
     )
     assert res.status_code == 403
     assert res.json()["error"]["code"] == "INSUFFICIENT_PERMISSIONS"
+
+
+def test_payment_idempotency_same_key_different_payload_conflict(client: TestClient) -> None:
+    """Finding 2: Same idempotency key with differing payload must return 409 Conflict."""
+    client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    inv = client.get("/api/v1/billing/me/invoices", headers=AUTH_NEERAJ).json()[0]
+    invoice_id = inv["id"]
+
+    idemp_key = "idemp-conflict-test-key-001"
+    # Call 1: ₹1,000 (100,000 paise)
+    res1 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 100000, "simulate_failure": False},
+    )
+    assert res1.status_code == 200
+
+    # Call 2: Same key, different amount (₹2,000) -> 409 Conflict
+    res2 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 200000, "simulate_failure": False},
+    )
+    assert res2.status_code == 409
+    assert "differing request payload" in res2.json()["error"]["message"].lower()
+
+
+def test_payment_idempotency_failed_payment_retry(client: TestClient) -> None:
+    """Finding 2: Failed payment retry with same idempotency key returns stored failed response."""
+    client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    inv = client.get("/api/v1/billing/me/invoices", headers=AUTH_SWATI).json()[0]
+    invoice_id = inv["id"]
+
+    idemp_key = "idemp-fail-retry-key-002"
+    # Call 1: Simulated failure
+    res1 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_SWATI, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 100000, "simulate_failure": True},
+    )
+    assert res1.status_code == 200
+    p1 = res1.json()
+    assert p1["status"] == "FAILED"
+
+    # Call 2: Retry with exact same key and payload -> returns stored failed response
+    res2 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_SWATI, "Idempotency-Key": idemp_key},
+        json={"amount_paise": 100000, "simulate_failure": True},
+    )
+    assert res2.status_code == 200
+    p2 = res2.json()
+    assert p2["id"] == p1["id"]
+    assert p2["status"] == "FAILED"
+
+
+def test_strict_billing_period_validation(client: TestClient) -> None:
+    """Finding 9: Billing period strictly validated for valid YYYY-MM (month 01-12)."""
+    # Invalid months
+    for invalid_period in ["2026-13", "2026-00", "2026-99", "2026-1", "invalid-str"]:
+        res = client.post(
+            "/api/v1/billing/staff/runs/preview",
+            headers=AUTH_HELPDESK,
+            json={"billing_period": invalid_period},
+        )
+        assert res.status_code in (400, 422)
+
+        res_exec = client.post(
+            "/api/v1/billing/staff/runs",
+            headers=AUTH_HELPDESK,
+            json={"billing_period": invalid_period},
+        )
+        assert res_exec.status_code in (400, 422)
+
+
+def test_due_date_calculated_in_ist_converted_to_utc(client: TestClient) -> None:
+    """Finding 4 & 8: Society due date is computed in Asia/Kolkata (IST) end-of-day and converted to UTC."""
+    res = client.post(
+        "/api/v1/billing/staff/runs/preview",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    assert res.status_code == 200
+    preview = res.json()
+    due_date_str = preview["due_date"]
+    # 23:59:59 IST = 18:29:59 UTC
+    # Format: YYYY-12-10T18:29:59+00:00 or similar
+    assert "18:29:59" in due_date_str
+    assert "2026-12-10" in due_date_str
+
+
+def test_resident_cross_flat_payment_denied(client: TestClient) -> None:
+    """Finding 6 & Security: Resident cannot pay or access an invoice belonging to another flat."""
+    client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    # Swati's invoice
+    swati_inv = client.get("/api/v1/billing/me/invoices", headers=AUTH_SWATI).json()[0]
+    swati_invoice_id = swati_inv["id"]
+
+    # Neeraj attempts to pay Swati's invoice -> 403 Forbidden
+    res = client.post(
+        f"/api/v1/billing/invoices/{swati_invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": "idemp-cross-flat-hack"},
+        json={"amount_paise": 100000, "simulate_failure": False},
+    )
+    assert res.status_code == 403
+    assert "only pay invoices for your own apartment" in res.json()["error"]["message"].lower()
+
+
+def test_payment_over_allocation_prevented_on_subsequent_attempts(client: TestClient) -> None:
+    """Finding 1: Over-allocation is strictly rejected when previous allocation reduced outstanding balance."""
+    client.post(
+        "/api/v1/billing/staff/runs",
+        headers=AUTH_HELPDESK,
+        json={"billing_period": "2026-11"},
+    )
+    # Neeraj: Flat 1203, 1150 sqft * 650 = 747,500 paise (₹7,475.00)
+    inv = client.get("/api/v1/billing/me/invoices", headers=AUTH_NEERAJ).json()[0]
+    invoice_id = inv["id"]
+
+    # Request 1: Pay ₹5,000 (500,000 paise) -> succeeds, remaining is ₹2,475 (247,500 paise)
+    res1 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": "idemp-alloc-step-1"},
+        json={"amount_paise": 500000, "simulate_failure": False},
+    )
+    assert res1.status_code == 200
+
+    # Request 2: Attempt another ₹5,000 (500,000 paise).
+    # Since remaining outstanding is 247,500 paise, this MUST be rejected (cannot exceed outstanding)!
+    res2 = client.post(
+        f"/api/v1/billing/invoices/{invoice_id}/payments",
+        headers={**AUTH_NEERAJ, "Idempotency-Key": "idemp-alloc-step-2"},
+        json={"amount_paise": 500000, "simulate_failure": False},
+    )
+    assert res2.status_code in (400, 422)
+    assert "cannot exceed outstanding" in res2.json()["error"]["message"].lower()

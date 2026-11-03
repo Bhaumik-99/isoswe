@@ -50,7 +50,13 @@ class BillingRepository:
     # Configuration
     # -------------------------------------------------------------------------
     def get_or_create_billing_config(self, society_id: UUID) -> BillingConfiguration:
-        """Retrieves active billing configuration for society, creating default (₹6.50 / 650 paise) if missing."""
+        """Retrieves active billing configuration for society, creating default (₹6.50 / 650 paise) if missing.
+
+        NOTE: This method has a side effect (creates config if absent). Do NOT call from
+        read-only dashboard/reporting methods. Use get_billing_config_for_period() for
+        historical-period-correct rate selection, or get_latest_billing_config() for
+        current-period display.
+        """
         stmt = (
             select(BillingConfiguration)
             .where(BillingConfiguration.society_id == society_id)
@@ -70,6 +76,38 @@ class BillingRepository:
             self.db.flush()
         return config
 
+    def get_billing_config_for_period(
+        self, society_id: UUID, billing_period_start: datetime
+    ) -> BillingConfiguration | None:
+        """Returns the configuration that was effective at the start of the requested billing period.
+
+        INVARIANT: Selects the latest config whose effective_from <= billing_period_start.
+        This ensures historical invoices always use the rate that was active at the time,
+        even if the rate was later changed.
+        """
+        stmt = (
+            select(BillingConfiguration)
+            .where(
+                BillingConfiguration.society_id == society_id,
+                BillingConfiguration.effective_from <= billing_period_start,
+            )
+            .order_by(BillingConfiguration.effective_from.desc())
+        )
+        return self.db.scalars(stmt).first()
+
+    def get_latest_billing_config(self, society_id: UUID) -> BillingConfiguration | None:
+        """Returns the most recently created configuration WITHOUT creating a default.
+
+        Safe to call from read-only dashboard and reporting methods.
+        Returns None if no configuration exists.
+        """
+        stmt = (
+            select(BillingConfiguration)
+            .where(BillingConfiguration.society_id == society_id)
+            .order_by(BillingConfiguration.effective_from.desc())
+        )
+        return self.db.scalars(stmt).first()
+
     # -------------------------------------------------------------------------
     # Invoices
     # -------------------------------------------------------------------------
@@ -86,6 +124,53 @@ class BillingRepository:
         if society_id:
             stmt = stmt.where(Invoice.society_id == society_id)
         return self.db.scalars(stmt).unique().first()
+
+    def get_invoice_for_update(self, invoice_id: UUID, society_id: UUID) -> Invoice | None:
+        """Fetches invoice with a PostgreSQL SELECT ... FOR UPDATE row lock.
+
+        MUST be called inside an active transaction.
+        After acquiring the lock, reload allocations separately to get the freshest data.
+        This prevents concurrent payment requests from over-allocating funds to the same invoice.
+        """
+        # Step 1: Lock the invoice row (plain query, no joinedload — joinedload + FOR UPDATE
+        # can produce ambiguous locking behavior with PostgreSQL).
+        lock_stmt = (
+            select(Invoice)
+            .where(
+                Invoice.id == invoice_id,
+                Invoice.society_id == society_id,
+            )
+            .with_for_update()
+        )
+        invoice = self.db.scalar(lock_stmt)
+        if not invoice:
+            return None
+
+        # Step 2: Eager-load related data in a separate query now that the row is locked.
+        full_stmt = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.line_items),
+                joinedload(Invoice.allocations).joinedload(PaymentAllocation.payment),
+            )
+            .where(Invoice.id == invoice_id)
+        )
+        return self.db.scalars(full_stmt).unique().first()
+
+    def get_invoices_for_period(self, society_id: UUID, billing_period: str) -> list[Invoice]:
+        """Fetches all invoices for a society and billing period in a single query.
+
+        Used by billing preview/generation to avoid N+1 queries.
+        Returns lightweight Invoice objects (no eager-loading of allocations).
+        """
+        stmt = (
+            select(Invoice)
+            .where(
+                Invoice.society_id == society_id,
+                Invoice.billing_period == billing_period,
+            )
+        )
+        return list(self.db.scalars(stmt).all())
 
     def get_invoice_by_flat_and_period(
         self, society_id: UUID, flat_id: UUID, billing_period: str
@@ -402,3 +487,34 @@ class BillingRepository:
         )
         rows = self.db.execute(stmt).all()
         return [(r[0], r[1]) for r in rows]
+
+    def get_society_financial_aggregates(
+        self, society_id: UUID, billing_period: str | None = None
+    ) -> dict:
+        """Returns aggregate financial totals for a society using a single SQL query.
+
+        Replaces in-memory iteration over 2,500+ invoices with a database aggregate.
+        INVARIANT: Outstanding amount is derived from database-persisted invoice status
+        for the aggregate display; individual invoice outstanding is still calculated
+        from allocations in detail views.
+        """
+        base_filter = [Invoice.society_id == society_id]
+        if billing_period:
+            base_filter.append(Invoice.billing_period == billing_period)
+
+        # Aggregate invoice totals and counts by status
+        agg = self.db.execute(
+            select(
+                func.count(Invoice.id).label("total_count"),
+                func.sum(Invoice.total_paise).label("total_billed_paise"),
+                func.count(Invoice.id).filter(Invoice.status == InvoiceStatus.PAID).label("paid_count"),
+                func.count(Invoice.id).filter(Invoice.status == InvoiceStatus.OVERDUE).label("overdue_count"),
+            ).where(*base_filter)
+        ).one()
+
+        return {
+            "total_count": agg.total_count or 0,
+            "total_billed_paise": agg.total_billed_paise or 0,
+            "paid_count": agg.paid_count or 0,
+            "overdue_count": agg.overdue_count or 0,
+        }

@@ -225,7 +225,8 @@ erDiagram
 
 #### `financial_ledger_entries`
 - **Append-Only Journal**: Immutable financial ledger tracking all debits, credits, and balance changes.
-- Invariant: Never edit or delete rows. Corrections use explicit compensating reversal or adjustment entries referencing `reference_id`.
+- Invariant: Never edit or delete rows. Enforced at PostgreSQL database level via the `financial_ledger_immutable` trigger which raises an exception on any attempted `UPDATE` or `DELETE`. Corrections use explicit compensating reversal or adjustment entries referencing `reference_id`.
+- Foreign Keys: `(society_id, flat_id)` references `flats(society_id, id)` with `ON DELETE RESTRICT` (preventing cascading deletion of historical financial records).
 - Fields: `id` (UUID PK), `society_id` (UUID FK), `flat_id` (UUID FK), `invoice_id` (UUID FK, nullable), `payment_id` (UUID FK, nullable), `entry_type` (CHARGE, PAYMENT_RECEIVED, PAYMENT_ALLOCATED, REVERSAL, ADJUSTMENT), `amount_paise` (BIGINT, > 0), `reference_id` (VARCHAR 128, nullable), `description` (VARCHAR 255), `created_at`.
 
 #### `billing_runs`
@@ -234,7 +235,7 @@ erDiagram
 
 ---
 
-## 5. Row-Level Security (RLS)
+## 5. Row-Level Security (RLS) & Immutability Triggers
 
 All application and billing tables enable PostgreSQL Row-Level Security with `FORCE ROW LEVEL SECURITY`:
 ```sql
@@ -247,6 +248,29 @@ ALTER TABLE payment_allocations FORCE ROW LEVEL SECURITY;
 ALTER TABLE financial_ledger_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE financial_ledger_entries FORCE ROW LEVEL SECURITY;
 ```
+
+### Append-Only Ledger Database Trigger
+In addition to RLS, financial ledger immutability is enforced at the database level by a PostgreSQL trigger:
+```sql
+CREATE OR REPLACE FUNCTION prevent_ledger_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'Financial ledger entries are immutable. Corrections must use compensating REVERSAL or ADJUSTMENT entries.';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER financial_ledger_immutable
+BEFORE UPDATE OR DELETE ON financial_ledger_entries
+FOR EACH ROW EXECUTE FUNCTION prevent_ledger_mutation();
+```
+
+### Composite Constraints for Multi-Tenant Integrity
+To ensure absolute multi-tenant boundary safety and prevent cross-society records:
+1. `flats`: `uq_flats_society_id` UNIQUE (`society_id`, `id`)
+2. `invoices`: Composite FK (`society_id`, `flat_id`) REFERENCES `flats(society_id, id)`
+3. `payments`: Composite FK (`society_id`, `flat_id`) REFERENCES `flats(society_id, id)`
+4. `financial_ledger_entries`: Composite FK (`society_id`, `flat_id`) REFERENCES `flats(society_id, id)` `ON DELETE RESTRICT`
+5. `billing_configurations`: UNIQUE (`society_id`, `effective_from`) for unambiguous effective-date period lookups.
 
 ### RLS Policies
 - **Resident Read Isolation**:

@@ -545,3 +545,125 @@ def test_postgres_rls_billing_isolation(postgres_test_db: Engine) -> None:
         # Expired tenant has no active membership -> sees 0 invoices
         expired_invoices = conn.execute(text("SELECT id FROM invoices;")).fetchall()
         assert len(expired_invoices) == 0, "Expired tenant must see zero invoices"
+
+
+def test_postgres_financial_ledger_immutability_trigger(postgres_test_db: Engine) -> None:
+    """Finding 7: Enforce append-only financial ledger behavior at PostgreSQL database level.
+
+    Direct UPDATE and DELETE on financial_ledger_entries must be strictly rejected
+    by the 'financial_ledger_immutable' PostgreSQL trigger, regardless of database user privileges.
+    """
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    tower_id = uuid.uuid4()
+    flat_id = uuid.uuid4()
+    ledger_id = uuid.uuid4()
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:s, 'Soc Immutability', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:t, :s, 'T01', 'Tower 1', NOW());"
+            ),
+            {"t": tower_id, "s": soc_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:f, :s, :t, '101', 1150, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"f": flat_id, "s": soc_id, "t": tower_id},
+        )
+        # Insert initial valid ledger entry (allowed)
+        conn.execute(
+            text(
+                "INSERT INTO financial_ledger_entries (id, society_id, flat_id, entry_type, amount_paise, description, created_at) "
+                "VALUES (:id, :s, :f, 'CHARGE', 747500, 'Maintenance charge', NOW());"
+            ),
+            {"id": ledger_id, "s": soc_id, "f": flat_id},
+        )
+        conn.commit()
+
+    # 1. Direct UPDATE on financial_ledger_entries must FAIL via trigger
+    with engine.connect() as conn:
+        update_rejected = False
+        try:
+            conn.execute(
+                text(
+                    f"UPDATE financial_ledger_entries SET amount_paise = 999999 WHERE id = '{ledger_id}';"
+                )
+            )
+            conn.commit()
+        except Exception as exc:
+            update_rejected = True
+            assert "immutable" in str(exc).lower()
+        assert update_rejected, "Database trigger must reject UPDATE on financial_ledger_entries"
+
+    # 2. Direct DELETE on financial_ledger_entries must FAIL via trigger
+    with engine.connect() as conn:
+        delete_rejected = False
+        try:
+            conn.execute(
+                text(f"DELETE FROM financial_ledger_entries WHERE id = '{ledger_id}';")
+            )
+            conn.commit()
+        except Exception as exc:
+            delete_rejected = True
+            assert "immutable" in str(exc).lower()
+        assert delete_rejected, "Database trigger must reject DELETE on financial_ledger_entries"
+
+
+def test_postgres_composite_fk_rejects_cross_society_reference(postgres_test_db: Engine) -> None:
+    """Finding 6: Database composite foreign key enforces that invoices belong to the flat's society."""
+    engine = postgres_test_db
+    soc_a = uuid.uuid4()
+    soc_b = uuid.uuid4()
+    tower_b = uuid.uuid4()
+    flat_b = uuid.uuid4()
+
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:sa, 'Soc A', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW()), "
+                "       (:sb, 'Soc B', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"sa": soc_a, "sb": soc_b},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:tb, :sb, 'T01', 'Tower B1', NOW());"
+            ),
+            {"tb": tower_b, "sb": soc_b},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:fb, :sb, :tb, '101', 1000, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"fb": flat_b, "sb": soc_b, "tb": tower_b},
+        )
+        conn.commit()
+
+        # Attempt to create an invoice claiming Society A, but referencing Flat B (which belongs to Society B)
+        # The composite foreign key fk_invoices_flats_composite must reject this!
+        cross_society_rejected = False
+        try:
+            conn.execute(
+                text(
+                    f"INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                    f"VALUES (gen_random_uuid(), '{soc_a}', '{flat_b}', '2026-11', 'INV-CROSS-001', 1000, 650, 650000, 650000, NOW(), 'UNPAID', NOW(), NOW());"
+                )
+            )
+            conn.commit()
+        except Exception:
+            cross_society_rejected = True
+        assert cross_society_rejected, "Composite FK fk_invoices_flats_composite must reject cross-society flat references"

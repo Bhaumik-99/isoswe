@@ -41,6 +41,16 @@ The township operations platform adheres to a strict architectural principle:
 - **Decision**: All financial amounts are stored as 64-bit BigInteger paise (1 INR = 100 paise). Floating-point data types (`FLOAT`, `REAL`, `DOUBLE PRECISION`) are prohibited in financial columns.
 - **Consequences**: Eliminates IEEE 754 precision drift and rounding discrepancies in ledger audits.
 
+### ADR 007: Concurrency-Safe Payment Allocation via Row Locking (`SELECT FOR UPDATE`) & Mandatory Idempotency
+- **Context**: Multiple concurrent payment requests against the same invoice can cause race conditions where total allocated funds exceed the invoice's outstanding balance. Furthermore, duplicate submissions can cause duplicate payments without durable idempotency guarantees.
+- **Decision**: Require `Idempotency-Key` header on all payment initiation requests. Reserve the key atomically via `INSERT ON CONFLICT` with request payload hash. Lock the invoice row using PostgreSQL `SELECT ... FOR UPDATE` inside a single atomic transaction. Recalculate allocations and outstanding balance after acquiring the row lock. Persist both successful and failed outcomes to the idempotency record. Commit invoice updates, payment records, allocations, append-only ledger entries, audit trails, and outbox events in a single atomic transaction.
+- **Consequences**: Eliminates concurrent over-allocation race conditions, guarantees reproducible idempotent retries for both successful and failed payment attempts, and ensures financial consistency under high concurrency.
+
+### ADR 008: Database-Enforced Financial Immutability & Composite Multi-Tenant Ownership
+- **Context**: Relying solely on application-level conventions for financial ledger immutability and multi-tenant scoping allows potential corruption if direct database connections or queries execute updates or cross-tenant references.
+- **Decision**: Install PostgreSQL database trigger `financial_ledger_immutable` preventing `UPDATE` and `DELETE` on `financial_ledger_entries`. Add composite unique constraint `(society_id, id)` on `flats`, and enforce composite foreign keys `(society_id, flat_id)` on `invoices`, `payments`, and `financial_ledger_entries` with `ON DELETE RESTRICT` on the ledger.
+- **Consequences**: Eliminates risks of ledger mutation or cascading deletion of historical accounting journals, and guarantees multi-tenant database integrity at the PostgreSQL engine level.
+
 ---
 
 ## 3. System Architecture Diagram

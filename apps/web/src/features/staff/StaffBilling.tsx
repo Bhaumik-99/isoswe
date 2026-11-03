@@ -27,6 +27,8 @@ export const StaffBilling: React.FC = () => {
   const [selectedTower, setSelectedTower] = useState<string>('');
   const [flatSearch, setFlatSearch] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const PAGE_SIZE = 25;
 
   // Modals & Run State
   const [isRunModalOpen, setIsRunModalOpen] = useState<boolean>(false);
@@ -51,13 +53,15 @@ export const StaffBilling: React.FC = () => {
     isLoading: isInvoicesLoading,
     error: invoicesError,
   } = useQuery({
-    queryKey: ['staff-invoices', selectedPeriod, selectedTower, flatSearch, selectedStatus],
+    queryKey: ['staff-invoices', selectedPeriod, selectedTower, flatSearch, selectedStatus, currentPage],
     queryFn: () =>
       billingService.getStaffInvoices({
         billing_period: selectedPeriod || undefined,
         tower_number: selectedTower || undefined,
         flat_number: flatSearch || undefined,
         status: selectedStatus || undefined,
+        limit: PAGE_SIZE,
+        offset: (currentPage - 1) * PAGE_SIZE,
       }),
   });
 
@@ -227,7 +231,10 @@ export const StaffBilling: React.FC = () => {
                 type="text"
                 placeholder="YYYY-MM (e.g. 2026-11)"
                 value={selectedPeriod}
-                onChange={(e) => setSelectedPeriod(e.target.value)}
+                onChange={(e) => {
+                  setSelectedPeriod(e.target.value);
+                  setCurrentPage(1);
+                }}
                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 text-xs"
               />
             </div>
@@ -236,7 +243,10 @@ export const StaffBilling: React.FC = () => {
               <label className="block text-[11px] font-semibold text-slate-500 mb-1">Tower</label>
               <select
                 value={selectedTower}
-                onChange={(e) => setSelectedTower(e.target.value)}
+                onChange={(e) => {
+                  setSelectedTower(e.target.value);
+                  setCurrentPage(1);
+                }}
                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 text-xs"
               >
                 <option value="">All Towers</option>
@@ -254,7 +264,10 @@ export const StaffBilling: React.FC = () => {
                   type="text"
                   placeholder="e.g. 1203"
                   value={flatSearch}
-                  onChange={(e) => setFlatSearch(e.target.value)}
+                  onChange={(e) => {
+                    setFlatSearch(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="w-full pl-8 pr-2.5 py-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 text-xs"
                 />
               </div>
@@ -264,7 +277,10 @@ export const StaffBilling: React.FC = () => {
               <label className="block text-[11px] font-semibold text-slate-500 mb-1">Status</label>
               <select
                 value={selectedStatus}
-                onChange={(e) => setSelectedStatus(e.target.value)}
+                onChange={(e) => {
+                  setSelectedStatus(e.target.value);
+                  setCurrentPage(1);
+                }}
                 className="w-full px-2.5 py-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500 text-xs"
               >
                 <option value="">All Statuses</option>
@@ -354,6 +370,33 @@ export const StaffBilling: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+
+              {/* Pagination Controls */}
+              <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50 text-xs">
+                <span className="text-slate-500 font-mono text-[11px]">
+                  Page <strong className="text-slate-900">{currentPage}</strong> • Showing {invoices.length} invoices
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={currentPage === 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="text-xs h-7 px-2.5"
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!invoices || invoices.length < PAGE_SIZE}
+                    onClick={() => setCurrentPage((p) => p + 1)}
+                    className="text-xs h-7 px-2.5"
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="text-center py-10 text-slate-500 text-xs">
@@ -426,7 +469,7 @@ export const StaffBilling: React.FC = () => {
                       className="w-full px-3 py-1.5 border border-slate-300 rounded font-mono text-sm focus:ring-1 focus:ring-indigo-500"
                     />
                     <p className="text-[11px] text-slate-500">
-                      Standard society due date defaults to the 15th of the billing month.
+                      Standard society due date calculated as per configured society due day.
                     </p>
                   </div>
 

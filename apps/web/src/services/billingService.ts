@@ -109,12 +109,16 @@ export const billingService = {
     tower_number?: string;
     flat_number?: string;
     status?: string;
+    limit?: number;
+    offset?: number;
   }): Promise<Invoice[]> {
     const params = new URLSearchParams();
     if (filters?.billing_period) params.append('billing_period', filters.billing_period);
     if (filters?.tower_number) params.append('tower_number', filters.tower_number);
     if (filters?.flat_number) params.append('flat_number', filters.flat_number);
     if (filters?.status) params.append('status', filters.status);
+    if (filters?.limit !== undefined) params.append('limit', filters.limit.toString());
+    if (filters?.offset !== undefined) params.append('offset', filters.offset.toString());
     const query = params.toString() ? `?${params.toString()}` : '';
     return apiClient.get<Invoice[]>(`/api/v1/billing/staff/invoices${query}`);
   },

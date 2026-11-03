@@ -225,7 +225,7 @@ def db_session() -> Generator[Session, None, None]:
         society_id=society_id,
         rate_paise_per_sqft=650,
         currency="INR",
-        due_day=15,
+        due_day=10,
         effective_from=now - timedelta(days=365),
     )
     session.add(billing_config)
