@@ -137,22 +137,31 @@ class RazorpayPaymentProvider(PaymentProvider):
             and not self.key_secret.startswith("rzp_test_default")
         ):
             try:
-                import requests
-                from requests.auth import HTTPBasicAuth
+                import base64
+                import json
+                import urllib.request
 
-                resp = requests.post(
-                    "https://api.razorpay.com/v1/orders",
-                    auth=HTTPBasicAuth(self.key_id, self.key_secret),
-                    json={
+                auth_str = f"{self.key_id}:{self.key_secret}"
+                b64_auth = base64.b64encode(auth_str.encode()).decode()
+                req_data = json.dumps(
+                    {
                         "amount": amount_paise,
                         "currency": currency,
                         "receipt": receipt or f"rcpt_{uuid.uuid4().hex[:12]}",
                         "notes": notes or {},
+                    }
+                ).encode("utf-8")
+                req = urllib.request.Request(
+                    "https://api.razorpay.com/v1/orders",
+                    data=req_data,
+                    headers={
+                        "Authorization": f"Basic {b64_auth}",
+                        "Content-Type": "application/json",
                     },
-                    timeout=5,
                 )
-                if resp.status_code in (200, 201):
-                    return resp.json()  # type: ignore[no-any-return]
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status in (200, 201):
+                        return json.loads(resp.read().decode("utf-8"))  # type: ignore[no-any-return]
             except Exception:
                 pass  # Fall back to test mode order generation below
 
