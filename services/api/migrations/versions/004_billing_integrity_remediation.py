@@ -9,7 +9,7 @@ Phase 2 Remediation: Financial correctness and database integrity fixes.
 4. Append-only trigger on financial_ledger_entries (prevent UPDATE / DELETE at DB level)
 5. Database trigger on payment_allocations enforcing that payment and invoice belong to the same flat and society.
 
-Revision ID: 004_billing_integrity_remediation
+Revision ID: 004_billing_integrity
 Revises: 003_maintenance_billing
 Create Date: 2026-11-03 18:00:00.000000
 """
@@ -18,7 +18,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "004_billing_integrity_remediation"
+revision: str = "004_billing_integrity"
 down_revision: str | None = "003_maintenance_billing"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
