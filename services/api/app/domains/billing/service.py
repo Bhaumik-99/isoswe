@@ -585,8 +585,13 @@ class BillingService:
         # STEP 2: Validate basic inputs before acquiring DB lock
         # -----------------------------------------------------------------------
         if amount_paise <= 0:
-            self._fail_idempotency_key(idempotency_key, scope="billing_payment", req_hash=req_hash,
-                                       status=422, message="Payment amount must be greater than zero")
+            self._fail_idempotency_key(
+                idempotency_key,
+                scope="billing_payment",
+                req_hash=req_hash,
+                status=422,
+                message="Payment amount must be greater than zero",
+            )
             raise ValidationError("Payment amount must be greater than zero")
 
         try:
@@ -595,8 +600,13 @@ class BillingService:
             # -----------------------------------------------------------------------
             invoice = self.repo.get_invoice_for_update(invoice_id, society_id=society_id)
             if not invoice:
-                self._fail_idempotency_key(idempotency_key, scope="billing_payment", req_hash=req_hash,
-                                           status=404, message="Invoice not found in your society")
+                self._fail_idempotency_key(
+                    idempotency_key,
+                    scope="billing_payment",
+                    req_hash=req_hash,
+                    status=404,
+                    message="Invoice not found in your society",
+                )
                 raise NotFoundError("Invoice not found in your society")
 
             # -----------------------------------------------------------------------
@@ -606,18 +616,28 @@ class BillingService:
             paid_paise, outstanding_paise, _status, _ = self.calculate_invoice_financials(invoice)
 
             if outstanding_paise <= 0:
-                self._fail_idempotency_key(idempotency_key, scope="billing_payment", req_hash=req_hash,
-                                           status=422, message="Invoice is already fully paid")
-                raise ValidationError("Invoice is already fully paid. Outstanding balance is ₹0.00.")
+                self._fail_idempotency_key(
+                    idempotency_key,
+                    scope="billing_payment",
+                    req_hash=req_hash,
+                    status=422,
+                    message="Invoice is already fully paid",
+                )
+                raise ValidationError(
+                    "Invoice is already fully paid. Outstanding balance is ₹0.00."
+                )
 
             if amount_paise > outstanding_paise:
                 max_inr = outstanding_paise / 100
                 req_inr = amount_paise / 100
-                msg = (
-                    f"Payment amount (₹{req_inr:,.2f}) cannot exceed outstanding invoice balance (₹{max_inr:,.2f})"
+                msg = f"Payment amount (₹{req_inr:,.2f}) cannot exceed outstanding invoice balance (₹{max_inr:,.2f})"
+                self._fail_idempotency_key(
+                    idempotency_key,
+                    scope="billing_payment",
+                    req_hash=req_hash,
+                    status=422,
+                    message=msg,
                 )
-                self._fail_idempotency_key(idempotency_key, scope="billing_payment", req_hash=req_hash,
-                                           status=422, message=msg)
                 raise ValidationError(msg)
 
             # -----------------------------------------------------------------------

@@ -126,21 +126,13 @@ def downgrade() -> None:
     bind = op.get_bind()
 
     if bind.dialect.name == "postgresql":
-        op.execute(
-            "DROP TRIGGER IF EXISTS financial_ledger_immutable ON financial_ledger_entries;"
-        )
-        op.execute(
-            "DROP FUNCTION IF EXISTS prevent_ledger_mutation();"
-        )
+        op.execute("DROP TRIGGER IF EXISTS financial_ledger_immutable ON financial_ledger_entries;")
+        op.execute("DROP FUNCTION IF EXISTS prevent_ledger_mutation();")
         op.execute(
             "ALTER TABLE financial_ledger_entries DROP CONSTRAINT IF EXISTS fk_ledger_flats_composite;"
         )
-        op.execute(
-            "ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_flats_composite;"
-        )
-        op.execute(
-            "ALTER TABLE invoices DROP CONSTRAINT IF EXISTS fk_invoices_flats_composite;"
-        )
+        op.execute("ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_flats_composite;")
+        op.execute("ALTER TABLE invoices DROP CONSTRAINT IF EXISTS fk_invoices_flats_composite;")
 
     with op.batch_alter_table("flats") as batch_op:
         batch_op.drop_constraint("uq_flats_society_id", type_="unique")

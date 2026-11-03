@@ -163,12 +163,9 @@ class BillingRepository:
         Used by billing preview/generation to avoid N+1 queries.
         Returns lightweight Invoice objects (no eager-loading of allocations).
         """
-        stmt = (
-            select(Invoice)
-            .where(
-                Invoice.society_id == society_id,
-                Invoice.billing_period == billing_period,
-            )
+        stmt = select(Invoice).where(
+            Invoice.society_id == society_id,
+            Invoice.billing_period == billing_period,
         )
         return list(self.db.scalars(stmt).all())
 
@@ -490,7 +487,7 @@ class BillingRepository:
 
     def get_society_financial_aggregates(
         self, society_id: UUID, billing_period: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Returns aggregate financial totals for a society using a single SQL query.
 
         Replaces in-memory iteration over 2,500+ invoices with a database aggregate.
@@ -507,8 +504,12 @@ class BillingRepository:
             select(
                 func.count(Invoice.id).label("total_count"),
                 func.sum(Invoice.total_paise).label("total_billed_paise"),
-                func.count(Invoice.id).filter(Invoice.status == InvoiceStatus.PAID).label("paid_count"),
-                func.count(Invoice.id).filter(Invoice.status == InvoiceStatus.OVERDUE).label("overdue_count"),
+                func.count(Invoice.id)
+                .filter(Invoice.status == InvoiceStatus.PAID)
+                .label("paid_count"),
+                func.count(Invoice.id)
+                .filter(Invoice.status == InvoiceStatus.OVERDUE)
+                .label("overdue_count"),
             ).where(*base_filter)
         ).one()
 

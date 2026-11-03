@@ -94,7 +94,9 @@ class BillingConfiguration(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("society_id", "effective_from", name="uq_billing_config_society_effective_from"),
+        UniqueConstraint(
+            "society_id", "effective_from", name="uq_billing_config_society_effective_from"
+        ),
         CheckConstraint("rate_paise_per_sqft > 0", name="chk_billing_config_rate_positive"),
         CheckConstraint("due_day >= 1 AND due_day <= 28", name="chk_billing_config_due_day"),
         Index("ix_billing_config_society_effective", "society_id", "effective_from"),

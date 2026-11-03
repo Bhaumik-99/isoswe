@@ -610,9 +610,7 @@ def test_postgres_financial_ledger_immutability_trigger(postgres_test_db: Engine
     with engine.connect() as conn:
         delete_rejected = False
         try:
-            conn.execute(
-                text(f"DELETE FROM financial_ledger_entries WHERE id = '{ledger_id}';")
-            )
+            conn.execute(text(f"DELETE FROM financial_ledger_entries WHERE id = '{ledger_id}';"))
             conn.commit()
         except Exception as exc:
             delete_rejected = True
@@ -666,4 +664,6 @@ def test_postgres_composite_fk_rejects_cross_society_reference(postgres_test_db:
             conn.commit()
         except Exception:
             cross_society_rejected = True
-        assert cross_society_rejected, "Composite FK fk_invoices_flats_composite must reject cross-society flat references"
+        assert cross_society_rejected, (
+            "Composite FK fk_invoices_flats_composite must reject cross-society flat references"
+        )
