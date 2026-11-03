@@ -65,8 +65,10 @@ python -m pytest tests/test_billing_endpoints.py -v
        @property
        def provider_name(self) -> str:
            return "RAZORPAY"
-       def process_payment(self, amount_paise: int, currency: str, metadata: dict[str, Any]) -> PaymentResult:
-           ...
+
+       def process_payment(
+           self, amount_paise: int, currency: str, metadata: dict[str, Any]
+       ) -> PaymentResult: ...
    ```
 2. Inject the new provider into `BillingService.__init__()` via dependency injection or settings.
 3. No changes to `process_invoice_payment()` financial settlement logic needed.
@@ -77,3 +79,4 @@ python -m pytest tests/test_billing_endpoints.py -v
 - No magic-string bypasses; all payment validation is server-side.
 - Frontend never claims payment succeeded; only the backend decides.
 - All payment state transitions are server-authoritative.
+
