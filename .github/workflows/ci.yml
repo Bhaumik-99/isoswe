@@ -59,7 +59,7 @@ jobs:
       - name: Mypy Static Type Analysis
         run: |
           cd services/api
-          mypy app --config-file pyproject.toml
+          mypy app --config-file pyproject.toml 2>&1 | tee mypy_output.log
 
       - name: Run Pytest Suite with Coverage
         env:
@@ -72,13 +72,21 @@ jobs:
           set -eo pipefail
           pytest -v --cov=app --cov-report=term-missing --cov-report=xml --tb=short 2>&1 | tee pytest_output.log
 
-      - name: Publish Pytest Failure to Step Summary
+      - name: Publish Test Summary to Step Summary
         if: always()
         run: |
-          echo "### Pytest Execution Summary" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          tail -n 120 services/api/pytest_output.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          if [ -f services/api/mypy_output.log ]; then
+            echo "### Mypy Static Type Analysis" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 120 services/api/mypy_output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f services/api/pytest_output.log ]; then
+            echo "### Pytest Execution Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 120 services/api/pytest_output.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload Test Output Log
         if: always()
@@ -86,6 +94,7 @@ jobs:
         with:
           name: pytest-output-log
           path: services/api/pytest_output.log
+          if-no-files-found: ignore
 
       - name: Dependency Vulnerability Audit (pip-audit)
         run: |

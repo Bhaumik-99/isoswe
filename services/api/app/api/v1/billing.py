@@ -330,7 +330,9 @@ async def razorpay_webhook(
         body_bytes=body_bytes,
         signature=x_razorpay_signature or "",
     )
-    return RazorpayWebhookResponse(status=result.get("status", "ok"), event=result.get("event", ""))
+    return RazorpayWebhookResponse(
+        status=str(result.get("status", "ok")), event=str(result.get("event", ""))
+    )
 
 
 @router.post(
