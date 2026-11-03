@@ -20,7 +20,7 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Engine, create_engine, inspect, pool, text
 
 POSTGRES_BASE_URL = os.environ.get(
     "TEST_POSTGRES_URL",
@@ -89,14 +89,14 @@ def postgres_test_db() -> Generator[Engine, None, None]:
         cur.execute("GRANT USAGE ON SCHEMA auth TO service_role;")
     test_conn.close()
 
-    engine = create_engine(TEST_DB_URL)
+    engine = create_engine(TEST_DB_URL, poolclass=pool.NullPool)
     yield engine
     engine.dispose()
 
     # Teardown
     cleanup_conn = psycopg.connect(POSTGRES_BASE_URL, autocommit=True)
     with cleanup_conn.cursor() as cur:
-        cur.execute(f"DROP DATABASE IF EXISTS {TEST_DB_NAME};")
+        cur.execute(f"DROP DATABASE IF EXISTS {TEST_DB_NAME} WITH (FORCE);")
     cleanup_conn.close()
 
 
@@ -536,6 +536,7 @@ def test_postgres_rls_billing_isolation(postgres_test_db: Engine) -> None:
             conn.execute(text("SET ROLE authenticated;"))
             conn.execute(text(f"SET request.jwt.claim.sub = '{user_act_sub}';"))
         assert insert_blocked, "Direct invoice creation by authenticated role must be denied by RLS"
+        conn.execute(text("RESET ROLE;"))
 
     # 3. Query as Expired Tenant under 'authenticated' role
     with engine.connect() as conn:
@@ -545,6 +546,7 @@ def test_postgres_rls_billing_isolation(postgres_test_db: Engine) -> None:
         # Expired tenant has no active membership -> sees 0 invoices
         expired_invoices = conn.execute(text("SELECT id FROM invoices;")).fetchall()
         assert len(expired_invoices) == 0, "Expired tenant must see zero invoices"
+        conn.execute(text("RESET ROLE;"))
 
 
 def test_postgres_financial_ledger_immutability_trigger(postgres_test_db: Engine) -> None:
@@ -560,6 +562,7 @@ def test_postgres_financial_ledger_immutability_trigger(postgres_test_db: Engine
     ledger_id = uuid.uuid4()
 
     with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
         conn.execute(
             text(
                 "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
@@ -627,6 +630,7 @@ def test_postgres_composite_fk_rejects_cross_society_reference(postgres_test_db:
     flat_b = uuid.uuid4()
 
     with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
         conn.execute(
             text(
                 "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "

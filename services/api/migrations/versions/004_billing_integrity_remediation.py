@@ -115,6 +115,7 @@ def upgrade() -> None:
 
         op.execute(
             """
+            DROP TRIGGER IF EXISTS financial_ledger_immutable ON financial_ledger_entries;
             CREATE TRIGGER financial_ledger_immutable
             BEFORE UPDATE OR DELETE ON financial_ledger_entries
             FOR EACH ROW EXECUTE FUNCTION prevent_ledger_mutation();
@@ -133,9 +134,13 @@ def downgrade() -> None:
         )
         op.execute("ALTER TABLE payments DROP CONSTRAINT IF EXISTS fk_payments_flats_composite;")
         op.execute("ALTER TABLE invoices DROP CONSTRAINT IF EXISTS fk_invoices_flats_composite;")
+        op.execute("ALTER TABLE flats DROP CONSTRAINT IF EXISTS uq_flats_society_id CASCADE;")
+        op.execute(
+            "ALTER TABLE billing_configurations DROP CONSTRAINT IF EXISTS uq_billing_config_society_effective_from CASCADE;"
+        )
+    else:
+        with op.batch_alter_table("flats") as batch_op:
+            batch_op.drop_constraint("uq_flats_society_id", type_="unique")
 
-    with op.batch_alter_table("flats") as batch_op:
-        batch_op.drop_constraint("uq_flats_society_id", type_="unique")
-
-    with op.batch_alter_table("billing_configurations") as batch_op:
-        batch_op.drop_constraint("uq_billing_config_society_effective_from", type_="unique")
+        with op.batch_alter_table("billing_configurations") as batch_op:
+            batch_op.drop_constraint("uq_billing_config_society_effective_from", type_="unique")
