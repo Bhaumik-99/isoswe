@@ -91,8 +91,19 @@ AI classification assists township staff by predicting issue categories, operati
 
 ### Key Rules
 - **Asynchronous Architecture**: Complaint creation returns immediately with `ai_status = PENDING`. An outbox event `complaint.classify` is emitted to `QUEUE_COMPLAINT_AI_JOBS`. Complaint creation never makes synchronous external API or LLM calls.
-- **Worker Execution & Idempotency**: `ComplaintAIHandler` queries the complaint with row-locking (`with_for_update()`). If the complaint is already in `COMPLETED` or `FALLBACK` state, duplicate events are skipped immediately without repeated model invocations.
-- **Resident Privacy & Data Minimization**: Prior to calling external LLM providers, `minimize_resident_data()` redacts resident phone numbers (`[PHONE_REDACTED]`), email addresses (`[EMAIL_REDACTED]`), apartment/flat/tower identifiers (`[UNIT_REDACTED]`), resident self-intro names (`[NAME_REDACTED]`), and credentials. Internal database UUIDs (user IDs, flat IDs, society IDs) are never transmitted to external AI models.
+- **Two-Phase Worker Execution & Lock Freedom**:
+  - **Phase 1 (Atomic Claim)**: `ComplaintAIHandler` atomically claims the job using row-level locking (`with_for_update()`), checks if already completed or actively leased (300s lease duration), marks `ai_status = PROCESSING`, and immediately commits to release the database transaction and row lock.
+  - **Phase 2 (External LLM Call)**: Calls Gemini AI outside of any database transaction or row lock.
+  - **Phase 3 (Result Persistence)**: Opens a short database transaction to persist the outcome (`COMPLETED`, `FALLBACK`, or `FAILED`).
+- **Worker Failure Acknowledgement & Bounded Retries**:
+  - **Transient Errors**: Network timeouts, connection drops, and HTTP 429/5xx errors raise `RetryableWorkerError`. The worker records the failure and re-raises the error so the message dispatcher does NOT acknowledge the message, enabling SQS visibility retry or DLQ redrive.
+  - **Permanent Errors**: Malformed JSON or unparseable candidates raise `PermanentWorkerError`. The worker marks the complaint `FAILED`, records the error, and returns normally without re-raising to acknowledge poison pills.
+  - **Bounded Retries**: After 3 failed attempts (`MAX_WORKER_RETRIES = 3`), the worker permanently transitions the ticket to `FAILED` and acknowledges the message to prevent queue poisoning.
+  - **Lease Expiration & Crash Recovery**: If a worker crashes mid-execution, any subsequent worker encountering an expired `PROCESSING` lease (>300s) safely reclaims and reprocesses the ticket.
+- **Resident Privacy & Data Minimization**:
+  - Prior to calling external LLM providers, `minimize_resident_data()` redacts resident phone numbers (standard and Devnagari numerals: `[PHONE_REDACTED]`), email addresses (`[EMAIL_REDACTED]`), apartment/flat/tower identifiers (`[UNIT_REDACTED]`), postal PIN codes (`[PINCODE_REDACTED]`), resident self-intro names in English, Hindi, and Marathi (`[NAME_REDACTED]`), and credentials (`[REDACTED]`).
+  - Internal database UUIDs (user IDs, flat IDs, society IDs) are never transmitted to external AI models.
+  - *Data Minimization Limitation*: Automated regex-based redaction provides best-effort heuristic sanitization and does not guarantee cryptographic anonymization of arbitrary unstructured narratives.
 - **Structured Schema & Generation Config**: Gemini API invocations supply `responseSchema` (matching `AIClassificationOutput` properties and enum values) with `responseMimeType: "application/json"`.
 - **Pydantic Validation**: Responses strictly conform to `AIClassificationOutput` schema:
   - `suggested_category`: ComplaintCategory
@@ -104,7 +115,7 @@ AI classification assists township staff by predicting issue categories, operati
   - `requires_human_review`: boolean
 - **AI_ENABLED Control**: If `settings.AI_ENABLED` is `False`, all calls deterministically use `DeterministicAIClassifierProvider` with zero network or external API traffic.
 - **Prompt Injection Defense**: Sanitizes inputs (strips control characters, redacts sensitive tokens) and instructs the model that complaint text is untrusted data that must never be executed as instructions.
-- **Deterministic Offline Fallback**: If `GEMINI_API_KEY` is absent, or on network timeout / quota 429, the system gracefully falls back to `DeterministicAIClassifierProvider`, ensuring 100% CI reproducibility and zero paid API requirement.
+- **Deterministic Offline Fallback**: If `GEMINI_API_KEY` is absent, or on network timeout / quota 429 when `raise_on_error=False`, the system gracefully falls back to `DeterministicAIClassifierProvider`, ensuring 100% CI reproducibility and zero paid API requirement.
 - **Advisory Isolation**: AI suggestions are stored in distinct advisory columns (`ai_suggested_*`, `ai_status`, `ai_reasoning`, `ai_provider`, `ai_model`, `ai_processed_at`) and never override human decisions. Authoritative priority and category are server-authoritative and never overwritten by the AI worker.
 
 ---
@@ -143,7 +154,7 @@ When a ticket is created:
 Attachment metadata is managed via `complaint_attachments`:
 - **State Machine**: `PENDING` ──► `UPLOADED` (or `FAILED`).
 - **Initiation**: `POST /attachments` registers a `PENDING` record and returns a presigned S3 PUT URL (1-hour validity).
-- **Completion Verification**: `POST /attachments/{id}/complete` verifies object existence, declared file size (<= 5MB, non-empty, matching declared size within tolerance), and MIME type via `verify_object_metadata()`. If verification fails, the attachment is transitioned to `FAILED`, a 400 error is returned, and unverified files are never made accessible. On success, transitions status to `UPLOADED` and logs an audit activity.
+- **Completion Verification**: `POST /attachments/{id}/complete` verifies object existence, declared file size (exact byte equality with zero tolerance, non-empty, max 5MB), and MIME type via `verify_object_metadata()`. Missing or mismatched ContentType metadata is strictly rejected. If verification fails, the attachment is transitioned to `FAILED`, a 400 error is returned, and unverified files are never made accessible. On success, transitions status to `UPLOADED` and logs an audit activity.
 - **Unverified Attachment Shield**: Unverified (`PENDING` or `FAILED`) attachments are strictly omitted from complaint detail views, and download URLs are never generated for them.
 - **Frontend Safe Upload**: The web client verifies the direct presigned PUT HTTP status (`uploadRes.ok`). If the direct upload fails, the completion endpoint is never called and an explicit error is raised.
 - **Fail-Closed Security**: In production and staging, `S3_ATTACHMENTS_BUCKET_NAME` must be configured; silent fallback to mock storage is strictly blocked.

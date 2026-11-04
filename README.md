@@ -189,12 +189,13 @@ The database is seeded idempotently with real financial scenarios matching Marve
 
 ### Core Capabilities
 - **Deterministic Multilingual Safety Escalation & Priority Lock**: Immediate detection of fire, gas leaks, lift entrapments, electrical sparking, and structural collapse across English, Hindi, and Marathi. Flags `safety_escalated = True` and locks priority to `CRITICAL` before AI classification; API strictly rejects downgrades below `CRITICAL`.
-- **Asynchronous AI Triage (Google Gemini)**: Complaint submission returns immediately with `ai_status = PENDING`. Background worker executes `gemini-2.5-flash` with structured JSON schema (`responseSchema`), prompt injection defenses, resident PII redaction (`[PHONE_REDACTED]`, `[EMAIL_REDACTED]`, `[UNIT_REDACTED]`, `[NAME_REDACTED]`), and deterministic offline fallback.
-- **Worker Idempotency**: Row-locked processing (`with_for_update()`) ensures duplicate queue events skip already completed AI triage.
+- **Asynchronous AI Triage (Google Gemini)**: Complaint submission returns immediately with `ai_status = PENDING`. Background worker executes `gemini-2.5-flash` with structured JSON schema (`responseSchema`), prompt injection defenses, resident PII minimization, and deterministic offline fallback.
+- **Worker Reliability & Lock Freedom**: Atomic job claiming marks `PROCESSING` and releases DB locks prior to calling Gemini. Transient network errors re-raise `RetryableWorkerError` preventing message loss in SQS, while permanent errors acknowledge poison messages without re-raising. Active leases (300s) and bounded retries (3 attempts) ensure safe concurrent execution and crash recovery.
+- **Resident Privacy & Data Minimization**: Multi-lingual redaction (`minimize_resident_data()`) sanitizes phone numbers (including Devnagari numerals), emails, flat/tower codes, postal PIN codes, resident names in English, Hindi, and Marathi, and credentials before dispatch.
 - **Configurable SLA Policies**: Strict deadlines calculated from creation time (Critical: 5m first response, 2h resolution; High: 30m/8h; Medium: 4h/48h; Low: 12h/5d). Priority changes dynamically recalculate resolution deadlines.
 - **Workload-Based Auto-Assignment**: Assigns newly triaged tickets to active helpdesk staff with the lowest open ticket count in the society.
 - **Privacy Separation**: Strict isolation between public resident conversations and private internal helpdesk notes.
-- **Two-Phase Presigned Attachments**: S3/Mock storage validating JPEG, PNG, and WebP up to 5MB with randomized UUID keys, client PUT verification, and backend metadata verification (object existence, actual size, MIME type).
+- **Strict Storage Metadata Verification**: S3/Mock storage enforces exact declared-vs-actual size equality (zero tolerance), non-empty files, 5MB limits, and rejects missing or mismatched ContentType headers. Frontend validates presigned PUT HTTP status before completion.
 
 ### Complaints API Endpoints
 | Method | Endpoint | Access | Purpose |

@@ -100,25 +100,40 @@ class MockStorageProvider(StorageProvider):
             return False, "Object not found in storage"
         meta = self._stored_metadata.get(storage_key)
         if meta:
+            actual_size = meta.get("size")
+            actual_type = meta.get("content_type")
+
+            if actual_size is not None and actual_size <= 0:
+                return False, "Uploaded file object is empty (0 bytes)"
+
+            if actual_size is not None and actual_size > MAX_FILE_SIZE_BYTES:
+                return (
+                    False,
+                    f"Uploaded file size ({actual_size} bytes) exceeds maximum limit of 5MB",
+                )
+
             if (
-                meta.get("size") is not None
+                actual_size is not None
                 and expected_size is not None
-                and meta["size"] != expected_size
+                and actual_size != expected_size
             ):
                 return (
                     False,
-                    f"Size mismatch: expected {expected_size} bytes, got {meta['size']} bytes",
+                    f"Size mismatch: expected {expected_size} bytes, got {actual_size} bytes",
                 )
-            if meta.get("content_type") and expected_content_type:
-                clean_actual = meta["content_type"].split(";")[0].strip().lower()
-                clean_expected = expected_content_type.strip().lower()
-                if clean_actual != clean_expected and not (
-                    clean_actual == "image/jpeg" and clean_expected == "image/jpg"
-                ):
-                    return (
-                        False,
-                        f"Content type mismatch: expected {expected_content_type}, got {meta['content_type']}",
-                    )
+
+            if not actual_type or not str(actual_type).strip():
+                return False, "Storage object missing ContentType metadata"
+
+            clean_actual = str(actual_type).split(";")[0].strip().lower()
+            clean_expected = expected_content_type.strip().lower()
+            if clean_actual != clean_expected and not (
+                clean_actual == "image/jpeg" and clean_expected == "image/jpg"
+            ):
+                return (
+                    False,
+                    f"Content type mismatch: expected {expected_content_type}, got {actual_type}",
+                )
         return True, None
 
     def delete_object(self, storage_key: str) -> bool:
@@ -227,22 +242,24 @@ class S3StorageProvider(StorageProvider):
                     f"Uploaded file size ({actual_size} bytes) exceeds maximum limit of 5MB",
                 )
 
-            if expected_size > 0 and abs(actual_size - expected_size) > 2048:
+            if expected_size is not None and actual_size != expected_size:
                 return (
                     False,
-                    f"Declared file size ({expected_size} bytes) differs from stored object ({actual_size} bytes)",
+                    f"Size mismatch: expected {expected_size} bytes, got {actual_size} bytes",
                 )
 
-            if expected_content_type and actual_type:
-                clean_actual = actual_type.split(";")[0].strip().lower()
-                clean_expected = expected_content_type.strip().lower()
-                if clean_actual != clean_expected and not (
-                    clean_actual == "image/jpeg" and clean_expected == "image/jpg"
-                ):
-                    return (
-                        False,
-                        f"Content-Type mismatch: expected {clean_expected}, but storage object has {clean_actual}",
-                    )
+            if not actual_type or not str(actual_type).strip():
+                return False, "Storage object missing ContentType metadata"
+
+            clean_actual = str(actual_type).split(";")[0].strip().lower()
+            clean_expected = expected_content_type.strip().lower()
+            if clean_actual != clean_expected and not (
+                clean_actual == "image/jpeg" and clean_expected == "image/jpg"
+            ):
+                return (
+                    False,
+                    f"Content-Type mismatch: expected {clean_expected}, but storage object has {clean_actual}",
+                )
 
             return True, None
         except Exception as e:

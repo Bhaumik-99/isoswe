@@ -1050,3 +1050,614 @@ def test_resident_pii_redaction() -> None:
     assert "[NAME_REDACTED]" in redacted_desc
     assert "secret123" not in redacted_desc
     assert "[REDACTED]" in redacted_desc
+
+
+def test_complaint_worker_retryable_network_failure(db_session: Session) -> None:
+    """Worker Reliability: Transient network failure re-raises error so message is NOT acknowledged."""
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, RetryableWorkerError
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintActivity,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-RETRY-001",
+        category=ComplaintCategory.PLUMBING,
+        title="Pipe burst",
+        description="Main pipe burst",
+        priority=ComplaintPriority.HIGH,
+        ai_status=ComplaintAIStatus.PENDING,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.side_effect = RetryableWorkerError("Gemini API connection timeout")
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    with pytest.raises(RetryableWorkerError) as exc_info:
+        handler.process(envelope, db_session)
+
+    assert "connection timeout" in str(exc_info.value).lower()
+    db_session.refresh(complaint)
+    assert complaint.ai_status == ComplaintAIStatus.FAILED
+
+    # Verify failure activity was recorded
+    fail_act = (
+        db_session.query(ComplaintActivity)
+        .filter(
+            ComplaintActivity.complaint_id == complaint.id,
+            ComplaintActivity.activity_type == "AI_TRIAGE_FAILED",
+        )
+        .first()
+    )
+    assert fail_act is not None
+    assert fail_act.activity_metadata["retryable"] is True
+
+
+def test_complaint_worker_permanent_invalid_model_response(db_session: Session) -> None:
+    """Worker Reliability: Permanent model parse failure marks FAILED without re-raising."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, PermanentWorkerError
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintActivity,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-PERM-001",
+        category=ComplaintCategory.ELECTRICAL,
+        title="Sparks from switchboard",
+        description="Switchboard smoking",
+        priority=ComplaintPriority.CRITICAL,
+        ai_status=ComplaintAIStatus.PENDING,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.side_effect = PermanentWorkerError("Unparseable model JSON candidate")
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    # Permanent failure must not raise; returns cleanly so queue acknowledges message
+    handler.process(envelope, db_session)
+
+    db_session.refresh(complaint)
+    assert complaint.ai_status == ComplaintAIStatus.FAILED
+    assert "Unparseable model JSON" in (complaint.ai_reasoning or "")
+
+    fail_act = (
+        db_session.query(ComplaintActivity)
+        .filter(
+            ComplaintActivity.complaint_id == complaint.id,
+            ComplaintActivity.activity_type == "AI_TRIAGE_FAILED",
+        )
+        .first()
+    )
+    assert fail_act is not None
+    assert fail_act.activity_metadata["retryable"] is False
+
+
+def test_failed_worker_message_not_acknowledged(db_session: Session) -> None:
+    """Message Dispatcher: When handler re-raises retryable error, dispatch_envelope returns False."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, RetryableWorkerError
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.consumer import dispatcher
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import complaint_handler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-NACK-001",
+        category=ComplaintCategory.HOUSEKEEPING,
+        title="Garbage in corridor",
+        description="Trash bags left in corridor",
+        priority=ComplaintPriority.LOW,
+        ai_status=ComplaintAIStatus.PENDING,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    # Configure registered handler's provider to fail retryably
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.side_effect = RetryableWorkerError("503 Service Unavailable")
+    complaint_handler._ai_provider = mock_provider
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    success = dispatcher.dispatch_envelope(envelope, db_session)
+    assert success is False  # Must be False so SQS does NOT delete the message!
+
+
+def test_complaint_worker_successful_retry_recovery(db_session: Session) -> None:
+    """Worker Reliability: A subsequent retry on a FAILED complaint successfully transitions to COMPLETED."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, AITriageResult
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-RECOVER-001",
+        category=ComplaintCategory.LIFT,
+        title="Lift jerky in tower A",
+        description="Lift stopped abruptly between floors",
+        priority=ComplaintPriority.HIGH,
+        ai_status=ComplaintAIStatus.FAILED,  # Initially in failed state from earlier timeout
+        ai_reasoning="Earlier timeout attempt failed",
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.return_value = AITriageResult(
+        suggested_category=ComplaintCategory.LIFT,
+        suggested_priority=ComplaintPriority.HIGH,
+        confidence_score=0.96,
+        summary="Lift jerking between floors",
+        urgency_reason="Elevator mechanical issue",
+        reasoning="Matched lift keywords",
+        provider="gemini",
+        model="gemini-2.5-flash",
+    )
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    handler.process(envelope, db_session)
+    db_session.refresh(complaint)
+
+    assert complaint.ai_status == ComplaintAIStatus.COMPLETED
+    assert complaint.ai_suggested_category == ComplaintCategory.LIFT
+    assert complaint.ai_provider == "gemini"
+
+
+def test_complaint_worker_concurrent_active_lease_skips(db_session: Session) -> None:
+    """Worker Concurrency: Active PROCESSING lease prevents duplicate concurrent workers from running."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-LEASE-001",
+        category=ComplaintCategory.PLUMBING,
+        title="Dripping shower",
+        description="Shower head dripping",
+        priority=ComplaintPriority.LOW,
+        ai_status=ComplaintAIStatus.PROCESSING,
+        ai_processed_at=datetime.now(UTC) - timedelta(seconds=25),  # 25 seconds ago (active lease)
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    handler.process(envelope, db_session)
+    # Must not invoke provider because active lease exists
+    assert mock_provider.classify.call_count == 0
+
+
+def test_complaint_worker_expired_lease_reclaims(db_session: Session) -> None:
+    """Worker Reliability: Expired PROCESSING lease (>300s from crashed worker) is reclaimed and processed."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, AITriageResult
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-EXPIRED-001",
+        category=ComplaintCategory.COMMON_AREA,
+        title="Clubhouse door broken",
+        description="Handle fell off clubhouse entrance door",
+        priority=ComplaintPriority.MEDIUM,
+        ai_status=ComplaintAIStatus.PROCESSING,
+        ai_processed_at=datetime.now(UTC) - timedelta(seconds=350),  # > 300s (expired lease)
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.return_value = AITriageResult(
+        suggested_category=ComplaintCategory.COMMON_AREA,
+        suggested_priority=ComplaintPriority.MEDIUM,
+        confidence_score=0.91,
+        summary="Clubhouse door handle broken",
+        urgency_reason="Amenity maintenance",
+        reasoning="Matched clubhouse door keyword",
+        provider="mock-ai",
+        model="mock-v1",
+    )
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    handler.process(envelope, db_session)
+    assert mock_provider.classify.call_count == 1
+
+    db_session.refresh(complaint)
+    assert complaint.ai_status == ComplaintAIStatus.COMPLETED
+
+
+def test_safety_priority_immutable_under_ai_worker(db_session: Session) -> None:
+    """Safety Invariant: AI suggestions must NEVER downgrade or overwrite authoritative safety priority."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, AITriageResult
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-SAFETY-IMMUTABLE",
+        category=ComplaintCategory.OTHER,
+        title="Gas cylinder leaking violently",
+        description="LPG smell in kitchen, hissing noise from regulator",
+        priority=ComplaintPriority.CRITICAL,
+        safety_escalated=True,
+        safety_escalation_reason="Gas leak detected",
+        ai_status=ComplaintAIStatus.PENDING,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    # Mock an AI provider that erroneously suggests LOW priority
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.return_value = AITriageResult(
+        suggested_category=ComplaintCategory.PLUMBING,
+        suggested_priority=ComplaintPriority.LOW,
+        confidence_score=0.88,
+        summary="Gas cylinder regulator",
+        urgency_reason="Minor plumbing check",
+        reasoning="Test reasoning",
+        provider="gemini",
+        model="gemini-2.5-flash",
+    )
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    handler.process(envelope, db_session)
+    db_session.refresh(complaint)
+
+    # Authoritative priority MUST remain CRITICAL
+    assert complaint.priority == ComplaintPriority.CRITICAL
+    assert complaint.safety_escalated is True
+
+    # AI recommendation is isolated to advisory columns
+    assert complaint.ai_suggested_priority == ComplaintPriority.LOW
+    assert complaint.ai_suggested_category == ComplaintCategory.PLUMBING
+
+
+def test_pii_minimization_multilingual() -> None:
+    """Privacy: Verifies resident minimization across English, Hindi, and Marathi."""
+    from app.domains.complaints.ai_classifier import minimize_resident_data
+
+    # 1. English with titles, unit, PIN code, phone
+    en_title = "Water leakage in flat T07-1203, PIN 411028"
+    en_desc = "Resident: Mr. Rajesh Shinde, call me on +91 98765 43210. Password mypass is locked."
+    r_en_t, r_en_d = minimize_resident_data(en_title, en_desc)
+    assert "[UNIT_REDACTED]" in r_en_t
+    assert "[PINCODE_REDACTED]" in r_en_t
+    assert "411028" not in r_en_t
+    assert "[NAME_REDACTED]" in r_en_d
+    assert "Rajesh Shinde" not in r_en_d
+    assert "[PHONE_REDACTED]" in r_en_d
+    assert "98765" not in r_en_d
+    assert "[REDACTED]" in r_en_d
+    assert "mypass" not in r_en_d
+
+    # 2. Hindi with self-intro, Devnagari numerals, unit
+    hi_title = "मकान नं 204 में लीकेज"
+    hi_desc = "मेरा नाम अमित कुमार है। कृपया मोबाइल नंबर ९८७६५४३२१० पर कॉल करें।"
+    r_hi_t, r_hi_d = minimize_resident_data(hi_title, hi_desc)
+    assert "[UNIT_REDACTED]" in r_hi_t
+    assert "204" not in r_hi_t
+    assert "[NAME_REDACTED]" in r_hi_d
+    assert "अमित कुमार" not in r_hi_d
+    assert "[PHONE_REDACTED]" in r_hi_d
+    assert "९८७६५४३२१०" not in r_hi_d
+
+    # 3. Marathi with self-intro, unit, phone
+    mr_title = "फ्लॅट क्र ५०२ मध्ये शॉर्ट सर्किट"
+    mr_desc = "माझे नाव अमोल पाटील आहे. संपर्क ९८७६५४३२१०."
+    r_mr_t, r_mr_d = minimize_resident_data(mr_title, mr_desc)
+    assert "[UNIT_REDACTED]" in r_mr_t
+    assert "५०२" not in r_mr_t
+    assert "[NAME_REDACTED]" in r_mr_d
+    assert "अमोल पाटील" not in r_mr_d
+    assert "[PHONE_REDACTED]" in r_mr_d
+    assert "९८७६५४३२१०" not in r_mr_d
+
+
+def test_s3_storage_metadata_verification_edge_cases() -> None:
+    """Attachments: S3 metadata verification rejects empty, oversized, size-mismatched, and missing-content-type files."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.storage import S3StorageProvider
+
+    provider = S3StorageProvider(bucket_name="test-bucket")
+    mock_s3 = MagicMock()
+    provider.s3_client = mock_s3
+
+    # Case 1: Empty file (0 bytes) -> must reject
+    mock_s3.head_object.return_value = {"ContentLength": 0, "ContentType": "image/jpeg"}
+    valid, err = provider.verify_object_metadata("key1", 0, "image/jpeg")
+    assert valid is False
+    assert "empty" in (err or "").lower()
+
+    # Case 2: Oversized file (> 5MB) -> must reject
+    mock_s3.head_object.return_value = {
+        "ContentLength": 6 * 1024 * 1024,
+        "ContentType": "image/jpeg",
+    }
+    valid, err = provider.verify_object_metadata("key2", 6 * 1024 * 1024, "image/jpeg")
+    assert valid is False
+    assert "exceeds maximum" in (err or "").lower()
+
+    # Case 3: Size mismatch (declared 2000, actual 2050) -> must reject with zero tolerance
+    mock_s3.head_object.return_value = {"ContentLength": 2050, "ContentType": "image/png"}
+    valid, err = provider.verify_object_metadata("key3", 2000, "image/png")
+    assert valid is False
+    assert "size mismatch" in (err or "").lower()
+
+    # Case 4: Missing ContentType metadata -> must reject
+    mock_s3.head_object.return_value = {"ContentLength": 2000, "ContentType": ""}
+    valid, err = provider.verify_object_metadata("key4", 2000, "image/png")
+    assert valid is False
+    assert "missing contenttype" in (err or "").lower()
+
+    # Case 5: ContentType mismatch -> must reject
+    mock_s3.head_object.return_value = {"ContentLength": 2000, "ContentType": "image/webp"}
+    valid, err = provider.verify_object_metadata("key5", 2000, "image/png")
+    assert valid is False
+    assert "content-type mismatch" in (err or "").lower()
+
+    # Case 6: Valid object -> must pass
+    mock_s3.head_object.return_value = {"ContentLength": 2000, "ContentType": "image/png"}
+    valid, err = provider.verify_object_metadata("key6", 2000, "image/png")
+    assert valid is True
+    assert err is None
+
+
+def test_complaint_worker_bounded_retries_exhaustion(db_session: Session) -> None:
+    """Worker Reliability: Retries are bounded to 3 attempts, after which the job is marked FAILED and acknowledged."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, RetryableWorkerError
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintActivity,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-EXHAUST-001",
+        category=ComplaintCategory.PLUMBING,
+        title="Broken flush valve",
+        description="Flush valve leaking constantly",
+        priority=ComplaintPriority.MEDIUM,
+        ai_status=ComplaintAIStatus.FAILED,
+    )
+    db_session.add(complaint)
+    db_session.flush()
+
+    # Seed 3 prior failed activities
+    for i in range(3):
+        act = ComplaintActivity(
+            society_id=complaint.society_id,
+            complaint_id=complaint.id,
+            actor_id=None,
+            activity_type="AI_TRIAGE_FAILED",
+            notes=f"Attempt {i + 1} timed out",
+            activity_metadata={"attempt": i + 1, "retryable": True},
+            created_at=datetime.now(UTC),
+        )
+        db_session.add(act)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.side_effect = RetryableWorkerError("Timeout again")
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    # Bounded retries exhausted -> must NOT re-raise; acknowledges message cleanly
+    handler.process(envelope, db_session)
+
+    db_session.refresh(complaint)
+    assert complaint.ai_status == ComplaintAIStatus.FAILED
+    assert "Exceeded maximum retry attempts" in (complaint.ai_reasoning or "")

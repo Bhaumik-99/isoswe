@@ -62,6 +62,18 @@ class AIClassificationOutput(BaseModel):
     )
 
 
+class ComplaintWorkerError(Exception):
+    """Base error for complaints processing and AI worker execution."""
+
+
+class RetryableWorkerError(ComplaintWorkerError):
+    """Transient network error, provider rate limit (429), or 5xx outage that should be retried by SQS."""
+
+
+class PermanentWorkerError(ComplaintWorkerError):
+    """Permanent unrecoverable error (e.g. malformed schema, unparseable model response) that should not be retried."""
+
+
 class AIClassifierProvider(abc.ABC):
     @abc.abstractmethod
     def classify(
@@ -286,9 +298,16 @@ class DeterministicAIClassifierProvider(AIClassifierProvider):
 
 
 def minimize_resident_data(title: str, description: str) -> tuple[str, str]:
-    """Redacts resident PII (phone numbers, emails, flat/unit numbers, resident names, secrets)
+    """Redacts resident PII (phone numbers, emails, flat/unit/tower numbers, postal PIN codes,
 
-    before sending data to external AI models.
+    resident identities, and credentials) in English, Hindi, and Marathi prior to transmission
+    to third-party LLMs.
+
+    DATA MINIMIZATION LIMITATIONS:
+    Automated regex-based redaction provides best-effort heuristic sanitization for common
+    identifiers (phone numbers, email addresses, flat/tower coordinates, postal PIN codes,
+    and direct self-introductions). It does NOT guarantee complete cryptographic anonymization
+    of arbitrary unstructured resident narratives.
     """
 
     def _sanitize(text: str) -> str:
@@ -296,27 +315,87 @@ def minimize_resident_data(title: str, description: str) -> tuple[str, str]:
             return ""
         # Control characters
         clean = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
-        # Passwords / secrets
-        clean = re.sub(r"(?i)(password|secret|bearer\s+[a-z0-9\-_\.]+)", "[REDACTED]", clean)
-        # Emails
+
+        # Passwords / bearer tokens / secrets (and any immediate following value)
+        clean = re.sub(
+            r"(?i)\b(password|secret|bearer|passcode|token)\s*(?:is\s*|[:=]\s*)?([a-z0-9\-_\.]+)?",
+            "[REDACTED]",
+            clean,
+        )
+
+        # Email addresses
         clean = re.sub(
             r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL_REDACTED]", clean
         )
-        # Phone numbers (Indian 10-digit mobile, with optional +91, 91, or 0 prefix)
-        clean = re.sub(r"(?:(?:\+91|91|0)?[-\s]?)?[6-9]\d{9}\b", "[PHONE_REDACTED]", clean)
-        # Unit / flat / tower numbers
+
+        # Indian phone numbers (10 digits with optional +91, 91, or 0; dashes or spaces)
         clean = re.sub(
-            r"(?i)\b(?:flat|unit|apt|apartment|tower|wing)\s*#?\s*[a-z0-9-]+\b",
+            r"(?:(?:\+91|91|0)?[-\s]?)?[6-9]\d{4}[-\s]?\d{5}\b", "[PHONE_REDACTED]", clean
+        )
+        # Indian phone numbers written in Devnagari digits (e.g. ९८७६५४३२१०)
+        clean = re.sub(r"[६-९][०-९]{4}[-\s]?[०-९]{5}\b", "[PHONE_REDACTED]", clean)
+
+        # Contextual phone triggers (English, Hindi, Marathi)
+        clean = re.sub(
+            r"(?i)\b(?:phone|mobile|contact|call(?:\s+me)?(?:\s+at)?|ph|mob)\s*(?:no\.?|num|number)?\s*[:\-]?\s*(\+?[0-9०-९\-\s]{8,15})",
+            "phone [PHONE_REDACTED]",
+            clean,
+        )
+        clean = re.sub(
+            r"(?:फोन|मोबाइल|सम्पर्क|संपर्क|मोबाईल)\s*(?:नं|नंबर|क्र|क्रमांक)?\s*[:\-]?\s*([0-9०-९\-\s]{8,15})",
+            "संपर्क [PHONE_REDACTED]",
+            clean,
+        )
+
+        # Postal PIN codes (6-digit Indian PIN codes starting with 1-9)
+        clean = re.sub(r"\b[1-9][0-9]{2}\s?[0-9]{3}\b", "[PINCODE_REDACTED]", clean)
+
+        # Specific gated society / township names
+        clean = re.sub(
+            r"(?i)\b(?:marvel\s+greenfield(?:\s+residences)?|greenfield\s+residences)\b",
+            "[SOCIETY_REDACTED]",
+            clean,
+        )
+
+        # Flat / Unit / Tower / Wing / Block coordinates (English)
+        clean = re.sub(
+            r"(?i)\b(?:flat|unit|apt|apartment|tower|wing|block|bldg|building|floor)\s*#?[-:\s]*[a-z0-9-]+\b",
             "[UNIT_REDACTED]",
             clean,
         )
-        # Self-intro names: "My name is...", "This is..."
+        # Short flat-tower codes (e.g. T07-1203, T-7 1203, T12-0408)
+        clean = re.sub(r"(?i)\b[tT]\d{1,2}[-\s]?\d{3,4}\b", "[UNIT_REDACTED]", clean)
+
+        # Flat / Tower / Room coordinates (Hindi & Marathi)
         clean = re.sub(
-            r"(?i)\b(my name is|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"(?:फ्लैट|मकान|सदन|टॉवर|विंग|ब्लॉक|इमारत|कमरा|सदनिका|फ्लॅट|मजला|खोली)\s*(?:नं|नंबर|क्र|क्रमांक)?\s*#?[-:\s]*[a-zA-Z0-9०-९-]+\b",
+            "[UNIT_REDACTED]",
+            clean,
+        )
+
+        # Salutations & titles (English, Hindi, Marathi)
+        clean = re.sub(
+            r"(?i)\b(?:mr\.|mrs\.|ms\.|dr\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b",
+            "[NAME_REDACTED]",
+            clean,
+        )
+        clean = re.sub(
+            r"(?:श्री|श्रीमती|डॉ\.|सौ\.)\s+([^\s,।\n]+(?:\s+[^\s,।\n]+)?)",
+            "[NAME_REDACTED]",
+            clean,
+        )
+
+        # Self-introductions and identity statements (English)
+        clean = re.sub(
+            r"(?i)\b(my name is|this is|resident\s*[:\-]|owner\s*[:\-]|tenant\s*[:\-]|from\s*[:\-])\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)",
             r"\1 [NAME_REDACTED]",
             clean,
         )
-        # "I am <Name>" (where Name is Titlecase and not common verbs)
+        clean = re.sub(
+            r"(?i)\b(?:call|contact|reach)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:at|on)\b",
+            "contact [NAME_REDACTED] at",
+            clean,
+        )
         clean = re.sub(
             r"\b(I am|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b",
             lambda m: (
@@ -334,11 +413,25 @@ def minimize_resident_data(title: str, description: str) -> tuple[str, str]:
                     "getting",
                     "seeing",
                     "requesting",
+                    "asking",
                 }
                 else m.group(0)
             ),
             clean,
         )
+
+        # Self-introductions and identity statements (Hindi & Marathi)
+        clean = re.sub(
+            r"(?:मेरा\s+नाम|माझे\s+नाव|नाव)\s*[:\-]?\s*([^\s,।\n]+(?:\s+[^\s,।\n]+)?)\s*(?:है|आहे)?",
+            "नाव [NAME_REDACTED]",
+            clean,
+        )
+        clean = re.sub(
+            r"(?:मैं|मी)\s+([^\s,।\n]+(?:\s+[^\s,।\n]+)?)\s+(?:बोल\s+रहा|बोल\s+रही|हूँ|हूं|बोलतोय|बोलतेय)",
+            "[NAME_REDACTED] बोलतोय",
+            clean,
+        )
+
         return clean
 
     return _sanitize(title), _sanitize(description)
@@ -353,11 +446,13 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
         model: str = "gemini-2.5-flash",
         timeout_seconds: int = 10,
         max_retries: int = 1,
+        raise_on_error: bool = False,
     ) -> None:
         self.api_key = api_key or settings.GEMINI_API_KEY
         self.model = model or settings.GEMINI_MODEL
         self.timeout_seconds = timeout_seconds or settings.AI_TIMEOUT_SECONDS
         self.max_retries = max_retries or settings.AI_MAX_RETRIES
+        self.raise_on_error = raise_on_error
         self.fallback_provider = DeterministicAIClassifierProvider()
 
     def _sanitize_input(self, text: str, max_chars: int = 2000) -> str:
@@ -458,28 +553,35 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
             },
         }
 
+        last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 resp = requests.post(api_url, json=payload, timeout=self.timeout_seconds)
                 if resp.status_code != 200:
+                    err_msg = f"Gemini API returned status {resp.status_code}: {resp.text[:200]}"
                     logger.warning(
-                        "Gemini API returned status %s: %s (attempt %d/%d)",
-                        resp.status_code,
-                        resp.text[:200],
+                        "%s (attempt %d/%d)",
+                        err_msg,
                         attempt + 1,
                         self.max_retries + 1,
                     )
+                    if resp.status_code in (429, 500, 502, 503, 504):
+                        last_error = RetryableWorkerError(err_msg)
+                    else:
+                        last_error = PermanentWorkerError(err_msg)
                     continue
 
                 resp_data = resp.json()
                 candidates = resp_data.get("candidates", [])
                 if not candidates:
                     logger.warning("Gemini API response had no candidates")
+                    last_error = PermanentWorkerError("Gemini API response had no candidates")
                     continue
 
                 part_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
                 if not part_text:
                     logger.warning("Gemini API candidate part text was empty")
+                    last_error = PermanentWorkerError("Gemini API candidate part text was empty")
                     continue
 
                 # Parse JSON and validate with Pydantic
@@ -498,8 +600,20 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
                     requires_human_review=validated.requires_human_review
                     or (validated.confidence_score < 0.75),
                 )
+            except (RetryableWorkerError, PermanentWorkerError) as e:
+                last_error = e
+            except requests.RequestException as e:
+                logger.warning("Gemini AI classification attempt %d failed: %s", attempt + 1, e)
+                last_error = RetryableWorkerError(f"Gemini API network failure: {e}")
             except Exception as e:
                 logger.warning("Gemini AI classification attempt %d failed: %s", attempt + 1, e)
+                last_error = PermanentWorkerError(
+                    f"Gemini API response parse/validation failure: {e}"
+                )
+
+        # If raise_on_error is enabled and an error occurred, re-raise the specific error
+        if self.raise_on_error and last_error is not None:
+            raise last_error
 
         logger.info(
             "Falling back to deterministic AI triage after Gemini provider attempts exhausted."
@@ -518,14 +632,14 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
         )
 
 
-def get_ai_classifier_provider() -> AIClassifierProvider:
+def get_ai_classifier_provider(raise_on_error: bool = True) -> AIClassifierProvider:
     if not settings.AI_ENABLED:
         logger.info(
             "AI triage disabled via settings.AI_ENABLED=False; using deterministic provider."
         )
         return DeterministicAIClassifierProvider()
     if settings.AI_PROVIDER == "gemini" and settings.GEMINI_API_KEY:
-        return GeminiAIClassifierProvider()
+        return GeminiAIClassifierProvider(raise_on_error=raise_on_error)
     return DeterministicAIClassifierProvider()
 
 
