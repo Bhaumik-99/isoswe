@@ -285,6 +285,65 @@ class DeterministicAIClassifierProvider(AIClassifierProvider):
             )
 
 
+def minimize_resident_data(title: str, description: str) -> tuple[str, str]:
+    """Redacts resident PII (phone numbers, emails, flat/unit numbers, resident names, secrets)
+
+    before sending data to external AI models.
+    """
+
+    def _sanitize(text: str) -> str:
+        if not text:
+            return ""
+        # Control characters
+        clean = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", text)
+        # Passwords / secrets
+        clean = re.sub(r"(?i)(password|secret|bearer\s+[a-z0-9\-_\.]+)", "[REDACTED]", clean)
+        # Emails
+        clean = re.sub(
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL_REDACTED]", clean
+        )
+        # Phone numbers (Indian 10-digit mobile, with optional +91, 91, or 0 prefix)
+        clean = re.sub(r"(?:(?:\+91|91|0)?[-\s]?)?[6-9]\d{9}\b", "[PHONE_REDACTED]", clean)
+        # Unit / flat / tower numbers
+        clean = re.sub(
+            r"(?i)\b(?:flat|unit|apt|apartment|tower|wing)\s*#?\s*[a-z0-9-]+\b",
+            "[UNIT_REDACTED]",
+            clean,
+        )
+        # Self-intro names: "My name is...", "This is..."
+        clean = re.sub(
+            r"(?i)\b(my name is|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"\1 [NAME_REDACTED]",
+            clean,
+        )
+        # "I am <Name>" (where Name is Titlecase and not common verbs)
+        clean = re.sub(
+            r"\b(I am|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b",
+            lambda m: (
+                f"{m.group(1)} [NAME_REDACTED]"
+                if m.group(2).lower()
+                not in {
+                    "facing",
+                    "having",
+                    "writing",
+                    "reporting",
+                    "living",
+                    "staying",
+                    "unable",
+                    "trying",
+                    "getting",
+                    "seeing",
+                    "requesting",
+                }
+                else m.group(0)
+            ),
+            clean,
+        )
+        return clean
+
+    return _sanitize(title), _sanitize(description)
+
+
 class GeminiAIClassifierProvider(AIClassifierProvider):
     """Google Gemini AI Triage Provider using structured JSON schema output and prompt defenses."""
 
@@ -312,14 +371,16 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
     def classify(
         self, title: str, description: str, selected_category: ComplaintCategory
     ) -> AITriageResult:
-        if not self.api_key:
+        if not settings.AI_ENABLED or not self.api_key:
             logger.debug(
-                "No GEMINI_API_KEY configured; utilizing deterministic classifier fallback."
+                "AI_ENABLED is False or no GEMINI_API_KEY configured; utilizing deterministic classifier fallback."
             )
             return self.fallback_provider.classify(title, description, selected_category)
 
-        clean_title = self._sanitize_input(title, 255)
-        clean_desc = self._sanitize_input(description, 3000)
+        # Minimize sensitive resident data prior to external LLM dispatch
+        redacted_title, redacted_desc = minimize_resident_data(title, description)
+        clean_title = self._sanitize_input(redacted_title, 255)
+        clean_desc = self._sanitize_input(redacted_desc, 3000)
 
         # Enforce strong system boundaries and prompt injection defense
         prompt = (
@@ -339,6 +400,50 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
         )
 
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        ai_response_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "suggested_category": {
+                    "type": "STRING",
+                    "enum": [c.value for c in ComplaintCategory],
+                    "description": "Classified township maintenance category",
+                },
+                "suggested_priority": {
+                    "type": "STRING",
+                    "enum": [p.value for p in ComplaintPriority],
+                    "description": "Recommended operational priority",
+                },
+                "confidence_score": {
+                    "type": "NUMBER",
+                    "description": "Confidence score between 0.0 and 1.0",
+                },
+                "summary": {
+                    "type": "STRING",
+                    "description": "Concise one-line summary of the complaint",
+                },
+                "urgency_reason": {
+                    "type": "STRING",
+                    "description": "Operational justification for the priority",
+                },
+                "reasoning": {
+                    "type": "STRING",
+                    "description": "Step-by-step reasoning for the chosen category and priority",
+                },
+                "requires_human_review": {
+                    "type": "BOOLEAN",
+                    "description": "Flag indicating human triage review is recommended",
+                },
+            },
+            "required": [
+                "suggested_category",
+                "suggested_priority",
+                "confidence_score",
+                "summary",
+                "urgency_reason",
+                "reasoning",
+            ],
+        }
+
         payload = {
             "contents": [
                 {
@@ -349,6 +454,7 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
             "generationConfig": {
                 "temperature": 0.1,
                 "responseMimeType": "application/json",
+                "responseSchema": ai_response_schema,
             },
         }
 
@@ -413,6 +519,11 @@ class GeminiAIClassifierProvider(AIClassifierProvider):
 
 
 def get_ai_classifier_provider() -> AIClassifierProvider:
+    if not settings.AI_ENABLED:
+        logger.info(
+            "AI triage disabled via settings.AI_ENABLED=False; using deterministic provider."
+        )
+        return DeterministicAIClassifierProvider()
     if settings.AI_PROVIDER == "gemini" and settings.GEMINI_API_KEY:
         return GeminiAIClassifierProvider()
     return DeterministicAIClassifierProvider()

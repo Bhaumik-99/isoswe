@@ -188,12 +188,13 @@ The database is seeded idempotently with real financial scenarios matching Marve
 ## 7. Phase 3 — Complaints Management, Helpdesk Operations & AI Triage
 
 ### Core Capabilities
-- **Deterministic Multilingual Safety Escalation**: Immediate detection of fire, gas leaks, lift entrapments, electrical sparking, and structural collapse across English, Hindi, and Marathi. Flags `safety_escalated = True` and locks priority to `CRITICAL` before AI classification.
-- **AI-Assisted Advisory Triage**: Offline deterministic category and priority suggestions with confidence scores and duplicate candidate detection. AI suggestions never overwrite safety escalations.
-- **Configurable SLA Policies**: Strict deadlines calculated from creation time (Critical: 5m first response, 2h resolution; High: 30m/8h; Medium: 4h/48h; Low: 12h/5d).
+- **Deterministic Multilingual Safety Escalation & Priority Lock**: Immediate detection of fire, gas leaks, lift entrapments, electrical sparking, and structural collapse across English, Hindi, and Marathi. Flags `safety_escalated = True` and locks priority to `CRITICAL` before AI classification; API strictly rejects downgrades below `CRITICAL`.
+- **Asynchronous AI Triage (Google Gemini)**: Complaint submission returns immediately with `ai_status = PENDING`. Background worker executes `gemini-2.5-flash` with structured JSON schema (`responseSchema`), prompt injection defenses, resident PII redaction (`[PHONE_REDACTED]`, `[EMAIL_REDACTED]`, `[UNIT_REDACTED]`, `[NAME_REDACTED]`), and deterministic offline fallback.
+- **Worker Idempotency**: Row-locked processing (`with_for_update()`) ensures duplicate queue events skip already completed AI triage.
+- **Configurable SLA Policies**: Strict deadlines calculated from creation time (Critical: 5m first response, 2h resolution; High: 30m/8h; Medium: 4h/48h; Low: 12h/5d). Priority changes dynamically recalculate resolution deadlines.
 - **Workload-Based Auto-Assignment**: Assigns newly triaged tickets to active helpdesk staff with the lowest open ticket count in the society.
 - **Privacy Separation**: Strict isolation between public resident conversations and private internal helpdesk notes.
-- **Secure Presigned Attachments**: S3/Mock storage validating JPEG, PNG, and WebP up to 5MB with randomized UUID keys.
+- **Two-Phase Presigned Attachments**: S3/Mock storage validating JPEG, PNG, and WebP up to 5MB with randomized UUID keys, client PUT verification, and backend metadata verification (object existence, actual size, MIME type).
 
 ### Complaints API Endpoints
 | Method | Endpoint | Access | Purpose |

@@ -90,8 +90,10 @@ To protect resident life and physical property, safety hazard detection executes
 AI classification assists township staff by predicting issue categories, operational priorities, and summarizations.
 
 ### Key Rules
-- **Asynchronous Architecture**: Complaint creation returns immediately with `ai_status = PENDING`. An outbox event `complaint.classify` is emitted to `QUEUE_COMPLAINT_AI_JOBS`.
-- **Worker Execution**: `ComplaintAIHandler` invokes `GeminiAIClassifierProvider` (using `gemini-2.5-flash`) or the fallback provider.
+- **Asynchronous Architecture**: Complaint creation returns immediately with `ai_status = PENDING`. An outbox event `complaint.classify` is emitted to `QUEUE_COMPLAINT_AI_JOBS`. Complaint creation never makes synchronous external API or LLM calls.
+- **Worker Execution & Idempotency**: `ComplaintAIHandler` queries the complaint with row-locking (`with_for_update()`). If the complaint is already in `COMPLETED` or `FALLBACK` state, duplicate events are skipped immediately without repeated model invocations.
+- **Resident Privacy & Data Minimization**: Prior to calling external LLM providers, `minimize_resident_data()` redacts resident phone numbers (`[PHONE_REDACTED]`), email addresses (`[EMAIL_REDACTED]`), apartment/flat/tower identifiers (`[UNIT_REDACTED]`), resident self-intro names (`[NAME_REDACTED]`), and credentials. Internal database UUIDs (user IDs, flat IDs, society IDs) are never transmitted to external AI models.
+- **Structured Schema & Generation Config**: Gemini API invocations supply `responseSchema` (matching `AIClassificationOutput` properties and enum values) with `responseMimeType: "application/json"`.
 - **Pydantic Validation**: Responses strictly conform to `AIClassificationOutput` schema:
   - `suggested_category`: ComplaintCategory
   - `suggested_priority`: ComplaintPriority
@@ -100,9 +102,10 @@ AI classification assists township staff by predicting issue categories, operati
   - `urgency_reason`: string
   - `reasoning`: string (step-by-step rationale)
   - `requires_human_review`: boolean
+- **AI_ENABLED Control**: If `settings.AI_ENABLED` is `False`, all calls deterministically use `DeterministicAIClassifierProvider` with zero network or external API traffic.
 - **Prompt Injection Defense**: Sanitizes inputs (strips control characters, redacts sensitive tokens) and instructs the model that complaint text is untrusted data that must never be executed as instructions.
 - **Deterministic Offline Fallback**: If `GEMINI_API_KEY` is absent, or on network timeout / quota 429, the system gracefully falls back to `DeterministicAIClassifierProvider`, ensuring 100% CI reproducibility and zero paid API requirement.
-- **Advisory Isolation**: AI suggestions are stored in distinct advisory columns (`ai_suggested_*`, `ai_status`, `ai_reasoning`, `ai_provider`, `ai_model`, `ai_processed_at`) and never override human decisions.
+- **Advisory Isolation**: AI suggestions are stored in distinct advisory columns (`ai_suggested_*`, `ai_status`, `ai_reasoning`, `ai_provider`, `ai_model`, `ai_processed_at`) and never override human decisions. Authoritative priority and category are server-authoritative and never overwritten by the AI worker.
 
 ---
 
@@ -140,8 +143,9 @@ When a ticket is created:
 Attachment metadata is managed via `complaint_attachments`:
 - **State Machine**: `PENDING` ──► `UPLOADED` (or `FAILED`).
 - **Initiation**: `POST /attachments` registers a `PENDING` record and returns a presigned S3 PUT URL (1-hour validity).
-- **Completion Verification**: `POST /attachments/{id}/complete` verifies object existence via S3 `head_object` (or mock storage), transitions status to `UPLOADED`, and logs an audit activity.
+- **Completion Verification**: `POST /attachments/{id}/complete` verifies object existence, declared file size (<= 5MB, non-empty, matching declared size within tolerance), and MIME type via `verify_object_metadata()`. If verification fails, the attachment is transitioned to `FAILED`, a 400 error is returned, and unverified files are never made accessible. On success, transitions status to `UPLOADED` and logs an audit activity.
 - **Unverified Attachment Shield**: Unverified (`PENDING` or `FAILED`) attachments are strictly omitted from complaint detail views, and download URLs are never generated for them.
+- **Frontend Safe Upload**: The web client verifies the direct presigned PUT HTTP status (`uploadRes.ok`). If the direct upload fails, the completion endpoint is never called and an explicit error is raised.
 - **Fail-Closed Security**: In production and staging, `S3_ATTACHMENTS_BUCKET_NAME` must be configured; silent fallback to mock storage is strictly blocked.
 
 ---

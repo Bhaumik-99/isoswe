@@ -365,44 +365,30 @@ class ComplaintService:
         is_safety = safety_check.is_safety_escalated
         safety_reason = safety_check.reason
 
-        # 3. AI Triage & Advisory Suggestions
-        ai_triage = self.ai_classifier.classify(
-            request.title, request.description, request.category
-        )
+        # 3. Authoritative Priority & Category
+        # Deterministic safety detection forces CRITICAL; otherwise tickets start at standard MEDIUM priority.
+        # AI advisory suggestions are evaluated asynchronously via worker and never block complaint submission.
+        final_priority = ComplaintPriority.CRITICAL if is_safety else ComplaintPriority.MEDIUM
+        final_category = request.category
 
-        # 4. Final priority calculation (Deterministic safety MUST be CRITICAL)
-        if is_safety:
-            final_priority = ComplaintPriority.CRITICAL
-            final_category = (
-                request.category
-                if request.category != ComplaintCategory.OTHER
-                else ai_triage.suggested_category
-            )
-        else:
-            final_priority = ai_triage.suggested_priority
-            final_category = (
-                request.category
-                if request.category != ComplaintCategory.OTHER
-                else ai_triage.suggested_category
-            )
-
-        # 5. SLA Calculation
+        # 4. SLA Calculation
         first_resp_dl, res_dl = calculate_sla_deadlines(final_priority, now)
 
-        # 6. Workload-based Helpdesk Auto-Assignment
+        # 5. Workload-based Helpdesk Auto-Assignment
         assigned_staff_id = find_least_loaded_staff(self.db, society_id)
         initial_status = ComplaintStatus.ASSIGNED if assigned_staff_id else ComplaintStatus.TRIAGED
 
-        # 7. Duplicate Candidate Detection
+        # 6. Duplicate Candidate Detection
         active_complaints = self.repo.get_active_complaints_for_society(society_id)
         duplicate_candidate_ids = find_duplicate_candidates(
             request.title,
             request.description,
             request.flat_id,
             active_complaints,
+            category=final_category,
         )
 
-        # 8. Create Complaint Model
+        # 7. Create Complaint Model (AI advisory fields are left empty until worker completes)
         complaint = Complaint(
             society_id=society_id,
             flat_id=request.flat_id,
@@ -416,15 +402,15 @@ class ComplaintService:
             priority=final_priority,
             status=initial_status,
             ai_status=ComplaintAIStatus.PENDING,
-            ai_suggested_category=ai_triage.suggested_category,
-            ai_suggested_priority=ai_triage.suggested_priority,
-            ai_confidence_score=ai_triage.confidence_score,
-            ai_summary=ai_triage.summary,
-            ai_urgency_reason=ai_triage.urgency_reason,
-            ai_reasoning=ai_triage.reasoning,
-            ai_provider=ai_triage.provider,
-            ai_model=ai_triage.model,
-            ai_processed_at=now,
+            ai_suggested_category=None,
+            ai_suggested_priority=None,
+            ai_confidence_score=None,
+            ai_summary=None,
+            ai_urgency_reason=None,
+            ai_reasoning=None,
+            ai_provider=None,
+            ai_model=None,
+            ai_processed_at=None,
             safety_escalated=is_safety,
             safety_escalation_reason=safety_reason,
             first_response_deadline=first_resp_dl,
@@ -434,7 +420,7 @@ class ComplaintService:
         )
         self.repo.create_complaint(complaint)
 
-        # 9. Record Activities
+        # 8. Record Activities
         self._record_activity(
             complaint,
             actor_id=claims.user_id,
@@ -1007,7 +993,10 @@ class ComplaintService:
         storage_key = f"complaints/{complaint.society_id}/{complaint.id}/{attachment_id}{ext}"
 
         upload_url = self.storage_provider.generate_upload_url(
-            storage_key, request.content_type, expires_in_seconds=3600
+            storage_key,
+            request.content_type,
+            expires_in_seconds=3600,
+            expected_size=request.file_size_bytes,
         )
 
         attachment = ComplaintAttachment(
@@ -1063,13 +1052,17 @@ class ComplaintService:
         if not is_staff and attachment.uploaded_by != claims.user_id:
             raise AuthorizationError("Access denied: You did not initiate this upload")
 
-        # Verify backing storage
-        exists = self.storage_provider.verify_object_exists(attachment.storage_key)
-        if not exists:
+        # Verify backing storage metadata
+        is_valid, error_reason = self.storage_provider.verify_object_metadata(
+            attachment.storage_key,
+            expected_size=attachment.file_size_bytes,
+            expected_content_type=attachment.content_type,
+        )
+        if not is_valid:
             attachment.status = AttachmentStatus.FAILED
             self.db.commit()
             raise ValidationError(
-                "Attachment object was not found in storage. Upload may have failed or timed out."
+                f"Attachment verification failed: {error_reason or 'Object not found or invalid'}"
             )
 
         attachment.status = AttachmentStatus.UPLOADED

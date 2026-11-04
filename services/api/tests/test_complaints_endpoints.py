@@ -788,3 +788,265 @@ def test_complaint_worker_async_ai_processing(db_session: Session) -> None:
     assert complaint.ai_processed_at is not None
     assert len(complaint.activities) >= 1
     assert any(a.activity_type == "AI_TRIAGE_COMPLETED" for a in complaint.activities)
+
+
+def test_resident_create_complaint_async_ai_pending(
+    client: TestClient, db_session: Session
+) -> None:
+    """Creation: Must return immediately with ai_status=PENDING and empty advisory fields."""
+    payload = {
+        "flat_id": NEERAJ_FLAT_ID,
+        "title": "Water dripping from AC indoor unit",
+        "description": "AC unit in master bedroom has condensate dripping on floor.",
+        "category": "ELECTRICAL",
+    }
+    response = client.post("/api/v1/complaints", json=payload, headers=NEERAJ_HEADERS)
+    assert response.status_code == 201
+    data = response.json()
+
+    assert data["ai_status"] == "PENDING"
+    assert data["ai_suggested_category"] is None
+    assert data["ai_suggested_priority"] is None
+    assert data["ai_confidence_score"] is None
+    assert data["ai_summary"] is None
+    assert data["ai_urgency_reason"] is None
+    assert data["ai_reasoning"] is None
+    assert data["ai_provider"] is None
+    assert data["ai_model"] is None
+    assert data["ai_processed_at"] is None
+
+    # Verify classification outbox event was queued to QUEUE_COMPLAINT_AI_JOBS
+    outbox = (
+        db_session.query(OutboxEvent)
+        .filter(
+            OutboxEvent.aggregate_id == data["id"],
+            OutboxEvent.event_type == "complaint.classify",
+        )
+        .first()
+    )
+    from app.messaging.outbox_publisher import resolve_queue_for_event_type
+    from app.messaging.publisher import QUEUE_COMPLAINT_AI_JOBS
+
+    assert outbox is not None
+    assert resolve_queue_for_event_type(outbox.event_type) == QUEUE_COMPLAINT_AI_JOBS
+
+
+def test_complaint_worker_idempotency_duplicate_events(db_session: Session) -> None:
+    """Worker Idempotency: Duplicate events for already processed complaints must be skipped."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, AITriageResult
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-IDEMPOTENT-001",
+        category=ComplaintCategory.PLUMBING,
+        title="Bathroom tap leaking",
+        description="Tap leaking constantly",
+        priority=ComplaintPriority.MEDIUM,
+        ai_status=ComplaintAIStatus.PENDING,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.return_value = AITriageResult(
+        suggested_category=ComplaintCategory.PLUMBING,
+        suggested_priority=ComplaintPriority.LOW,
+        confidence_score=0.9,
+        summary="Tap leaking",
+        urgency_reason="Minor leak",
+        reasoning="Matched leak keyword",
+        provider="mock-ai",
+        model="mock-model-v1",
+    )
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    # First execution -> should classify
+    handler.process(envelope, db_session)
+    assert mock_provider.classify.call_count == 1
+    db_session.refresh(complaint)
+    assert complaint.ai_status == ComplaintAIStatus.COMPLETED
+
+    # Second duplicate execution -> must skip without calling provider again
+    handler.process(envelope, db_session)
+    assert mock_provider.classify.call_count == 1
+
+
+def test_ai_disabled_setting_enforcement(monkeypatch) -> None:
+    """Configuration: When AI_ENABLED is False, provider falls back deterministically."""
+    from app.core.config import settings
+    from app.domains.complaints.ai_classifier import (
+        DeterministicAIClassifierProvider,
+        GeminiAIClassifierProvider,
+        get_ai_classifier_provider,
+    )
+    from app.domains.complaints.models import ComplaintCategory
+
+    # 1. Test get_ai_classifier_provider with AI_ENABLED=False
+    monkeypatch.setattr(settings, "AI_ENABLED", False)
+    monkeypatch.setattr(settings, "AI_PROVIDER", "gemini")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "some-live-key")
+
+    provider = get_ai_classifier_provider()
+    assert isinstance(provider, DeterministicAIClassifierProvider)
+
+    # 2. Test GeminiAIClassifierProvider.classify when AI_ENABLED=False
+    gemini_provider = GeminiAIClassifierProvider(api_key="mock-key")
+    res = gemini_provider.classify(
+        title="Lift stuck on floor 3",
+        description="Lift trapped between 3 and 4",
+        selected_category=ComplaintCategory.LIFT,
+    )
+    assert res.provider == "deterministic"
+    assert res.suggested_category == ComplaintCategory.LIFT
+
+
+def test_attachment_upload_complete_success(client: TestClient, db_session: Session) -> None:
+    """Attachments: Successful upload completion updates status to UPLOADED."""
+    from app.domains.complaints.models import AttachmentStatus, ComplaintAttachment
+
+    c_res = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "title": "Kitchen tile broken",
+            "description": "Floor tile cracked.",
+            "category": "STRUCTURAL",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    complaint_id = c_res.json()["id"]
+
+    init_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments",
+        json={
+            "file_name": "tile.jpg",
+            "file_size_bytes": 2048,
+            "content_type": "image/jpeg",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert init_res.status_code == 201
+    attachment_id = init_res.json()["attachment_id"]
+
+    comp_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments/{attachment_id}/complete",
+        headers=NEERAJ_HEADERS,
+    )
+    assert comp_res.status_code == 200
+    comp_data = comp_res.json()
+    assert comp_data["status"] == "UPLOADED"
+    assert "download_url" in comp_data
+
+    att = (
+        db_session.query(ComplaintAttachment)
+        .filter(ComplaintAttachment.id == uuid.UUID(attachment_id))
+        .first()
+    )
+    assert att is not None
+    assert att.status == AttachmentStatus.UPLOADED
+
+
+def test_attachment_metadata_verification_rejection(
+    client: TestClient, db_session: Session
+) -> None:
+    """Attachments: Metadata verification failure marks attachment FAILED and returns 400."""
+    from app.domains.complaints.models import AttachmentStatus, ComplaintAttachment
+    from app.domains.complaints.storage import _default_mock_storage
+
+    # 1. Create complaint
+    c_res = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "title": "Balcony leak",
+            "description": "Water dripping from upstairs balcony.",
+            "category": "PLUMBING",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    complaint_id = c_res.json()["id"]
+
+    # 2. Initiate attachment
+    init_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments",
+        json={
+            "file_name": "balcony.png",
+            "file_size_bytes": 1024 * 50,
+            "content_type": "image/png",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert init_res.status_code == 201
+    init_data = init_res.json()
+    attachment_id = init_data["attachment_id"]
+    storage_key = init_data["storage_key"]
+
+    # 3. Simulate storage metadata corruption (size mismatch)
+    _default_mock_storage._stored_metadata[storage_key]["size"] = 999999
+
+    # 4. Attempt complete attachment upload -> must fail verification
+    comp_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments/{attachment_id}/complete",
+        headers=NEERAJ_HEADERS,
+    )
+    assert comp_res.status_code == 400
+    assert "verification failed" in comp_res.json()["error"]["message"].lower()
+
+    # Verify attachment marked FAILED in DB
+    att = (
+        db_session.query(ComplaintAttachment)
+        .filter(ComplaintAttachment.id == uuid.UUID(attachment_id))
+        .first()
+    )
+    assert att is not None
+    assert att.status == AttachmentStatus.FAILED
+
+
+def test_resident_pii_redaction() -> None:
+    """Privacy: Verifies resident phone, email, flat number, and names are redacted."""
+    from app.domains.complaints.ai_classifier import minimize_resident_data
+
+    title = "Leak in flat 402, call 9876543210 urgently"
+    desc = "My name is Ramesh Kumar, email ramesh.k@example.com. Password secret123 is not working."
+
+    redacted_title, redacted_desc = minimize_resident_data(title, desc)
+
+    assert "flat 402" not in redacted_title.lower()
+    assert "[UNIT_REDACTED]" in redacted_title
+    assert "9876543210" not in redacted_title
+    assert "[PHONE_REDACTED]" in redacted_title
+
+    assert "ramesh.k@example.com" not in redacted_desc
+    assert "[EMAIL_REDACTED]" in redacted_desc
+    assert "Ramesh Kumar" not in redacted_desc
+    assert "[NAME_REDACTED]" in redacted_desc
+    assert "secret123" not in redacted_desc
+    assert "[REDACTED]" in redacted_desc

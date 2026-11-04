@@ -182,17 +182,22 @@ export const complaintsService = {
       body: JSON.stringify(initiatePayload),
     });
 
-    // Upload directly to presigned URL
-    try {
-      await fetch(presigned.upload_url, {
+    // Upload directly to presigned URL (simulate in dev for mock-storage.local)
+    const isMockUrl = presigned.upload_url.includes('mock-storage.local');
+    if (!isMockUrl) {
+      const uploadRes = await fetch(presigned.upload_url, {
         method: 'PUT',
         body: file,
         headers: {
           'Content-Type': file.type,
         },
       });
-    } catch (e) {
-      console.warn('Presigned direct upload notice:', e);
+
+      if (!uploadRes.ok) {
+        throw new Error(
+          `Attachment upload failed: Storage server responded with status ${uploadRes.status} (${uploadRes.statusText || 'Upload Rejected'})`
+        );
+      }
     }
 
     return this.completeAttachmentUpload(complaintId, presigned.attachment_id, isStaff);
