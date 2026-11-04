@@ -151,9 +151,11 @@ class ComplaintAIHandler(MessageHandler):
             db.commit()
             return
 
-        # Atomically claim the job
+        # Atomically claim the job — mint a unique token so Phase 3 can prove ownership
+        claim_token = str(uuid.uuid4())
         complaint.ai_status = ComplaintAIStatus.PROCESSING
         complaint.ai_processed_at = now
+        complaint.ai_claim_token = claim_token
         title = complaint.title
         description = complaint.description
         category = complaint.category
@@ -187,6 +189,17 @@ class ComplaintAIHandler(MessageHandler):
             db.query(Complaint).filter(Complaint.id == complaint_id).with_for_update().first()
         )
         if not complaint_update:
+            return
+
+        # Lease ownership fence: verify our claim token is still the active one.
+        # If another worker completed the job while we were calling the AI provider,
+        # its token will differ from ours. In that case, do not overwrite the result.
+        if complaint_update.ai_claim_token != claim_token:
+            logger.warning(
+                f"[ComplaintAIWorker] Stale claim token for complaint {complaint_id} "
+                f"(ours={claim_token!r}, stored={complaint_update.ai_claim_token!r}). "
+                "Another worker already completed this job; skipping overwrite."
+            )
             return
 
         now_final = datetime.now(UTC)
@@ -232,15 +245,6 @@ class ComplaintAIHandler(MessageHandler):
                 return
 
         # Classification succeeded
-        if complaint_update.ai_status in (
-            ComplaintAIStatus.COMPLETED,
-            ComplaintAIStatus.FALLBACK,
-        ):
-            logger.info(
-                f"[ComplaintAIWorker] Complaint {complaint_id} was already marked completed by another worker; skipping overwrite."
-            )
-            return
-
         assert triage is not None
         is_fallback = "fallback" in triage.provider
 

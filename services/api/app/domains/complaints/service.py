@@ -1060,9 +1060,23 @@ class ComplaintService:
         )
         if not is_valid:
             attachment.status = AttachmentStatus.FAILED
+            self.storage_provider.delete_object(attachment.storage_key)
             self.db.commit()
             raise ValidationError(
                 f"Attachment verification failed: {error_reason or 'Object not found or invalid'}"
+            )
+
+        # Validate that actual file bytes match the declared content type (magic byte check)
+        bytes_valid, bytes_error = self.storage_provider.validate_image_bytes(
+            attachment.storage_key,
+            attachment.content_type,
+        )
+        if not bytes_valid:
+            attachment.status = AttachmentStatus.FAILED
+            self.storage_provider.delete_object(attachment.storage_key)
+            self.db.commit()
+            raise ValidationError(
+                f"Attachment image validation failed: {bytes_error or 'File signature mismatch'}"
             )
 
         attachment.status = AttachmentStatus.UPLOADED

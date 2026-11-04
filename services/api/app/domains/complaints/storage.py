@@ -65,6 +65,17 @@ class StorageProvider(abc.ABC):
         """Deletes an object from storage."""
         ...
 
+    @abc.abstractmethod
+    def validate_image_bytes(self, storage_key: str, content_type: str) -> tuple[bool, str | None]:
+        """Downloads the minimum leading bytes of the object and verifies that they match
+        the magic signature for the declared content_type (JPEG, PNG, or WebP).
+
+        Returns (True, None) on a valid match, (False, reason) on mismatch or error.
+        In the MockStorageProvider this check is skipped (always passes when the key exists)
+        because mock storage does not hold real byte payloads.
+        """
+        ...
+
 
 class MockStorageProvider(StorageProvider):
     """Local mock storage provider for deterministic local testing."""
@@ -140,6 +151,13 @@ class MockStorageProvider(StorageProvider):
         self._stored_keys.discard(storage_key)
         self._stored_metadata.pop(storage_key, None)
         return True
+
+    def validate_image_bytes(self, storage_key: str, content_type: str) -> tuple[bool, str | None]:
+        # Mock storage does not hold real byte payloads; skip byte-level check.
+        # Validation passes as long as the key was registered (i.e. upload was initiated).
+        if storage_key not in self._stored_keys:
+            return False, "Object not found in mock storage"
+        return True, None
 
 
 _default_mock_storage = MockStorageProvider()
@@ -273,6 +291,52 @@ class S3StorageProvider(StorageProvider):
             return True
         except Exception:
             return False
+
+    def validate_image_bytes(self, storage_key: str, content_type: str) -> tuple[bool, str | None]:
+        """Fetches the first 12 bytes of the S3 object and verifies magic byte signatures.
+
+        JPEG: FF D8 FF (bytes 0-2)
+        PNG:  89 50 4E 47 0D 0A 1A 0A (bytes 0-7)
+        WebP: 52 49 46 46 __ __ __ __ 57 45 42 50 (RIFF....WEBP, bytes 0-3 and 8-11)
+        """
+        _MAGIC: dict[str, list[tuple[int, bytes]]] = {
+            "image/jpeg": [(0, b"\xff\xd8\xff")],
+            "image/jpg": [(0, b"\xff\xd8\xff")],
+            "image/png": [(0, b"\x89PNG\r\n\x1a\n")],
+            "image/webp": [(0, b"RIFF"), (8, b"WEBP")],
+        }
+        if not self.s3_client:
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError(
+                    "CRITICAL: S3 client is uninitialized; cannot perform image byte validation."
+                )
+            # Non-production without S3 (e.g. fallback dev) — skip byte check
+            return True, None
+        try:
+            resp = self.s3_client.get_object(
+                Bucket=self.bucket_name,
+                Key=storage_key,
+                Range="bytes=0-11",
+            )
+            header: bytes = resp["Body"].read(12)
+        except Exception as exc:
+            return False, f"Image byte fetch failed: {exc}"
+
+        patterns = _MAGIC.get(content_type.lower(), [])
+        if not patterns:
+            # Unknown MIME type — cannot validate magic bytes; reject defensively
+            return False, f"Unsupported content type for byte validation: {content_type}"
+
+        for offset, magic in patterns:
+            end = offset + len(magic)
+            if header[offset:end] != magic:
+                return (
+                    False,
+                    f"File bytes do not match declared content type {content_type} "
+                    f"(expected {magic.hex()!r} at offset {offset}, "
+                    f"got {header[offset:end].hex()!r})",
+                )
+        return True, None
 
 
 def get_storage_provider() -> StorageProvider:

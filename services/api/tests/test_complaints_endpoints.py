@@ -1661,3 +1661,250 @@ def test_complaint_worker_bounded_retries_exhaustion(db_session: Session) -> Non
     db_session.refresh(complaint)
     assert complaint.ai_status == ComplaintAIStatus.FAILED
     assert "Exceeded maximum retry attempts" in (complaint.ai_reasoning or "")
+
+
+# =============================================================================
+# Worker Lease Fencing & Image Byte Validation Regression Tests
+# =============================================================================
+
+
+def test_stale_worker_does_not_overwrite_completed_result(db_session: Session) -> None:
+    """Worker Lease Fencing: A stale worker whose claim token was superseded must NOT
+    overwrite the successful result written by a faster competing worker."""
+    from unittest.mock import MagicMock
+
+    from app.domains.complaints.ai_classifier import AIClassifierProvider, AITriageResult
+    from app.domains.complaints.models import (
+        Complaint,
+        ComplaintAIStatus,
+        ComplaintCategory,
+        ComplaintPriority,
+    )
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import ComplaintAIHandler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat and user
+
+    # Create complaint initially claimed by Worker A (token-A)
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-FENCE-001",
+        category=ComplaintCategory.ELECTRICAL,
+        title="Power socket sparking",
+        description="Main hall power socket emitting sparks",
+        priority=ComplaintPriority.HIGH,
+        ai_status=ComplaintAIStatus.PROCESSING,
+        ai_processed_at=datetime.now(UTC) - timedelta(seconds=10),
+        ai_claim_token="stale-token-from-worker-A",
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    # Simulate Worker B winning: sets COMPLETED with its own token before Worker A finishes
+    complaint.ai_status = ComplaintAIStatus.COMPLETED
+    complaint.ai_claim_token = "fresh-token-from-worker-B"
+    complaint.ai_suggested_priority = ComplaintPriority.CRITICAL
+    complaint.ai_suggested_category = ComplaintCategory.ELECTRICAL
+    complaint.ai_confidence_score = 0.97
+    complaint.ai_summary = "Electrical spark hazard"
+    complaint.ai_provider = "gemini"
+    complaint.ai_model = "gemini-2.5-flash"
+    complaint.ai_processed_at = datetime.now(UTC)
+    db_session.commit()
+
+    # Worker A now tries to persist — it carries stale-token-from-worker-A
+    # We simulate this by patching the handler so the Phase 1 claim token doesn't
+    # match what's in the DB (Worker B already wrote fresh-token-from-worker-B).
+    # We confirm the worker returns without overwriting by running process() with a
+    # complaint that already has PROCESSING status and expired lease (reclaim path),
+    # but then the token fence catches the mismatch in Phase 3.
+
+    # To test the token fence directly: set ai_status back to PROCESSING with token-A
+    # so the idempotency guard passes, let classify succeed, then verify Phase 3 no-ops.
+    complaint.ai_status = ComplaintAIStatus.PROCESSING
+    complaint.ai_claim_token = "stale-token-from-worker-A"
+    complaint.ai_processed_at = datetime.now(UTC) - timedelta(seconds=400)  # expired lease
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    # Mock provider returns a valid result — but it should be discarded due to token mismatch
+    mock_provider = MagicMock(spec=AIClassifierProvider)
+    mock_provider.classify.return_value = AITriageResult(
+        suggested_category=ComplaintCategory.PLUMBING,  # stale AI thinks it's plumbing
+        suggested_priority=ComplaintPriority.LOW,
+        confidence_score=0.60,
+        summary="Stale worker bad result",
+        urgency_reason="None",
+        reasoning="Should be discarded",
+        provider="gemini",
+        model="gemini-2.5-flash",
+    )
+
+    # Monkeypatch: after claim, overwrite the token in DB to simulate Worker B completing
+    original_classify = mock_provider.classify
+
+    def classify_and_inject_winner(*args, **kwargs):
+        # Simulate Worker B completing while Worker A is in Phase 2
+        db_session.query(Complaint).filter(Complaint.id == complaint.id).update(
+            {
+                "ai_status": "COMPLETED",
+                "ai_claim_token": "fresh-token-from-worker-B-round2",
+                "ai_suggested_priority": "CRITICAL",
+                "ai_confidence_score": 0.99,
+            }
+        )
+        db_session.commit()
+        return original_classify(*args, **kwargs)
+
+    mock_provider.classify.side_effect = classify_and_inject_winner
+
+    handler = ComplaintAIHandler(ai_provider=mock_provider)
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    # Must complete without raising (stale worker gracefully steps aside)
+    handler.process(envelope, db_session)
+
+    db_session.refresh(complaint)
+
+    # Worker B's result must be preserved — not overwritten by Worker A's stale data
+    assert complaint.ai_status == ComplaintAIStatus.COMPLETED
+    assert complaint.ai_claim_token == "fresh-token-from-worker-B-round2"
+    assert complaint.ai_confidence_score == 0.99  # Worker B's value preserved
+    # Worker A's stale suggested_priority (LOW) must NOT have been written
+    assert complaint.ai_suggested_priority == ComplaintPriority.CRITICAL
+
+
+def test_attachment_invalid_image_bytes_rejected(client: TestClient, db_session: Session) -> None:
+    """Image Byte Validation: Attachments whose bytes do not match their declared MIME type
+    must be rejected with 400, marked FAILED, and deleted from storage."""
+    from unittest.mock import patch
+
+    from app.domains.complaints.models import AttachmentStatus, ComplaintAttachment
+
+    # First create a complaint
+    create_resp = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "category": "PLUMBING",
+            "title": "Bathroom tap broken",
+            "description": "Bathroom tap not closing, water overflowing into drain",
+            "priority": "LOW",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    complaint_id = create_resp.json()["id"]
+
+    # Initiate attachment upload
+    init_resp = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments",
+        json={
+            "file_name": "photo.jpg",
+            "file_size_bytes": 2048,
+            "content_type": "image/jpeg",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert init_resp.status_code == 201, init_resp.text
+    attachment_id = init_resp.json()["attachment_id"]
+
+    # Patch validate_image_bytes to simulate an invalid JPEG (e.g. HTML file renamed to .jpg)
+    with patch(
+        "app.domains.complaints.storage.MockStorageProvider.validate_image_bytes",
+        return_value=(False, "File bytes do not match JPEG signature"),
+    ) as mock_validate:
+        complete_resp = client.post(
+            f"/api/v1/complaints/me/{complaint_id}/attachments/{attachment_id}/complete",
+            headers=NEERAJ_HEADERS,
+        )
+
+    assert complete_resp.status_code == 400, complete_resp.text
+    assert "image validation failed" in complete_resp.text.lower()
+
+    # validate_image_bytes must have been called
+    mock_validate.assert_called_once()
+
+    # Attachment must be marked FAILED in DB
+    att = (
+        db_session.query(ComplaintAttachment)
+        .filter(ComplaintAttachment.id == uuid.UUID(attachment_id))
+        .first()
+    )
+    assert att is not None
+    assert att.status == AttachmentStatus.FAILED
+
+
+def test_attachment_valid_image_bytes_accepted(client: TestClient, db_session: Session) -> None:
+    """Image Byte Validation: Attachments that pass both metadata and byte validation
+    must be marked UPLOADED and return 200."""
+    from unittest.mock import patch
+
+    from app.domains.complaints.models import AttachmentStatus, ComplaintAttachment
+
+    # Create a complaint
+    create_resp = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "category": "COMMON_AREA",
+            "title": "Lobby light flickering badly",
+            "description": "Main lobby ceiling light flickers every few seconds at night",
+            "priority": "MEDIUM",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    complaint_id = create_resp.json()["id"]
+
+    # Initiate attachment upload
+    init_resp = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments",
+        json={
+            "file_name": "lobby.png",
+            "file_size_bytes": 4096,
+            "content_type": "image/png",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert init_resp.status_code == 201, init_resp.text
+    attachment_id = init_resp.json()["attachment_id"]
+
+    # Patch validate_image_bytes to simulate a valid PNG
+    with patch(
+        "app.domains.complaints.storage.MockStorageProvider.validate_image_bytes",
+        return_value=(True, None),
+    ) as mock_validate:
+        complete_resp = client.post(
+            f"/api/v1/complaints/me/{complaint_id}/attachments/{attachment_id}/complete",
+            headers=NEERAJ_HEADERS,
+        )
+
+    assert complete_resp.status_code == 200, complete_resp.text
+    assert complete_resp.json()["status"] == "UPLOADED"
+
+    # validate_image_bytes must have been called once
+    mock_validate.assert_called_once()
+
+    # Attachment must be UPLOADED in DB
+    att = (
+        db_session.query(ComplaintAttachment)
+        .filter(ComplaintAttachment.id == uuid.UUID(attachment_id))
+        .first()
+    )
+    assert att is not None
+    assert att.status == AttachmentStatus.UPLOADED

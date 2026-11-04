@@ -159,6 +159,9 @@ class Complaint(Base):
     ai_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ai_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Lease ownership fencing: each Phase-1 claim writes a unique token; Phase-3 checks it
+    # before committing to prevent stale workers from overwriting completed results.
+    ai_claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Duplicate tracking
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
