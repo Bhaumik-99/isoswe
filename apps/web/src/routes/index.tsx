@@ -9,8 +9,10 @@ import { LoginForm } from '../features/auth/LoginForm';
 import { ResidentOverview } from '../features/resident/ResidentOverview';
 import { ResidentBilling } from '../features/resident/ResidentBilling';
 import { ResidentPayments } from '../features/resident/ResidentPayments';
+import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
+import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
 import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
 import { NotFound } from '../components/NotFound';
@@ -61,21 +63,7 @@ export const AppRoutes: React.FC = () => {
         <Route path="overview" element={<ResidentOverview />} />
         <Route path="billing" element={<ResidentBilling />} />
         <Route path="payments" element={<ResidentPayments />} />
-        <Route
-          path="complaints"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Facility Management Helpdesk & AI"
-              plannedPhase="Phase 3 - AI Classification"
-              description="Resident complaint lifecycle with automated Bedrock LLM categorization, urgency detection, and technician dispatch."
-              deliverables={[
-                'Asynchronous complaint-ai-jobs SQS queue integration',
-                'SLA escalation tracking for 180 township facility employees',
-                'Resident feedback and satisfaction surveys',
-              ]}
-            />
-          }
-        />
+        <Route path="complaints" element={<ResidentComplaints />} />
         <Route
           path="notices"
           element={
@@ -103,20 +91,7 @@ export const AppRoutes: React.FC = () => {
       >
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<StaffOverview />} />
-        <Route
-          path="helpdesk"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Facility Helpdesk Dispatch Center"
-              plannedPhase="Phase 3 - Operations"
-              description="Technician assignment queue, work order management, and resident maintenance resolution."
-              deliverables={[
-                'Work order generation and parts requisition',
-                'Shift management for 180 facility staff',
-              ]}
-            />
-          }
-        />
+        <Route path="helpdesk" element={<StaffHelpdesk />} />
         <Route path="billing" element={<StaffBilling />} />
         <Route
           path="reconciliation"

@@ -183,3 +183,34 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `POST` | `/api/v1/billing/staff/runs` | Helpdesk | Execute monthly batch billing run (conflict-safe and idempotent) |
 | `GET` | `/api/v1/billing/staff/runs/{id}` | Helpdesk | Inspect billing run execution summary and audit metadata |
 
+---
+
+## 7. Phase 3 — Complaints Management, Helpdesk Operations & AI Triage
+
+### Core Capabilities
+- **Deterministic Multilingual Safety Escalation**: Immediate detection of fire, gas leaks, lift entrapments, electrical sparking, and structural collapse across English, Hindi, and Marathi. Flags `safety_escalated = True` and locks priority to `CRITICAL` before AI classification.
+- **AI-Assisted Advisory Triage**: Offline deterministic category and priority suggestions with confidence scores and duplicate candidate detection. AI suggestions never overwrite safety escalations.
+- **Configurable SLA Policies**: Strict deadlines calculated from creation time (Critical: 5m first response, 2h resolution; High: 30m/8h; Medium: 4h/48h; Low: 12h/5d).
+- **Workload-Based Auto-Assignment**: Assigns newly triaged tickets to active helpdesk staff with the lowest open ticket count in the society.
+- **Privacy Separation**: Strict isolation between public resident conversations and private internal helpdesk notes.
+- **Secure Presigned Attachments**: S3/Mock storage validating JPEG, PNG, and WebP up to 5MB with randomized UUID keys.
+
+### Complaints API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/complaints` | Resident | Raise new complaint (triggers safety check, AI triage & assignment) |
+| `GET` | `/api/v1/complaints/me` | Resident | List complaints for resident's authorized flats |
+| `GET` | `/api/v1/complaints/me/{id}` | Resident | Inspect ticket details, public comments, and status |
+| `POST` | `/api/v1/complaints/me/{id}/comments` | Resident | Add public comment or message to facility staff |
+| `POST` | `/api/v1/complaints/me/{id}/attachments`| Resident | Request presigned upload URL for photo attachment (max 5MB) |
+| `POST` | `/api/v1/complaints/me/{id}/reopen` | Resident | Reopen resolved ticket within 7-day window |
+| `POST` | `/api/v1/complaints/me/{id}/rating` | Resident | Submit satisfaction rating (1-5 stars) and feedback |
+| `GET` | `/api/v1/complaints/helpdesk/dashboard` | Helpdesk | Operational KPI metrics (counts, overdue SLA, turnaround averages) |
+| `GET` | `/api/v1/complaints/helpdesk` | Helpdesk | Multi-filter ticket search (category, priority, tower, SLA breaches) |
+| `GET` | `/api/v1/complaints/helpdesk/{id}` | Helpdesk | Full ticket view with duplicate candidates and internal notes |
+| `PATCH` | `/api/v1/complaints/helpdesk/{id}/status` | Helpdesk | Advance lifecycle state machine (records first response & resolution) |
+| `PATCH` | `/api/v1/complaints/helpdesk/{id}/assign` | Helpdesk | Assign or reassign ticket to active staff member |
+| `PATCH` | `/api/v1/complaints/helpdesk/{id}/priority` | Helpdesk | Adjust priority and automatically recalculate SLA targets |
+| `POST` | `/api/v1/complaints/helpdesk/{id}/comments` | Helpdesk | Add public resident reply or private internal helpdesk note |
+
+

@@ -1,0 +1,158 @@
+"""Complaints Attachment Storage Abstraction
+
+Provides private object storage capabilities for resident complaint attachments:
+- StorageProvider interface
+- MockStorageProvider for local development & automated test suites
+- S3StorageProvider for production & staging AWS deployments
+- Secure randomized key generation and content validation
+
+SECURITY INVARIANTS:
+- Private bucket access only; never expose public S3 URLs
+- Presigned upload & download URLs with limited expiration (1 hour)
+- Strictly validate allowed MIME types (JPEG, PNG, WebP) and max size (5MB)
+- Random UUID-based object keys to eliminate IDOR and key enumeration
+"""
+
+import abc
+import os
+import uuid
+from typing import Any
+
+from app.core.config import settings
+from app.core.errors import ValidationError
+
+ALLOWED_MIME_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+class StorageProvider(abc.ABC):
+    @abc.abstractmethod
+    def generate_upload_url(
+        self, storage_key: str, content_type: str, expires_in_seconds: int = 3600
+    ) -> str:
+        """Generates a secure presigned upload URL for client-side direct upload."""
+        ...
+
+    @abc.abstractmethod
+    def generate_download_url(self, storage_key: str, expires_in_seconds: int = 3600) -> str:
+        """Generates a secure presigned download URL for authorized viewing."""
+        ...
+
+    @abc.abstractmethod
+    def delete_object(self, storage_key: str) -> bool:
+        """Deletes an object from storage."""
+        ...
+
+
+class MockStorageProvider(StorageProvider):
+    """Local mock storage provider for deterministic local testing."""
+
+    def generate_upload_url(
+        self, storage_key: str, content_type: str, expires_in_seconds: int = 3600
+    ) -> str:
+        return f"https://mock-storage.local/upload/{storage_key}?expires={expires_in_seconds}&content_type={content_type}"
+
+    def generate_download_url(self, storage_key: str, expires_in_seconds: int = 3600) -> str:
+        return f"https://mock-storage.local/download/{storage_key}?expires={expires_in_seconds}"
+
+    def delete_object(self, storage_key: str) -> bool:
+        return True
+
+
+class S3StorageProvider(StorageProvider):
+    """AWS S3 Storage Provider using boto3 presigned URLs."""
+
+    def __init__(self, bucket_name: str | None = None) -> None:
+        self.bucket_name = bucket_name or os.environ.get(
+            "COMPLAINTS_BUCKET_NAME", "township-ops-complaints-attachments"
+        )
+        try:
+            import boto3
+
+            self.s3_client: Any = boto3.client("s3")
+        except Exception:
+            self.s3_client = None
+
+    def generate_upload_url(
+        self, storage_key: str, content_type: str, expires_in_seconds: int = 3600
+    ) -> str:
+        if not self.s3_client:
+            return MockStorageProvider().generate_upload_url(
+                storage_key, content_type, expires_in_seconds
+            )
+        return str(
+            self.s3_client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": storage_key,
+                    "ContentType": content_type,
+                },
+                ExpiresIn=expires_in_seconds,
+            )
+        )
+
+    def generate_download_url(self, storage_key: str, expires_in_seconds: int = 3600) -> str:
+        if not self.s3_client:
+            return MockStorageProvider().generate_download_url(storage_key, expires_in_seconds)
+        return str(
+            self.s3_client.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": storage_key,
+                },
+                ExpiresIn=expires_in_seconds,
+            )
+        )
+
+    def delete_object(self, storage_key: str) -> bool:
+        if not self.s3_client:
+            return True
+        try:
+            self.s3_client.delete_object(Bucket=self.bucket_name, Key=storage_key)
+            return True
+        except Exception:
+            return False
+
+
+def get_storage_provider() -> StorageProvider:
+    if settings.is_local_dev or os.environ.get("USE_MOCK_STORAGE", "true").lower() == "true":
+        return MockStorageProvider()
+    return S3StorageProvider()
+
+
+def validate_attachment_metadata(file_name: str, file_size_bytes: int, content_type: str) -> str:
+    """Validates attachment constraints and returns the verified file extension."""
+    if content_type not in ALLOWED_MIME_TYPES:
+        raise ValidationError(
+            f"Unsupported file format '{content_type}'. Allowed types: JPEG, PNG, WebP."
+        )
+
+    if file_size_bytes <= 0:
+        raise ValidationError("Attachment file size must be greater than zero.")
+
+    if file_size_bytes > MAX_FILE_SIZE_BYTES:
+        raise ValidationError(
+            f"File size {file_size_bytes / (1024 * 1024):.2f}MB exceeds the maximum 5MB limit."
+        )
+
+    expected_ext = ALLOWED_MIME_TYPES[content_type]
+    file_ext = os.path.splitext(file_name)[1].lower()
+    if file_ext not in [expected_ext, ".jpeg" if expected_ext == ".jpg" else expected_ext]:
+        raise ValidationError(
+            f"File extension '{file_ext}' does not match MIME type '{content_type}'."
+        )
+
+    return expected_ext
+
+
+def generate_storage_key(society_id: uuid.UUID, complaint_id: uuid.UUID, extension: str) -> str:
+    """Produces a secure, unpredictable object path."""
+    clean_ext = extension.lstrip(".")
+    unique_token = uuid.uuid4().hex
+    return f"attachments/{society_id}/{complaint_id}/{unique_token}.{clean_ext}"

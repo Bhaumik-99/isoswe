@@ -70,3 +70,4 @@ export interface ApiErrorResponse {
 }
 
 export * from './billing';
+export * from './complaints';
