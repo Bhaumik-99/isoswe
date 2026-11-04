@@ -5,6 +5,7 @@
 import {
   AssignComplaintRequest,
   Complaint,
+  ComplaintAttachment,
   ComplaintComment,
   ComplaintPriority,
   ComplaintStatus,
@@ -148,7 +149,24 @@ export const complaintsService = {
   // Attachments Upload
   // =========================================================================
 
-  async uploadAttachment(complaintId: string, file: File, isStaff = false): Promise<void> {
+  async completeAttachmentUpload(
+    complaintId: string,
+    attachmentId: string,
+    isStaff = false
+  ): Promise<ComplaintAttachment> {
+    const endpoint = isStaff
+      ? `/api/v1/complaints/helpdesk/${complaintId}/attachments/${attachmentId}/complete`
+      : `/api/v1/complaints/me/${complaintId}/attachments/${attachmentId}/complete`;
+    return apiClient.request<ComplaintAttachment>(endpoint, {
+      method: 'POST',
+    });
+  },
+
+  async uploadAttachment(
+    complaintId: string,
+    file: File,
+    isStaff = false
+  ): Promise<ComplaintAttachment> {
     const initiatePayload: InitiateAttachmentUploadRequest = {
       file_name: file.name,
       file_size_bytes: file.size,
@@ -174,9 +192,9 @@ export const complaintsService = {
         },
       });
     } catch (e) {
-      // In local dev with mock storage, direct upload fetch to mock-storage.local may not exist,
-      // which is fine since attachment record is already registered in DB.
       console.warn('Presigned direct upload notice:', e);
     }
+
+    return this.completeAttachmentUpload(complaintId, presigned.attachment_id, isStaff);
   },
 };

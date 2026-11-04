@@ -21,13 +21,15 @@ from sqlalchemy.orm import Session
 from app.core.errors import AuthorizationError, NotFoundError, TenantIsolationError, ValidationError
 from app.domains.complaints.ai_classifier import (
     AIClassifierProvider,
-    DeterministicAIClassifierProvider,
+    get_ai_classifier_provider,
 )
 from app.domains.complaints.assignment import find_least_loaded_staff
 from app.domains.complaints.duplicate_detector import find_duplicate_candidates
 from app.domains.complaints.models import (
+    AttachmentStatus,
     Complaint,
     ComplaintActivity,
+    ComplaintAIStatus,
     ComplaintAttachment,
     ComplaintCategory,
     ComplaintComment,
@@ -56,8 +58,8 @@ from app.domains.complaints.sla import calculate_sla_deadlines, is_sla_breached
 from app.domains.complaints.storage import (
     ALLOWED_MIME_TYPES,
     MAX_FILE_SIZE_BYTES,
-    MockStorageProvider,
     StorageProvider,
+    get_storage_provider,
 )
 from app.domains.identity.models import Flat, RoleType, User, UserRole, UserStatus
 from app.domains.identity.schemas import CurrentUserClaims
@@ -126,8 +128,8 @@ class ComplaintService:
     ) -> None:
         self.db = db
         self.repo = ComplaintRepository(db)
-        self.storage_provider = storage_provider or MockStorageProvider()
-        self.ai_classifier = ai_classifier or DeterministicAIClassifierProvider()
+        self.storage_provider = storage_provider or get_storage_provider()
+        self.ai_classifier = ai_classifier or get_ai_classifier_provider()
 
     def _resolve_society_id(
         self, claims: CurrentUserClaims, society_id: UUID | None = None
@@ -229,12 +231,14 @@ class ComplaintService:
                 file_name=att.file_name,
                 file_size_bytes=att.file_size_bytes,
                 content_type=att.content_type,
+                status=att.status,
                 download_url=self.storage_provider.generate_download_url(att.storage_key),
                 uploaded_by=att.uploaded_by,
                 uploader_name=_name(att.uploaded_by),
                 created_at=att.created_at,
             )
             for att in complaint.attachments
+            if att.status == AttachmentStatus.UPLOADED
         ]
 
         visible_comments = (
@@ -256,6 +260,15 @@ class ComplaintService:
             for c in visible_comments
         ]
 
+        visible_activities = (
+            complaint.activities
+            if include_internal_comments
+            else [
+                act
+                for act in complaint.activities
+                if not (act.notes and "Internal note" in act.notes)
+            ]
+        )
         activities_res = [
             ActivityResponse(
                 id=act.id,
@@ -268,7 +281,7 @@ class ComplaintService:
                 notes=act.notes,
                 created_at=act.created_at,
             )
-            for act in complaint.activities
+            for act in visible_activities
         ]
 
         creator_name = _name(complaint.created_by)
@@ -292,11 +305,16 @@ class ComplaintService:
             description=complaint.description,
             priority=complaint.priority,
             status=complaint.status,
+            ai_status=complaint.ai_status,
             ai_suggested_category=complaint.ai_suggested_category,
             ai_suggested_priority=complaint.ai_suggested_priority,
             ai_confidence_score=complaint.ai_confidence_score,
             ai_summary=complaint.ai_summary,
             ai_urgency_reason=complaint.ai_urgency_reason,
+            ai_reasoning=complaint.ai_reasoning,
+            ai_provider=complaint.ai_provider,
+            ai_model=complaint.ai_model,
+            ai_processed_at=complaint.ai_processed_at,
             safety_escalated=complaint.safety_escalated,
             safety_escalation_reason=complaint.safety_escalation_reason,
             duplicate_of_id=complaint.duplicate_of_id,
@@ -397,11 +415,16 @@ class ComplaintService:
             description=request.description.strip(),
             priority=final_priority,
             status=initial_status,
+            ai_status=ComplaintAIStatus.PENDING,
             ai_suggested_category=ai_triage.suggested_category,
             ai_suggested_priority=ai_triage.suggested_priority,
             ai_confidence_score=ai_triage.confidence_score,
             ai_summary=ai_triage.summary,
             ai_urgency_reason=ai_triage.urgency_reason,
+            ai_reasoning=ai_triage.reasoning,
+            ai_provider=ai_triage.provider,
+            ai_model=ai_triage.model,
+            ai_processed_at=now,
             safety_escalated=is_safety,
             safety_escalation_reason=safety_reason,
             first_response_deadline=first_resp_dl,
@@ -460,6 +483,20 @@ class ComplaintService:
                 "flat_id": str(request.flat_id),
                 "complaint_number": complaint_num,
                 "priority": final_priority.value,
+                "safety_escalated": is_safety,
+            },
+        )
+
+        # Emit asynchronous AI classification job
+        self._emit_outbox(
+            event_type="complaint.classify",
+            aggregate_id=str(complaint.id),
+            payload={
+                "complaint_id": str(complaint.id),
+                "society_id": str(society_id),
+                "title": complaint.title,
+                "description": complaint.description,
+                "category": complaint.category.value,
                 "safety_escalated": is_safety,
             },
         )
@@ -749,11 +786,17 @@ class ComplaintService:
         if old_priority == new_priority:
             return self._enrich_complaint_response(complaint, include_internal_comments=True)
 
+        if complaint.safety_escalated and new_priority != ComplaintPriority.CRITICAL:
+            raise ValidationError("Cannot downgrade priority of a safety-escalated complaint")
+
+        now = utc_now()
         complaint.priority = new_priority
-        first_resp_dl, res_dl = calculate_sla_deadlines(new_priority, complaint.created_at)
-        complaint.first_response_deadline = first_resp_dl
+        _, res_dl = calculate_sla_deadlines(new_priority, now)
         complaint.resolution_deadline = res_dl
-        complaint.updated_at = utc_now()
+        if complaint.first_response_at is None:
+            first_resp_dl, _ = calculate_sla_deadlines(new_priority, now)
+            complaint.first_response_deadline = first_resp_dl
+        complaint.updated_at = now
 
         self._record_activity(
             complaint,
@@ -885,9 +928,8 @@ class ComplaintService:
             and complaint.created_by != claims.user_id
         ):
             raise AuthorizationError("Access denied: You do not own this complaint")
-            is_internal = False
-        else:
-            is_internal = request.is_internal
+
+        is_internal = is_staff and request.is_internal
 
         now = utc_now()
         comment = ComplaintComment(
@@ -976,18 +1018,11 @@ class ComplaintService:
             file_size_bytes=request.file_size_bytes,
             content_type=request.content_type,
             storage_key=storage_key,
+            status=AttachmentStatus.PENDING,
             uploaded_by=claims.user_id,
             created_at=utc_now(),
         )
         self.repo.add_attachment(attachment)
-
-        self._record_activity(
-            complaint,
-            actor_id=claims.user_id,
-            activity_type="ATTACHMENT_UPLOADED",
-            notes=f"Attachment registered: {request.file_name}",
-        )
-
         self.db.commit()
 
         return PresignedUploadResponse(
@@ -995,6 +1030,74 @@ class ComplaintService:
             upload_url=upload_url,
             storage_key=storage_key,
             expires_in_seconds=3600,
+        )
+
+    def complete_attachment_upload(
+        self,
+        claims: CurrentUserClaims,
+        complaint_id: UUID,
+        attachment_id: UUID,
+        is_staff: bool = False,
+    ) -> AttachmentResponse:
+        complaint = self.db.query(Complaint).filter(Complaint.id == complaint_id).first()
+        if not complaint or complaint.society_id not in claims.society_ids:
+            raise NotFoundError(f"Complaint {complaint_id} not found")
+
+        if not is_staff and (
+            complaint.flat_id not in claims.active_flat_ids
+            and complaint.created_by != claims.user_id
+        ):
+            raise AuthorizationError("Access denied: You do not own this complaint")
+
+        attachment = (
+            self.db.query(ComplaintAttachment)
+            .filter(
+                ComplaintAttachment.id == attachment_id,
+                ComplaintAttachment.complaint_id == complaint_id,
+            )
+            .first()
+        )
+        if not attachment:
+            raise NotFoundError(f"Attachment {attachment_id} not found")
+
+        if not is_staff and attachment.uploaded_by != claims.user_id:
+            raise AuthorizationError("Access denied: You did not initiate this upload")
+
+        # Verify backing storage
+        exists = self.storage_provider.verify_object_exists(attachment.storage_key)
+        if not exists:
+            attachment.status = AttachmentStatus.FAILED
+            self.db.commit()
+            raise ValidationError(
+                "Attachment object was not found in storage. Upload may have failed or timed out."
+            )
+
+        attachment.status = AttachmentStatus.UPLOADED
+
+        self._record_activity(
+            complaint,
+            actor_id=claims.user_id,
+            activity_type="ATTACHMENT_UPLOADED",
+            notes=f"Attachment verified and uploaded: {attachment.file_name}",
+        )
+
+        self.db.commit()
+        self.db.refresh(attachment)
+
+        user_map = self.repo.get_users_by_ids([attachment.uploaded_by])
+        uploader = user_map.get(attachment.uploaded_by)
+
+        return AttachmentResponse(
+            id=attachment.id,
+            complaint_id=attachment.complaint_id,
+            file_name=attachment.file_name,
+            file_size_bytes=attachment.file_size_bytes,
+            content_type=attachment.content_type,
+            status=attachment.status,
+            download_url=self.storage_provider.generate_download_url(attachment.storage_key),
+            uploaded_by=attachment.uploaded_by,
+            uploader_name=uploader.full_name if uploader else None,
+            created_at=attachment.created_at,
         )
 
     def get_dashboard_metrics(

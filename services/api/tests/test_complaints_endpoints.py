@@ -534,3 +534,257 @@ def test_helpdesk_list_with_filters_and_search(client: TestClient) -> None:
     search_items = search_res.json()
     assert len(search_items) >= 1
     assert "downpipe" in search_items[0]["title"].lower()
+
+
+# =============================================================================
+# 9. Security & Data Integrity Remediation Tests (Phase 3 Checkpoints)
+# =============================================================================
+
+
+def test_safety_priority_downgrade_rejected(client: TestClient) -> None:
+    """Security Invariant: Safety-escalated complaints can NEVER have their priority downgraded."""
+    # 1. Create a safety-escalated complaint
+    res = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "title": "Gas leak smell in utility area",
+            "description": "LPG cylinder hose pipe is leaking gas. Emergency situation.",
+            "category": "OTHER",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert res.status_code == 201
+    complaint_id = res.json()["id"]
+    assert res.json()["safety_escalated"] is True
+    assert res.json()["priority"] == "CRITICAL"
+
+    # 2. Helpdesk staff attempts to downgrade priority to MEDIUM -> MUST BE REJECTED (400)
+    downgrade_res = client.patch(
+        f"/api/v1/complaints/helpdesk/{complaint_id}/priority",
+        json={"priority": "MEDIUM", "reason": "Looks minor to me"},
+        headers=HELPDESK_HEADERS,
+    )
+    assert downgrade_res.status_code == 400
+    assert "cannot downgrade priority" in downgrade_res.json()["error"]["message"].lower()
+
+    # 3. Setting priority to CRITICAL with reason is permitted
+    ok_res = client.patch(
+        f"/api/v1/complaints/helpdesk/{complaint_id}/priority",
+        json={"priority": "CRITICAL", "reason": "Confirmed gas company on site"},
+        headers=HELPDESK_HEADERS,
+    )
+    assert ok_res.status_code == 200
+
+
+def test_resident_internal_note_override_prevented(client: TestClient) -> None:
+    """Security Invariant: Residents can never mark comments as internal notes."""
+    res = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "title": "Water heater leaking",
+            "description": "Slow drip from the geyser inlet valve.",
+            "category": "PLUMBING",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    complaint_id = res.json()["id"]
+
+    # Resident sends is_internal=True
+    comm_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/comments",
+        json={"comment": "Resident private thought", "is_internal": True},
+        headers=NEERAJ_HEADERS,
+    )
+    assert comm_res.status_code == 201
+    assert comm_res.json()["is_internal"] is False
+
+
+def test_attachment_upload_lifecycle_verification(client: TestClient) -> None:
+    """Attachment Lifecycle: Presigned initiate creates PENDING state; complete endpoint verifies and marks UPLOADED."""
+    res = client.post(
+        "/api/v1/complaints",
+        json={
+            "flat_id": NEERAJ_FLAT_ID,
+            "title": "Kitchen tile cracked",
+            "description": "Floor tile loose and cracked near refrigerator.",
+            "category": "STRUCTURAL",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    complaint_id = res.json()["id"]
+
+    # 1. Initiate upload
+    init_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments",
+        json={
+            "file_name": "cracked_tile.jpg",
+            "file_size_bytes": 204800,
+            "content_type": "image/jpeg",
+        },
+        headers=NEERAJ_HEADERS,
+    )
+    assert init_res.status_code == 201
+    init_data = init_res.json()
+    attachment_id = init_data["attachment_id"]
+    assert "upload_url" in init_data
+
+    # 2. Before completion, attachment is PENDING and hidden from complaint view
+    view_res = client.get(f"/api/v1/complaints/me/{complaint_id}", headers=NEERAJ_HEADERS)
+    assert view_res.status_code == 200
+    assert len(view_res.json()["attachments"]) == 0
+
+    # 3. Complete attachment upload
+    complete_res = client.post(
+        f"/api/v1/complaints/me/{complaint_id}/attachments/{attachment_id}/complete",
+        headers=NEERAJ_HEADERS,
+    )
+    assert complete_res.status_code == 200
+    complete_data = complete_res.json()
+    assert complete_data["id"] == attachment_id
+    assert complete_data["status"] == "UPLOADED"
+    assert "download_url" in complete_data
+
+    # 4. Now attachment is visible in complaint detail view
+    view_after = client.get(f"/api/v1/complaints/me/{complaint_id}", headers=NEERAJ_HEADERS)
+    assert len(view_after.json()["attachments"]) == 1
+    assert view_after.json()["attachments"][0]["status"] == "UPLOADED"
+
+
+def test_gemini_ai_classifier_with_mock_response() -> None:
+    """AI Classifier: Tests Gemini provider parsing, confidence, and Pydantic validation."""
+    from unittest.mock import MagicMock, patch
+
+    from app.domains.complaints.ai_classifier import GeminiAIClassifierProvider
+    from app.domains.complaints.models import ComplaintCategory, ComplaintPriority
+
+    mock_gemini_json = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": (
+                                '{"suggested_category": "ELECTRICAL", "suggested_priority": "HIGH", '
+                                '"confidence_score": 0.94, "summary": "Main MCB tripping repeatedly", '
+                                '"urgency_reason": "Power outage in flat", '
+                                '"reasoning": "Repeated tripping indicates electrical overload or short circuit.", '
+                                '"requires_human_review": false}'
+                            )
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    provider = GeminiAIClassifierProvider(api_key="mock-gemini-key")
+    with patch("requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_gemini_json
+        mock_post.return_value = mock_resp
+
+        result = provider.classify(
+            title="MCB trip",
+            description="The main MCB switch trips whenever AC is turned on.",
+            selected_category=ComplaintCategory.OTHER,
+        )
+
+        assert result.provider == "gemini"
+        assert result.suggested_category == ComplaintCategory.ELECTRICAL
+        assert result.suggested_priority == ComplaintPriority.HIGH
+        assert result.confidence_score == 0.94
+        assert result.requires_human_review is False
+        assert "electrical overload" in result.reasoning.lower()
+
+
+def test_gemini_ai_classifier_fallback_on_error() -> None:
+    """AI Classifier: Tests resilient fallback to deterministic classifier on network error."""
+    from unittest.mock import patch
+
+    import requests
+
+    from app.domains.complaints.ai_classifier import GeminiAIClassifierProvider
+    from app.domains.complaints.models import ComplaintCategory, ComplaintPriority
+
+    provider = GeminiAIClassifierProvider(api_key="mock-gemini-key", max_retries=0)
+    with patch("requests.post", side_effect=requests.RequestException("Connection timeout")):
+        result = provider.classify(
+            title="Tap leaking in bathroom",
+            description="Dripping tap needs washer replacement.",
+            selected_category=ComplaintCategory.PLUMBING,
+        )
+
+        # Resilient fallback
+        assert result.provider == "fallback-deterministic"
+        assert result.suggested_category == ComplaintCategory.PLUMBING
+        assert result.suggested_priority in (ComplaintPriority.LOW, ComplaintPriority.MEDIUM)
+        assert result.requires_human_review is True
+
+
+def test_outbox_queue_routing_discrimination() -> None:
+    """Outbox Publisher: Validates strict routing between AI queue and notification queue."""
+    from app.messaging.outbox_publisher import resolve_queue_for_event_type
+    from app.messaging.publisher import QUEUE_COMPLAINT_AI_JOBS, QUEUE_NOTIFICATION_JOBS
+
+    # AI events must go to AI jobs queue
+    assert resolve_queue_for_event_type("complaint.classify") == QUEUE_COMPLAINT_AI_JOBS
+    assert resolve_queue_for_event_type("complaint.assign_priority") == QUEUE_COMPLAINT_AI_JOBS
+
+    # Operational events must route to notifications queue
+    assert resolve_queue_for_event_type("complaint.created") == QUEUE_NOTIFICATION_JOBS
+    assert resolve_queue_for_event_type("complaint.safety_escalated") == QUEUE_NOTIFICATION_JOBS
+    assert resolve_queue_for_event_type("complaint.status_changed") == QUEUE_NOTIFICATION_JOBS
+    assert resolve_queue_for_event_type("complaint.assigned") == QUEUE_NOTIFICATION_JOBS
+    assert resolve_queue_for_event_type("complaint.resolved") == QUEUE_NOTIFICATION_JOBS
+    assert resolve_queue_for_event_type("complaint.reopened") == QUEUE_NOTIFICATION_JOBS
+
+
+def test_complaint_worker_async_ai_processing(db_session: Session) -> None:
+    """Worker: Tests asynchronous AI job worker updating complaint model and activity log."""
+    from app.domains.complaints.models import Complaint, ComplaintCategory, ComplaintPriority
+    from app.domains.identity.models import Flat, User
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.complaint_worker import complaint_handler
+
+    flat = db_session.query(Flat).first()
+    user = db_session.query(User).first()
+    assert flat is not None and user is not None
+
+    complaint = Complaint(
+        society_id=flat.society_id,
+        flat_id=flat.id,
+        created_by=user.id,
+        complaint_number="CMP-TEST-9999",
+        category=ComplaintCategory.OTHER,
+        title="Elevator jerky and stopping between floors",
+        description="Lift #2 in Tower A jerked violently and display was blank.",
+        priority=ComplaintPriority.MEDIUM,
+    )
+    db_session.add(complaint)
+    db_session.commit()
+    db_session.refresh(complaint)
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="complaint.classify",
+        aggregate_type="complaint",
+        aggregate_id=str(complaint.id),
+        timestamp=datetime.now(UTC).isoformat(),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={"complaint_id": str(complaint.id)},
+    )
+
+    # Process job via worker
+    complaint_handler.process(envelope, db_session)
+    db_session.refresh(complaint)
+
+    # Verify AI categorization populated
+    assert complaint.ai_status.value in ("COMPLETED", "FALLBACK")
+    assert complaint.ai_suggested_category == ComplaintCategory.LIFT
+    assert complaint.ai_model is not None
+    assert complaint.ai_processed_at is not None
+    assert len(complaint.activities) >= 1
+    assert any(a.activity_type == "AI_TRIAGE_COMPLETED" for a in complaint.activities)

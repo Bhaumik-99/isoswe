@@ -27,12 +27,15 @@ from app.messaging.publisher import (
 
 def resolve_queue_for_event_type(event_type: str) -> str:
     """Routes domain event types to appropriate SQS queues."""
+    if event_type in ("complaint.classify", "complaint.assign_priority"):
+        return QUEUE_COMPLAINT_AI_JOBS
+
     prefix = event_type.split(".")[0].lower()
     routing = {
         "billing": QUEUE_BILLING_JOBS,
         "payment": QUEUE_PAYMENT_EVENTS,
         "reconciliation": QUEUE_RECONCILIATION_JOBS,
-        "complaint": QUEUE_COMPLAINT_AI_JOBS,
+        "complaint": QUEUE_NOTIFICATION_JOBS,
         "notification": QUEUE_NOTIFICATION_JOBS,
         "platform": QUEUE_NOTIFICATION_JOBS,
     }

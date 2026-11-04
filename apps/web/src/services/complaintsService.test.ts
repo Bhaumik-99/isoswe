@@ -106,4 +106,23 @@ describe('complaintsService', () => {
     });
     expect(result.status).toBe('IN_PROGRESS');
   });
+
+  it('completes attachment upload and verifies storage receipt', async () => {
+    const mockAttachment = {
+      id: 'att-1',
+      complaint_id: 'c1',
+      file_name: 'test.jpg',
+      status: 'UPLOADED',
+      download_url: 'https://storage/download/att-1',
+    };
+    const requestSpy = vi.spyOn(apiClient, 'request').mockResolvedValue(mockAttachment as any);
+
+    const result = await complaintsService.completeAttachmentUpload('c1', 'att-1', false);
+    expect(requestSpy).toHaveBeenCalledWith(
+      '/api/v1/complaints/me/c1/attachments/att-1/complete',
+      { method: 'POST' }
+    );
+    expect(result.status).toBe('UPLOADED');
+  });
 });
+

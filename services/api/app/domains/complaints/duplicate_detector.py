@@ -14,8 +14,9 @@ INVARIANTS:
 import re
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
-from app.domains.complaints.models import Complaint, ComplaintStatus
+from app.domains.complaints.models import Complaint, ComplaintCategory, ComplaintStatus
 
 _STOP_WORDS = {
     "a",
@@ -84,6 +85,7 @@ def find_duplicate_candidates(
     flat_id: uuid.UUID,
     existing_complaints: Sequence[Complaint],
     current_complaint_id: uuid.UUID | None = None,
+    category: ComplaintCategory | None = None,
     threshold: float = 0.45,
 ) -> list[uuid.UUID]:
     """Identifies potential duplicate complaints among active or recent tickets.
@@ -94,6 +96,7 @@ def find_duplicate_candidates(
         flat_id: Resident's flat ID
         existing_complaints: List of candidate existing complaints in the society
         current_complaint_id: Optional ID of the complaint itself to avoid self-match
+        category: Optional category of complaint for affinity weighting
         threshold: Minimum Jaccard similarity threshold
 
     Returns:
@@ -101,6 +104,17 @@ def find_duplicate_candidates(
     """
     target_text = f"{title} {description}"
     scored_candidates: list[tuple[float, uuid.UUID]] = []
+    now = datetime.now(UTC)
+    fourteen_days_ago = now - timedelta(days=14)
+
+    active_statuses = {
+        ComplaintStatus.SUBMITTED,
+        ComplaintStatus.TRIAGED,
+        ComplaintStatus.ASSIGNED,
+        ComplaintStatus.IN_PROGRESS,
+        ComplaintStatus.AWAITING_RESIDENT,
+        ComplaintStatus.REOPENED,
+    }
 
     for existing in existing_complaints:
         # Never match self
@@ -111,12 +125,24 @@ def find_duplicate_candidates(
         if existing.status == ComplaintStatus.CANCELLED:
             continue
 
+        # Time window: Must be active ticket OR created within past 14 days
+        created_at = existing.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if existing.status not in active_statuses and created_at < fourteen_days_ago:
+            continue
+
         existing_text = f"{existing.title} {existing.description}"
         sim = calculate_text_similarity(target_text, existing_text)
 
-        # Boost similarity score if it is from the exact same flat
-        is_same_flat = existing.flat_id == flat_id
-        effective_sim = sim + 0.15 if is_same_flat else sim
+        # Weighting:
+        # 1. Same flat boost (+0.15)
+        # 2. Same category boost (+0.05)
+        effective_sim = sim
+        if existing.flat_id == flat_id:
+            effective_sim += 0.15
+        if category and existing.category == category:
+            effective_sim += 0.05
 
         if effective_sim >= threshold:
             scored_candidates.append((effective_sim, existing.id))

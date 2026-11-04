@@ -70,6 +70,20 @@ class ComplaintCategory(str, enum.Enum):
     OTHER = "OTHER"
 
 
+class AttachmentStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    UPLOADED = "UPLOADED"
+    FAILED = "FAILED"
+
+
+class ComplaintAIStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    FALLBACK = "FALLBACK"
+
+
 class Complaint(Base):
     """Authoritative complaint entity."""
 
@@ -126,6 +140,12 @@ class Complaint(Base):
     )
 
     # AI-assisted classification fields (stored separately from human decisions)
+    ai_status: Mapped[ComplaintAIStatus] = mapped_column(
+        SAEnum(ComplaintAIStatus, native_enum=False),
+        nullable=False,
+        default=ComplaintAIStatus.PENDING,
+        index=True,
+    )
     ai_suggested_category: Mapped[ComplaintCategory | None] = mapped_column(
         SAEnum(ComplaintCategory, native_enum=False), nullable=True
     )
@@ -135,6 +155,10 @@ class Complaint(Base):
     ai_confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     ai_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ai_urgency_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ai_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ai_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Duplicate tracking
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -230,6 +254,12 @@ class ComplaintAttachment(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     content_type: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    status: Mapped[AttachmentStatus] = mapped_column(
+        SAEnum(AttachmentStatus, native_enum=False),
+        nullable=False,
+        default=AttachmentStatus.PENDING,
+        index=True,
+    )
     uploaded_by: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),

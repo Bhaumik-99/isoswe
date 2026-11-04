@@ -13,7 +13,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domains.complaints.models import ComplaintCategory, ComplaintPriority, ComplaintStatus
+from app.domains.complaints.models import (
+    AttachmentStatus,
+    ComplaintAIStatus,
+    ComplaintCategory,
+    ComplaintPriority,
+    ComplaintStatus,
+)
 
 
 class CreateComplaintRequest(BaseModel):
@@ -91,6 +97,7 @@ class AttachmentResponse(BaseModel):
     file_name: str
     file_size_bytes: int
     content_type: str
+    status: AttachmentStatus = AttachmentStatus.UPLOADED
     download_url: str
     uploaded_by: UUID
     uploader_name: str | None = None
@@ -145,11 +152,16 @@ class ComplaintResponse(BaseModel):
     status: ComplaintStatus
 
     # AI Suggestions
+    ai_status: ComplaintAIStatus = ComplaintAIStatus.PENDING
     ai_suggested_category: ComplaintCategory | None = None
     ai_suggested_priority: ComplaintPriority | None = None
     ai_confidence_score: float | None = None
     ai_summary: str | None = None
     ai_urgency_reason: str | None = None
+    ai_reasoning: str | None = None
+    ai_provider: str | None = None
+    ai_model: str | None = None
+    ai_processed_at: datetime | None = None
 
     # Safety Escalation
     safety_escalated: bool = False
@@ -194,3 +206,8 @@ class HelpdeskDashboardMetricsResponse(BaseModel):
     average_first_response_minutes: float
     average_resolution_minutes: float
     resolution_rate_percentage: float
+
+
+class CompleteAttachmentUploadResponse(BaseModel):
+    attachment: AttachmentResponse
+    message: str = "Attachment upload completed successfully"

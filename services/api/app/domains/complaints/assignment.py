@@ -40,8 +40,13 @@ def find_least_loaded_staff(db: Session, society_id: uuid.UUID) -> uuid.UUID | N
     if len(staff_ids) == 1:
         return staff_ids[0]
 
-    # 2. Count active complaints (ASSIGNED, IN_PROGRESS) per staff member
-    active_statuses = [ComplaintStatus.ASSIGNED, ComplaintStatus.IN_PROGRESS]
+    # 2. Count active complaints (ASSIGNED, IN_PROGRESS, AWAITING_RESIDENT, REOPENED) per staff member
+    active_statuses = [
+        ComplaintStatus.ASSIGNED,
+        ComplaintStatus.IN_PROGRESS,
+        ComplaintStatus.AWAITING_RESIDENT,
+        ComplaintStatus.REOPENED,
+    ]
     workload_stmt = (
         select(Complaint.assigned_to, func.count(Complaint.id).label("active_count"))
         .where(

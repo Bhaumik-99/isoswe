@@ -45,6 +45,12 @@ class ComplaintRepository:
 
     def generate_complaint_number(self, society_id: UUID) -> str:
         """Generates a sequential human-readable complaint identifier: CMP-YYYYMM-XXXX."""
+        from app.domains.identity.models import Society
+
+        # Row lock society to serialize concurrent complaint generation per society
+        if self.db.bind and self.db.bind.dialect.name == "postgresql":
+            self.db.execute(select(Society.id).where(Society.id == society_id).with_for_update())
+
         now = utc_now()
         prefix = f"CMP-{now.strftime('%Y%m')}"
 

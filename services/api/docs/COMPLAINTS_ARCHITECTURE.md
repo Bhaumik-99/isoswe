@@ -7,18 +7,19 @@ Phase 3 introduces an enterprise-grade complaints and facility operations module
 The architecture enforces:
 - **Server-Authoritative Lifecycle**: Strict state machine transitions preventing invalid operational bypasses.
 - **Deterministic Multilingual Safety Escalation**: Immediate physical safety hazard recognition (English, Hindi, Marathi) executing *before* AI classification.
-- **AI-Assisted Advisory Triage**: Automated category and priority suggestions with confidence scores and offline deterministic fallback.
-- **Workload-Based Auto-Assignment**: Automatic load-balanced ticket routing to active helpdesk staff within the society.
-- **Public vs. Internal Note Separation**: Strict privacy boundary ensuring resident views never leak internal staff discussions.
-- **Private Presigned Object Storage**: S3/mock attachment storage with 5MB limits and MIME type enforcement.
-- **Immutable Audit Trail & Outbox**: Full operational traceability and event-driven integration.
+- **Safety Priority Lock**: Deterministic safety escalations strictly enforce `CRITICAL` priority; priority downgrades below `CRITICAL` are rejected by the API.
+- **AI-Assisted Advisory Triage**: Asynchronous Google Gemini (`gemini-2.5-flash`) classification with structured Pydantic schema validation, prompt injection defense, and offline deterministic fallback.
+- **Two-Phase Attachment Lifecycle**: Secure presigned upload URLs with `PENDING`, `UPLOADED`, `FAILED` states, fail-closed production storage, and verification completion endpoints.
+- **Workload-Based Auto-Assignment**: Automatic load-balanced ticket routing to active helpdesk staff counting open tickets (`ASSIGNED`, `IN_PROGRESS`, `AWAITING_RESIDENT`, `REOPENED`).
+- **Public vs. Internal Note Separation**: Strict privacy boundary ensuring resident views never leak internal staff discussions or private transition metadata.
+- **Transactional Outbox & Asynchronous Workers**: Guaranteed event publishing with discrete routing to `QUEUE_COMPLAINT_AI_JOBS` and `QUEUE_NOTIFICATION_JOBS`.
 
 ---
 
 ## 1. System Scale & Security Model
 
 The township operations platform strictly implements a two-role security boundary:
-- `RESIDENT`: Scoped strictly to flats where the user holds an active approved membership. Can submit tickets, post public comments, attach photos, rate resolved tickets, and reopen within 7 days.
+- `RESIDENT`: Scoped strictly to flats where the user holds an active approved membership. Can submit tickets, post public comments, attach photos, rate resolved tickets, and reopen within 7 days. Residents can NEVER submit internal helpdesk notes.
 - `HELPDESK`: Scoped to the staff member's authorized society. Can triage, assign, update priority/status, post internal notes, and monitor operational SLA KPI dashboards.
 
 Cross-tenant access (cross-society and cross-flat) is denied at the database and API layer with `403 Forbidden` (`TenantIsolationError`).
@@ -60,7 +61,7 @@ Cross-tenant access (cross-society and cross-flat) is denied at the database and
 
 ---
 
-## 3. Deterministic Safety Escalation Engine
+## 3. Deterministic Safety Escalation & Priority Lock
 
 To protect resident life and physical property, safety hazard detection executes **before** and **independently of** any AI classification.
 
@@ -68,7 +69,8 @@ To protect resident life and physical property, safety hazard detection executes
 1. Evaluates ticket title and description against multilingual hazard patterns (English, Hindi, Marathi).
 2. If any hazard is detected, `safety_escalated` is set to `True`, and priority is **forced to `CRITICAL`**.
 3. **AI cannot downgrade or override a safety escalation.** The safety flag is server-authoritative.
-4. Operates completely offline with zero external network or model dependency.
+4. **Backend Priority Lock**: Any API attempt to change a safety-escalated ticket's priority below `CRITICAL` is rejected with `400 Bad Request`.
+5. Operates completely offline with zero external network or model dependency.
 
 ### Covered Multilingual Hazard Patterns
 
@@ -83,21 +85,30 @@ To protect resident life and physical property, safety hazard detection executes
 
 ---
 
-## 4. AI-Assisted Advisory Triage Engine
+## 4. AI-Assisted Advisory Triage Engine (Google Gemini)
 
 AI classification assists township staff by predicting issue categories, operational priorities, and summarizations.
 
 ### Key Rules
-- AI suggestions are stored in distinct advisory columns (`ai_suggested_category`, `ai_suggested_priority`, `ai_confidence_score`, `ai_summary`, `ai_urgency_reason`).
-- AI recommendations never overwrite human or safety decisions.
-- Completely deterministic offline fallback (`DeterministicAIClassifierProvider`) ensures 100% CI reproducibility without paid API keys.
-- Evaluates token-based lexical similarity to identify duplicate candidates across the society.
+- **Asynchronous Architecture**: Complaint creation returns immediately with `ai_status = PENDING`. An outbox event `complaint.classify` is emitted to `QUEUE_COMPLAINT_AI_JOBS`.
+- **Worker Execution**: `ComplaintAIHandler` invokes `GeminiAIClassifierProvider` (using `gemini-2.5-flash`) or the fallback provider.
+- **Pydantic Validation**: Responses strictly conform to `AIClassificationOutput` schema:
+  - `suggested_category`: ComplaintCategory
+  - `suggested_priority`: ComplaintPriority
+  - `confidence_score`: float (0.0 - 1.0)
+  - `summary`: string (max 120 chars)
+  - `urgency_reason`: string
+  - `reasoning`: string (step-by-step rationale)
+  - `requires_human_review`: boolean
+- **Prompt Injection Defense**: Sanitizes inputs (strips control characters, redacts sensitive tokens) and instructs the model that complaint text is untrusted data that must never be executed as instructions.
+- **Deterministic Offline Fallback**: If `GEMINI_API_KEY` is absent, or on network timeout / quota 429, the system gracefully falls back to `DeterministicAIClassifierProvider`, ensuring 100% CI reproducibility and zero paid API requirement.
+- **Advisory Isolation**: AI suggestions are stored in distinct advisory columns (`ai_suggested_*`, `ai_status`, `ai_reasoning`, `ai_provider`, `ai_model`, `ai_processed_at`) and never override human decisions.
 
 ---
 
 ## 5. Service Level Agreement (SLA) Matrix
 
-All deadlines are calculated from `created_at` (or `reopened_at`) in UTC and displayed in `Asia/Kolkata` local time:
+All deadlines are calculated in UTC and displayed in `Asia/Kolkata` local time:
 
 | Priority | First Response SLA | Resolution SLA | Typical Triggers |
 |---|---|---|---|
@@ -106,10 +117,10 @@ All deadlines are calculated from `created_at` (or `reopened_at`) in UTC and dis
 | **MEDIUM** | 4 Hours | 48 Hours | Standard plumbing/electrical repairs, seepage |
 | **LOW** | 12 Hours | 5 Days (120h) | Minor squeaks, cosmetic touch-ups, aesthetic issues |
 
-### First Response Tracking
-`first_response_at` is automatically recorded when:
-1. Helpdesk staff posts the first comment/reply on the ticket, OR
-2. Ticket status is updated to `IN_PROGRESS` or `RESOLVED`.
+### Priority SLA Recalculation
+When staff updates a ticket's priority via `/api/v1/complaints/helpdesk/{id}/priority`:
+- The resolution deadline is recalculated starting from the current UTC time (`utc_now()`).
+- If `first_response_at` has already been recorded, `first_response_deadline` is preserved.
 
 ---
 
@@ -117,31 +128,25 @@ All deadlines are calculated from `created_at` (or `reopened_at`) in UTC and dis
 
 When a ticket is created:
 1. Query active users holding `RoleType.HELPDESK` in the complaint's `society_id`.
-2. Count open tickets (`ASSIGNED` or `IN_PROGRESS`) assigned to each staff member.
+2. Count open tickets (`ASSIGNED`, `IN_PROGRESS`, `AWAITING_RESIDENT`, `REOPENED`) assigned to each staff member.
 3. Select the staff member with the lowest open ticket count.
 4. Deterministic tie-breaker: sort by `User.id`.
 5. If no active helpdesk staff exists, ticket is set to `TRIAGED` (unassigned).
 
 ---
 
-## 7. Privacy & Communication Model
-
-Complaints support two communication channels in `complaint_comments`:
-- **Public Comments (`is_internal = False`)**: Visible to both resident and helpdesk staff.
-- **Internal Helpdesk Notes (`is_internal = True`)**: Strictly confidential to facility staff. Residents querying `/complaints/me/{id}` receive responses where internal notes are completely stripped.
-
----
-
-## 8. Secure Attachment Storage Contract
+## 7. Two-Phase Attachment Lifecycle & Storage Contract
 
 Attachment metadata is managed via `complaint_attachments`:
-- **File Constraints**: Maximum size **5 MB**; allowed MIME types: `image/jpeg`, `image/png`, `image/webp`.
-- **Private S3 / Mock Storage**: Files are never publicly readable. Uploads and downloads use expiring presigned URLs (1 hour validity).
-- **IDOR Protection**: Storage keys use randomized UUIDs (`complaints/{society_id}/{complaint_id}/{uuid}.{ext}`).
+- **State Machine**: `PENDING` ──► `UPLOADED` (or `FAILED`).
+- **Initiation**: `POST /attachments` registers a `PENDING` record and returns a presigned S3 PUT URL (1-hour validity).
+- **Completion Verification**: `POST /attachments/{id}/complete` verifies object existence via S3 `head_object` (or mock storage), transitions status to `UPLOADED`, and logs an audit activity.
+- **Unverified Attachment Shield**: Unverified (`PENDING` or `FAILED`) attachments are strictly omitted from complaint detail views, and download URLs are never generated for them.
+- **Fail-Closed Security**: In production and staging, `S3_ATTACHMENTS_BUCKET_NAME` must be configured; silent fallback to mock storage is strictly blocked.
 
 ---
 
-## 9. Running Automated Tests Locally
+## 8. Running Automated Tests Locally
 
 ```bash
 # Run complaints domain unit & integration tests
@@ -154,4 +159,7 @@ python -m pytest tests/ -v
 # Run frontend tests
 cd ../../apps/web
 npm test -- --run
+
+# Run web production build
+npm run build
 ```

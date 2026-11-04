@@ -11,6 +11,7 @@ SECURITY INVARIANTS:
 - Presigned upload & download URLs with limited expiration (1 hour)
 - Strictly validate allowed MIME types (JPEG, PNG, WebP) and max size (5MB)
 - Random UUID-based object keys to eliminate IDOR and key enumeration
+- Fail closed in production: if S3 is unconfigured, do not silently fallback to mock
 """
 
 import abc
@@ -43,6 +44,11 @@ class StorageProvider(abc.ABC):
         ...
 
     @abc.abstractmethod
+    def verify_object_exists(self, storage_key: str) -> bool:
+        """Verifies that the object actually exists in the backing storage."""
+        ...
+
+    @abc.abstractmethod
     def delete_object(self, storage_key: str) -> bool:
         """Deletes an object from storage."""
         ...
@@ -51,29 +57,42 @@ class StorageProvider(abc.ABC):
 class MockStorageProvider(StorageProvider):
     """Local mock storage provider for deterministic local testing."""
 
+    def __init__(self) -> None:
+        self._stored_keys: set[str] = set()
+
     def generate_upload_url(
         self, storage_key: str, content_type: str, expires_in_seconds: int = 3600
     ) -> str:
+        self._stored_keys.add(storage_key)
         return f"https://mock-storage.local/upload/{storage_key}?expires={expires_in_seconds}&content_type={content_type}"
 
     def generate_download_url(self, storage_key: str, expires_in_seconds: int = 3600) -> str:
         return f"https://mock-storage.local/download/{storage_key}?expires={expires_in_seconds}"
 
+    def verify_object_exists(self, storage_key: str) -> bool:
+        return storage_key in self._stored_keys
+
     def delete_object(self, storage_key: str) -> bool:
+        self._stored_keys.discard(storage_key)
         return True
+
+
+_default_mock_storage = MockStorageProvider()
 
 
 class S3StorageProvider(StorageProvider):
     """AWS S3 Storage Provider using boto3 presigned URLs."""
 
     def __init__(self, bucket_name: str | None = None) -> None:
-        self.bucket_name = bucket_name or os.environ.get(
-            "COMPLAINTS_BUCKET_NAME", "township-ops-complaints-attachments"
+        self.bucket_name = (
+            bucket_name
+            or getattr(settings, "S3_ATTACHMENTS_BUCKET_NAME", None)
+            or os.environ.get("COMPLAINTS_BUCKET_NAME", "township-ops-complaints-attachments")
         )
         try:
             import boto3
 
-            self.s3_client: Any = boto3.client("s3")
+            self.s3_client: Any = boto3.client("s3", region_name=settings.AWS_REGION)
         except Exception:
             self.s3_client = None
 
@@ -81,7 +100,11 @@ class S3StorageProvider(StorageProvider):
         self, storage_key: str, content_type: str, expires_in_seconds: int = 3600
     ) -> str:
         if not self.s3_client:
-            return MockStorageProvider().generate_upload_url(
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError(
+                    "CRITICAL: S3 client is uninitialized in production/staging environment."
+                )
+            return _default_mock_storage.generate_upload_url(
                 storage_key, content_type, expires_in_seconds
             )
         return str(
@@ -98,7 +121,11 @@ class S3StorageProvider(StorageProvider):
 
     def generate_download_url(self, storage_key: str, expires_in_seconds: int = 3600) -> str:
         if not self.s3_client:
-            return MockStorageProvider().generate_download_url(storage_key, expires_in_seconds)
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError(
+                    "CRITICAL: S3 client is uninitialized in production/staging environment."
+                )
+            return _default_mock_storage.generate_download_url(storage_key, expires_in_seconds)
         return str(
             self.s3_client.generate_presigned_url(
                 "get_object",
@@ -109,6 +136,19 @@ class S3StorageProvider(StorageProvider):
                 ExpiresIn=expires_in_seconds,
             )
         )
+
+    def verify_object_exists(self, storage_key: str) -> bool:
+        if not self.s3_client:
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError(
+                    "CRITICAL: S3 client is uninitialized in production/staging environment."
+                )
+            return True
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=storage_key)
+            return True
+        except Exception:
+            return False
 
     def delete_object(self, storage_key: str) -> bool:
         if not self.s3_client:
@@ -121,8 +161,17 @@ class S3StorageProvider(StorageProvider):
 
 
 def get_storage_provider() -> StorageProvider:
+    if settings.ENVIRONMENT in ("production", "staging"):
+        bucket = getattr(settings, "S3_ATTACHMENTS_BUCKET_NAME", None) or os.environ.get(
+            "COMPLAINTS_BUCKET_NAME"
+        )
+        if not bucket:
+            raise RuntimeError(
+                "CRITICAL: S3_ATTACHMENTS_BUCKET_NAME must be explicitly configured in production/staging."
+            )
+        return S3StorageProvider(bucket_name=bucket)
     if settings.is_local_dev or os.environ.get("USE_MOCK_STORAGE", "true").lower() == "true":
-        return MockStorageProvider()
+        return _default_mock_storage
     return S3StorageProvider()
 
 

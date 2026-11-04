@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Send,
   ShieldAlert,
+  Sparkles,
   Star,
   X,
 } from 'lucide-react';
@@ -540,6 +541,17 @@ export const ResidentComplaints: React.FC = () => {
                   quick-response team has been notified.
                 </div>
               </Alert>
+            )}
+
+            {/* AI Triage Summary for Resident */}
+            {selectedComplaint.ai_summary && (
+              <div className="bg-indigo-50/60 border border-indigo-100 rounded-lg p-3 text-xs text-indigo-900 flex items-start gap-2">
+                <Sparkles className="h-4 w-4 text-indigo-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold text-indigo-800">AI Triage Summary: </span>
+                  <span className="text-gray-700">{selectedComplaint.ai_summary}</span>
+                </div>
+              </div>
             )}
 
             {/* Ticket Metadata Details */}

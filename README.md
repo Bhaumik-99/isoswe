@@ -203,6 +203,7 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `GET` | `/api/v1/complaints/me/{id}` | Resident | Inspect ticket details, public comments, and status |
 | `POST` | `/api/v1/complaints/me/{id}/comments` | Resident | Add public comment or message to facility staff |
 | `POST` | `/api/v1/complaints/me/{id}/attachments`| Resident | Request presigned upload URL for photo attachment (max 5MB) |
+| `POST` | `/api/v1/complaints/me/{id}/attachments/{att_id}/complete`| Resident | Complete and verify uploaded photo attachment |
 | `POST` | `/api/v1/complaints/me/{id}/reopen` | Resident | Reopen resolved ticket within 7-day window |
 | `POST` | `/api/v1/complaints/me/{id}/rating` | Resident | Submit satisfaction rating (1-5 stars) and feedback |
 | `GET` | `/api/v1/complaints/helpdesk/dashboard` | Helpdesk | Operational KPI metrics (counts, overdue SLA, turnaround averages) |
@@ -210,7 +211,8 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `GET` | `/api/v1/complaints/helpdesk/{id}` | Helpdesk | Full ticket view with duplicate candidates and internal notes |
 | `PATCH` | `/api/v1/complaints/helpdesk/{id}/status` | Helpdesk | Advance lifecycle state machine (records first response & resolution) |
 | `PATCH` | `/api/v1/complaints/helpdesk/{id}/assign` | Helpdesk | Assign or reassign ticket to active staff member |
-| `PATCH` | `/api/v1/complaints/helpdesk/{id}/priority` | Helpdesk | Adjust priority and automatically recalculate SLA targets |
+| `PATCH` | `/api/v1/complaints/helpdesk/{id}/priority` | Helpdesk | Adjust priority and automatically recalculate SLA targets (safety locked) |
 | `POST` | `/api/v1/complaints/helpdesk/{id}/comments` | Helpdesk | Add public resident reply or private internal helpdesk note |
+| `POST` | `/api/v1/complaints/helpdesk/{id}/attachments/{att_id}/complete` | Helpdesk | Complete and verify staff attachment upload |
 
 

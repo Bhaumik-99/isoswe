@@ -36,6 +36,7 @@ export interface ComplaintAttachment {
   file_name: string;
   file_size_bytes: number;
   content_type: string;
+  status: 'PENDING' | 'UPLOADED' | 'FAILED';
   download_url: string;
   uploaded_by: string;
   uploader_name?: string | null;
@@ -84,11 +85,16 @@ export interface Complaint {
   status: ComplaintStatus;
 
   // AI Suggestions
+  ai_status?: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'FALLBACK';
   ai_suggested_category?: ComplaintCategory | null;
   ai_suggested_priority?: ComplaintPriority | null;
   ai_confidence_score?: number | null;
   ai_summary?: string | null;
   ai_urgency_reason?: string | null;
+  ai_reasoning?: string | null;
+  ai_provider?: string | null;
+  ai_model?: string | null;
+  ai_processed_at?: string | null;
 
   // Safety Escalation
   safety_escalated: boolean;
@@ -196,3 +202,4 @@ export interface HelpdeskQueryParams {
   limit?: number;
   offset?: number;
 }
+

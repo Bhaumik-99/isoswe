@@ -434,13 +434,30 @@ export const StaffHelpdesk: React.FC = () => {
             )}
 
             {/* AI Triage Card */}
-            <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-indigo-100 rounded-lg p-4 space-y-2 text-xs">
-              <div className="flex items-center gap-2 font-bold text-indigo-900">
+            <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-indigo-100 rounded-lg p-4 space-y-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2 font-bold text-indigo-900">
                 <Sparkles className="h-4 w-4 text-indigo-600" />
                 <span>AI Advisory Triage Analysis</span>
-                <span className="ml-auto font-normal text-indigo-600 bg-white px-2 py-0.5 rounded border border-indigo-200">
-                  Confidence: {Math.round((activeTicket.ai_confidence_score || 0.8) * 100)}%
+                <span className="font-normal text-xs text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                  {activeTicket.ai_status || 'COMPLETED'}
                 </span>
+                {activeTicket.ai_confidence_score !== undefined && activeTicket.ai_confidence_score !== null && (
+                  <span className="font-normal text-xs text-indigo-600 bg-white px-2 py-0.5 rounded border border-indigo-200">
+                    Confidence: {Math.round(activeTicket.ai_confidence_score * 100)}%
+                  </span>
+                )}
+                {activeTicket.ai_model && (
+                  <span className="font-mono text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px]">
+                    {activeTicket.ai_model}
+                  </span>
+                )}
+                {activeTicket.ai_confidence_score !== null &&
+                  activeTicket.ai_confidence_score !== undefined &&
+                  activeTicket.ai_confidence_score < 0.75 && (
+                    <span className="font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded border border-amber-300">
+                      Requires Human Review
+                    </span>
+                  )}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-indigo-800">
                 <div>
@@ -452,10 +469,16 @@ export const StaffHelpdesk: React.FC = () => {
                   <span className="font-semibold">{activeTicket.ai_suggested_priority || activeTicket.priority}</span>
                 </div>
                 <div>
-                  <span className="text-indigo-500 block">AI Rationale:</span>
+                  <span className="text-indigo-500 block">Urgency Justification:</span>
                   <span className="italic">{activeTicket.ai_urgency_reason || 'Standard township maintenance'}</span>
                 </div>
               </div>
+              {activeTicket.ai_reasoning && (
+                <div className="pt-2 border-t border-indigo-100 text-indigo-900">
+                  <span className="font-semibold text-indigo-600 block mb-0.5">AI Analysis & Reasoning:</span>
+                  <p className="text-gray-700 leading-relaxed">{activeTicket.ai_reasoning}</p>
+                </div>
+              )}
             </div>
 
             {/* Duplicate Candidate Warning */}

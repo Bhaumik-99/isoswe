@@ -167,6 +167,18 @@ class Settings(BaseSettings):
     OUTBOX_BATCH_SIZE: int = 50
     OUTBOX_MAX_RETRIES: int = 5
 
+    # AI Triage & Gemini Integration
+    AI_PROVIDER: str = "deterministic"
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    AI_TIMEOUT_SECONDS: int = 10
+    AI_MAX_RETRIES: int = 1
+    AI_ENABLED: bool = True
+
+    # Attachment S3 Storage Configuration
+    S3_ATTACHMENTS_BUCKET_NAME: str = ""
+    S3_ATTACHMENTS_REGION: str = "ap-south-1"
+
     @field_validator("ENABLE_LOCAL_AUTH_BYPASS")
     @classmethod
     def validate_local_auth_bypass(cls, v: bool, info: ValidationInfo) -> bool:

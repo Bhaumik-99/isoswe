@@ -16,6 +16,7 @@ from app.core.security import get_current_user, require_roles
 from app.domains.complaints.models import ComplaintCategory, ComplaintPriority, ComplaintStatus
 from app.domains.complaints.schemas import (
     AssignComplaintRequest,
+    AttachmentResponse,
     CommentResponse,
     ComplaintResponse,
     CreateCommentRequest,
@@ -108,6 +109,21 @@ def initiate_resident_attachment(
 ) -> PresignedUploadResponse:
     service = ComplaintService(db)
     return service.initiate_attachment_upload(claims, complaint_id, payload, is_staff=False)
+
+
+@router.post(
+    "/me/{complaint_id}/attachments/{attachment_id}/complete",
+    response_model=AttachmentResponse,
+    summary="Complete and verify resident attachment upload",
+)
+def complete_resident_attachment(
+    complaint_id: UUID,
+    attachment_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.RESIDENT))],
+    db: Session = Depends(get_db),
+) -> AttachmentResponse:
+    service = ComplaintService(db)
+    return service.complete_attachment_upload(claims, complaint_id, attachment_id, is_staff=False)
 
 
 @router.post(
@@ -308,6 +324,21 @@ def initiate_helpdesk_attachment(
     return service.initiate_attachment_upload(claims, complaint_id, payload, is_staff=True)
 
 
+@router.post(
+    "/helpdesk/{complaint_id}/attachments/{attachment_id}/complete",
+    response_model=AttachmentResponse,
+    summary="Complete and verify helpdesk attachment upload",
+)
+def complete_helpdesk_attachment(
+    complaint_id: UUID,
+    attachment_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    db: Session = Depends(get_db),
+) -> AttachmentResponse:
+    service = ComplaintService(db)
+    return service.complete_attachment_upload(claims, complaint_id, attachment_id, is_staff=True)
+
+
 # =============================================================================
 # Direct Convenience Endpoints
 # =============================================================================
@@ -361,6 +392,24 @@ def initiate_attachment_direct(
     service = ComplaintService(db)
     is_staff = RoleType.HELPDESK in claims.roles
     return service.initiate_attachment_upload(claims, complaint_id, payload, is_staff=is_staff)
+
+
+@router.post(
+    "/{complaint_id}/attachments/{attachment_id}/complete",
+    response_model=AttachmentResponse,
+    summary="Complete and verify attachment upload (role-aware)",
+)
+def complete_attachment_direct(
+    complaint_id: UUID,
+    attachment_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> AttachmentResponse:
+    service = ComplaintService(db)
+    is_staff = RoleType.HELPDESK in claims.roles
+    return service.complete_attachment_upload(
+        claims, complaint_id, attachment_id, is_staff=is_staff
+    )
 
 
 @router.post(
