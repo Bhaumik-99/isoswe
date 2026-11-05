@@ -59,6 +59,7 @@ jobs:
       - name: Mypy Static Type Analysis
         run: |
           cd services/api
+          set -eo pipefail
           mypy app --config-file pyproject.toml 2>&1 | tee mypy_output.log
 
       - name: Run Pytest Suite with Coverage

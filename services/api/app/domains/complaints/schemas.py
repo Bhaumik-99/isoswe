@@ -51,6 +51,47 @@ class UpdateComplaintPriorityRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class UpdateComplaintCategoryRequest(BaseModel):
+    category: ComplaintCategory = Field(..., description="Corrected complaint category")
+    notes: str | None = Field(
+        default=None, max_length=500, description="Audit note explaining the category correction"
+    )
+
+
+class LinkDuplicateComplaintRequest(BaseModel):
+    duplicate_of_id: UUID = Field(..., description="Target primary complaint ID")
+    notes: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional note explaining the duplicate relationship",
+    )
+
+
+class AcknowledgeSafetyAlertRequest(BaseModel):
+    notes: str | None = Field(
+        default=None, max_length=1000, description="Mitigation or acknowledgement notes"
+    )
+
+
+class SafetyAlertResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    society_id: UUID
+    complaint_id: UUID
+    hazard_type: str
+    alert_title: str
+    alert_details: str
+    severity: str
+    is_acknowledged: bool
+    acknowledged_at: datetime | None = None
+    acknowledged_by: UUID | None = None
+    acknowledgement_notes: str | None = None
+    assigned_staff_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class CreateCommentRequest(BaseModel):
     comment: str = Field(..., min_length=1, max_length=5000)
     is_internal: bool = Field(
@@ -170,6 +211,11 @@ class ComplaintResponse(BaseModel):
     # Duplicate tracking
     duplicate_of_id: UUID | None = None
     duplicate_candidates: list[UUID] = Field(default_factory=list)
+
+    # Category correction governance
+    original_category: ComplaintCategory | None = None
+    category_corrected_at: datetime | None = None
+    category_corrected_by: UUID | None = None
 
     # SLA Tracking
     first_response_deadline: datetime | None = None

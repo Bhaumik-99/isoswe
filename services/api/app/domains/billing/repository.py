@@ -24,6 +24,9 @@ from app.domains.billing.models import (
     Invoice,
     InvoiceLineItem,
     InvoiceStatus,
+    LateFeeApplication,
+    LateFeeCalculationMethod,
+    LateFeePolicy,
     LedgerEntryType,
     Payment,
     PaymentAllocation,
@@ -576,22 +579,20 @@ class BillingRepository:
     def get_society_financial_aggregates(
         self, society_id: UUID, billing_period: str | None = None
     ) -> dict[str, Any]:
-        """Returns aggregate financial totals for a society using a single SQL query.
+        """Returns aggregate financial totals for a society using optimized SQL queries.
 
-        Replaces in-memory iteration over 2,500+ invoices with a database aggregate.
-        INVARIANT: Outstanding amount is derived from database-persisted invoice status
-        for the aggregate display; individual invoice outstanding is still calculated
-        from allocations in detail views.
+        Replaces in-memory iteration over 2,500+ invoices with pure database aggregates.
+        INVARIANT: Integer paise precision, zero row limit, exact reconciliation with allocations.
         """
         base_filter = [Invoice.society_id == society_id]
         if billing_period:
             base_filter.append(Invoice.billing_period == billing_period)
 
-        # Aggregate invoice totals and counts by status
+        # 1. Aggregate invoice counts and total billed
         agg = self.db.execute(
             select(
                 func.count(Invoice.id).label("total_count"),
-                func.sum(Invoice.total_paise).label("total_billed_paise"),
+                func.coalesce(func.sum(Invoice.total_paise), 0).label("total_billed_paise"),
                 func.count(Invoice.id)
                 .filter(Invoice.status == InvoiceStatus.PAID)
                 .label("paid_count"),
@@ -601,12 +602,174 @@ class BillingRepository:
             ).where(*base_filter)
         ).one()
 
+        total_billed = int(agg.total_billed_paise or 0)
+        total_count = int(agg.total_count or 0)
+        paid_count = int(agg.paid_count or 0)
+        overdue_count = int(agg.overdue_count or 0)
+
+        # 2. Database aggregate for collected paise across all matching invoices
+        collected_stmt = (
+            select(func.coalesce(func.sum(PaymentAllocation.allocated_paise), 0))
+            .join(Payment, Payment.id == PaymentAllocation.payment_id)
+            .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
+            .where(
+                Invoice.society_id == society_id,
+                Payment.status == PaymentStatus.SUCCESS,
+            )
+        )
+        if billing_period:
+            collected_stmt = collected_stmt.where(Invoice.billing_period == billing_period)
+        total_collected = int(self.db.scalar(collected_stmt) or 0)
+
+        total_outstanding = max(0, total_billed - total_collected)
+
+        # 3. Database aggregate for overdue outstanding paise
+        overdue_billed_stmt = select(func.coalesce(func.sum(Invoice.total_paise), 0)).where(
+            *base_filter, Invoice.status == InvoiceStatus.OVERDUE
+        )
+        overdue_billed = int(self.db.scalar(overdue_billed_stmt) or 0)
+
+        overdue_collected_stmt = (
+            select(func.coalesce(func.sum(PaymentAllocation.allocated_paise), 0))
+            .join(Payment, Payment.id == PaymentAllocation.payment_id)
+            .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
+            .where(
+                Invoice.society_id == society_id,
+                Invoice.status == InvoiceStatus.OVERDUE,
+                Payment.status == PaymentStatus.SUCCESS,
+            )
+        )
+        if billing_period:
+            overdue_collected_stmt = overdue_collected_stmt.where(
+                Invoice.billing_period == billing_period
+            )
+        overdue_collected = int(self.db.scalar(overdue_collected_stmt) or 0)
+        total_overdue = max(0, overdue_billed - overdue_collected)
+
         return {
-            "total_count": agg.total_count or 0,
-            "total_billed_paise": agg.total_billed_paise or 0,
-            "paid_count": agg.paid_count or 0,
-            "overdue_count": agg.overdue_count or 0,
+            "total_count": total_count,
+            "total_billed_paise": total_billed,
+            "total_collected_paise": total_collected,
+            "total_outstanding_paise": total_outstanding,
+            "total_overdue_paise": total_overdue,
+            "paid_count": paid_count,
+            "overdue_count": overdue_count,
         }
+
+    # -------------------------------------------------------------------------
+    # Late Fee Policies & Applications Repository
+    # -------------------------------------------------------------------------
+    def get_active_late_fee_policy(
+        self, society_id: UUID, as_of_date: datetime | None = None
+    ) -> LateFeePolicy | None:
+        """Finds the active late-fee policy for a society applicable on the given date."""
+        target_date = as_of_date or utc_now()
+        stmt = (
+            select(LateFeePolicy)
+            .where(
+                LateFeePolicy.society_id == society_id,
+                LateFeePolicy.is_active == True,  # noqa: E712
+                LateFeePolicy.effective_from <= target_date,
+            )
+            .where(
+                (LateFeePolicy.effective_to.is_(None)) | (LateFeePolicy.effective_to >= target_date)
+            )
+            .order_by(LateFeePolicy.effective_from.desc())
+        )
+        return self.db.scalars(stmt).first()
+
+    def list_late_fee_policies(self, society_id: UUID) -> list[LateFeePolicy]:
+        """Lists all late-fee policies (active and historical) configured for a society."""
+        stmt = (
+            select(LateFeePolicy)
+            .where(LateFeePolicy.society_id == society_id)
+            .order_by(LateFeePolicy.is_active.desc(), LateFeePolicy.effective_from.desc())
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def create_late_fee_policy(
+        self,
+        society_id: UUID,
+        policy_name: str,
+        calculation_method: LateFeeCalculationMethod,
+        amount_or_rate_bps: int,
+        grace_period_days: int = 15,
+        min_charge_paise: int = 0,
+        max_charge_paise: int = 0,
+        effective_from: datetime | None = None,
+        is_active: bool = True,
+    ) -> LateFeePolicy:
+        """Creates a new late fee policy for a society."""
+        policy = LateFeePolicy(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            policy_name=policy_name,
+            calculation_method=calculation_method,
+            amount_or_rate_bps=amount_or_rate_bps,
+            grace_period_days=grace_period_days,
+            min_charge_paise=min_charge_paise,
+            max_charge_paise=max_charge_paise,
+            effective_from=effective_from or utc_now(),
+            is_active=is_active,
+        )
+        self.db.add(policy)
+        self.db.commit()
+        self.db.refresh(policy)
+        return policy
+
+    def get_late_fee_application(
+        self, invoice_id: UUID, billing_period: str
+    ) -> LateFeeApplication | None:
+        """Checks if a late fee has already been applied to an invoice for a specific period."""
+        stmt = select(LateFeeApplication).where(
+            LateFeeApplication.invoice_id == invoice_id,
+            LateFeeApplication.billing_period == billing_period,
+        )
+        return self.db.scalars(stmt).first()
+
+    def create_late_fee_application(
+        self,
+        society_id: UUID,
+        invoice_id: UUID,
+        policy_id: UUID,
+        billing_period: str,
+        days_overdue: int,
+        unpaid_principal_paise: int,
+        fee_paise: int,
+        applied_date: datetime | None = None,
+    ) -> LateFeeApplication:
+        """Idempotently records a late fee assessment against an invoice."""
+        app = LateFeeApplication(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            invoice_id=invoice_id,
+            policy_id=policy_id,
+            billing_period=billing_period,
+            applied_date=applied_date or utc_now(),
+            days_overdue=days_overdue,
+            unpaid_principal_paise=unpaid_principal_paise,
+            fee_paise=fee_paise,
+        )
+        self.db.add(app)
+        return app
+
+    def get_unpaid_invoices_for_society(self, society_id: UUID) -> list[Invoice]:
+        """Returns all invoices in society that are not fully paid, with relationships loaded."""
+        stmt = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.allocations).joinedload(PaymentAllocation.payment),
+                joinedload(Invoice.line_items),
+            )
+            .where(
+                Invoice.society_id == society_id,
+                Invoice.status.in_(
+                    [InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID, InvoiceStatus.OVERDUE]
+                ),
+            )
+            .order_by(Invoice.due_date.asc())
+        )
+        return list(self.db.scalars(stmt).unique().all())
 
     def cleanup_expired_idempotency_keys(self) -> int:
         """Deletes expired idempotency records from the database.

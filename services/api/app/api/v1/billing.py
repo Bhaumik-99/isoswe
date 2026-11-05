@@ -16,11 +16,16 @@ from app.core.errors import AuthorizationError, NotFoundError
 from app.core.security import get_current_user, require_roles
 from app.domains.billing.models import InvoiceStatus
 from app.domains.billing.schemas import (
+    ApplyLateFeesRequest,
+    ApplyLateFeesResponse,
     BillingRunPreviewResponse,
     BillingRunResponse,
+    CreateLateFeePolicyRequest,
     ExecuteBillingRunRequest,
     InitiatePaymentRequest,
     InvoiceResponse,
+    LateFeePolicyResponse,
+    LateFeePreviewResponse,
     PaymentAllocationSchema,
     PaymentResponse,
     ReceiptResponse,
@@ -462,3 +467,85 @@ def get_billing_run_detail(
         run_metadata=run.run_metadata,
         created_at=run.created_at,
     )
+
+
+# =============================================================================
+# Late Fee Policy & Assessment Endpoints (Workstream A)
+# =============================================================================
+@router.get(
+    "/late-fee-policies",
+    response_model=list[LateFeePolicyResponse],
+    summary="List society late-fee policies",
+)
+def list_late_fee_policies(
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> list[LateFeePolicyResponse]:
+    """Retrieves all configured late-fee policies for a society."""
+    target_soc = society_id or (claims.society_ids[0] if claims.society_ids else None)
+    if not target_soc or target_soc not in claims.society_ids:
+        raise AuthorizationError("Access denied: You do not have permissions for this society")
+    service = BillingService(db)
+    return service.list_late_fee_policies(target_soc)
+
+
+@router.post(
+    "/late-fee-policies",
+    response_model=LateFeePolicyResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create or configure a society late-fee policy",
+)
+def create_late_fee_policy(
+    request: CreateLateFeePolicyRequest,
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> LateFeePolicyResponse:
+    """Configures a society late-fee policy following bye-laws."""
+    target_soc = society_id or (claims.society_ids[0] if claims.society_ids else None)
+    if not target_soc or target_soc not in claims.society_ids:
+        raise AuthorizationError("Access denied: You do not have permissions for this society")
+    service = BillingService(db)
+    return service.create_late_fee_policy(target_soc, request)
+
+
+@router.post(
+    "/late-fees/preview",
+    response_model=LateFeePreviewResponse,
+    summary="Preview proposed late fees before assessment",
+)
+def preview_late_fees(
+    request: ApplyLateFeesRequest | None = None,
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> LateFeePreviewResponse:
+    """Calculates proposed late fees on overdue invoices without mutating state."""
+    target_soc = society_id or (claims.society_ids[0] if claims.society_ids else None)
+    if not target_soc or target_soc not in claims.society_ids:
+        raise AuthorizationError("Access denied: You do not have permissions for this society")
+    service = BillingService(db)
+    as_of = request.as_of_date if request else None
+    return service.preview_late_fees(target_soc, as_of_date=as_of)
+
+
+@router.post(
+    "/late-fees/apply",
+    response_model=ApplyLateFeesResponse,
+    summary="Apply late fees to overdue invoices following bye-laws",
+)
+def apply_late_fees(
+    request: ApplyLateFeesRequest | None = None,
+    society_id: UUID | None = Query(None),
+    correlation_id: str | None = Header(None, alias="X-Correlation-ID"),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> ApplyLateFeesResponse:
+    """Atomically assesses and posts late fees following society bye-laws."""
+    target_soc = society_id or (claims.society_ids[0] if claims.society_ids else None)
+    if not target_soc or target_soc not in claims.society_ids:
+        raise AuthorizationError("Access denied: You do not have permissions for this society")
+    service = BillingService(db)
+    as_of = request.as_of_date if request else None
+    return service.apply_late_fees(target_soc, as_of_date=as_of, correlation_id=correlation_id)

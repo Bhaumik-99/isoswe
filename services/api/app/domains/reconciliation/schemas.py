@@ -41,6 +41,7 @@ class TransactionPreviewItem(BaseModel):
     description: str
     reference_number: str | None = None
     utr_number: str | None = None
+    payer_vpa: str | None = None
     transaction_type: TransactionType
     debit_paise: int
     credit_paise: int
@@ -114,6 +115,7 @@ class BankTransactionResponse(BaseSchema):
     normalized_description: str
     reference_number: str | None = None
     utr_number: str | None = None
+    payer_vpa: str | None = None
     transaction_type: TransactionType
     debit_paise: int
     credit_paise: int
@@ -203,4 +205,28 @@ class ReconciliationReportItem(BaseModel):
     flat_number: str | None = None
     resident_name: str | None = None
     invoice_number: str | None = None
+
+
+class CreateResidentUPIMappingRequest(BaseModel):
+    flat_id: UUID
+    resident_id: UUID
+    vpa: str = Field(min_length=3, max_length=255)
+    account_holder_name: str | None = None
+    is_verified: bool = True
+
+
+class ResidentUPIMappingResponse(BaseSchema):
+    id: UUID
+    society_id: UUID
+    flat_id: UUID
+    flat_number: str | None = None
+    tower_number: str | None = None
+    resident_id: UUID
+    resident_name: str | None = None
+    vpa: str
+    account_holder_name: str | None = None
+    is_verified: bool
+    created_at: datetime
+    updated_at: datetime
+
     posted_at: datetime | None = None

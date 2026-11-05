@@ -176,6 +176,7 @@ class BankTransaction(Base):
     normalized_description: Mapped[str] = mapped_column(Text, nullable=False)
     reference_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
     utr_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payer_vpa: Mapped[str | None] = mapped_column(String(255), nullable=True)
     transaction_type: Mapped[TransactionType] = mapped_column(
         SAEnum(TransactionType, native_enum=False),
         nullable=False,
@@ -421,4 +422,45 @@ class ReconciliationAllocation(Base):
     # Relationships
     transaction: Mapped["BankTransaction"] = relationship(
         "BankTransaction", back_populates="allocations"
+    )
+
+
+class ResidentUPIMapping(Base):
+    """Maps authorized resident UPI VPAs to apartments for auto-reconciliation."""
+
+    __tablename__ = "resident_upi_mappings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    flat_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("flats.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    resident_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    vpa: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_holder_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("society_id", "vpa", name="uq_resident_upi_society_vpa"),
+        Index("ix_resident_upi_society_flat", "society_id", "flat_id"),
+        Index("ix_resident_upi_vpa", "vpa"),
     )

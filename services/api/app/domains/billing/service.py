@@ -33,6 +33,8 @@ from app.domains.billing.models import (
     Invoice,
     InvoiceLineItem,
     InvoiceStatus,
+    LateFeeCalculationMethod,
+    LateFeePolicy,
     LedgerEntryType,
     Payment,
     PaymentStatus,
@@ -44,11 +46,16 @@ from app.domains.billing.provider import (
 )
 from app.domains.billing.repository import BillingRepository
 from app.domains.billing.schemas import (
+    ApplyLateFeesResponse,
     BillingRunPreviewResponse,
+    CreateLateFeePolicyRequest,
     EligibleFlatDetail,
     ExcludedFlatDetail,
     InvoiceLineItemSchema,
     InvoiceResponse,
+    LateFeePolicyResponse,
+    LateFeePreviewItem,
+    LateFeePreviewResponse,
     PaymentAllocationSchema,
     PaymentResponse,
     ReceiptResponse,
@@ -103,6 +110,12 @@ def _calculate_due_date_utc(year: int, month: int, due_day: int) -> datetime:
     # End-of-business-day in IST (23:59:59)
     local_due = datetime(due_year, due_month, clamped_day, 23, 59, 59, tzinfo=IST)
     return local_due.astimezone(UTC)
+
+
+def _to_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 class BillingService:
@@ -1251,10 +1264,12 @@ class BillingService:
         )
 
     def get_staff_overview(self, society_id: UUID) -> StaffBillingOverviewResponse:
-        """Returns financial overview using database aggregate queries.
+        """Returns financial overview using optimized database aggregate queries.
 
-        PERFORMANCE: Replaces iteration over 2,500 invoices with SQL aggregates.
-        Uses get_latest_billing_config() — no side effect, no default config creation.
+        PERFORMANCE & GOVERNANCE:
+        - Pure SQL aggregates calculated across the full 2,400+ flat portfolio.
+        - Zero row limit (eliminates previous 500-record approximation).
+        - Reconciles collected amounts with successful payment allocations.
         """
         # Use read-only config lookup (no side effect)
         config = self.repo.get_latest_billing_config(society_id)
@@ -1262,27 +1277,13 @@ class BillingService:
         # Database-level aggregates (no fixed LIMIT)
         agg = self.repo.get_society_financial_aggregates(society_id)
         total_billed = agg["total_billed_paise"]
+        total_collected = agg["total_collected_paise"]
+        total_outstanding = agg["total_outstanding_paise"]
+        total_overdue = agg["total_overdue_paise"]
         total_count = agg["total_count"]
         paid_count = agg["paid_count"]
         overdue_count = agg["overdue_count"]
         unpaid_count = total_count - paid_count - overdue_count
-
-        # For precise outstanding/collected totals, we still need to iterate invoices
-        # (because outstanding = total - allocations, not stored directly).
-        # Fetch a reasonable batch for financial precision on the overview.
-        # For high-volume societies, this is a known approximation; exact per-invoice
-        # totals are available on the detail view.
-        invoices = self.repo.get_invoices_for_society(society_id, limit=500)
-        total_collected = 0
-        total_outstanding = 0
-        total_overdue = 0
-
-        for inv in invoices:
-            p_paise, o_paise, status, _ = self.calculate_invoice_financials(inv)
-            total_collected += p_paise
-            total_outstanding += o_paise
-            if status == InvoiceStatus.OVERDUE:
-                total_overdue += o_paise
 
         return StaffBillingOverviewResponse(
             total_billed_paise=total_billed,
@@ -1295,4 +1296,305 @@ class BillingService:
             overdue_invoices_count=overdue_count,
             active_rate_paise_per_sqft=config.rate_paise_per_sqft if config else 0,
             current_period=utc_now().strftime("%Y-%m"),
+        )
+
+    # -------------------------------------------------------------------------
+    # Late Fee Management & Execution (Workstream A)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def calculate_proposed_late_fee(
+        policy: LateFeePolicy, unpaid_principal_paise: int, days_overdue: int
+    ) -> tuple[int, str]:
+        """Calculates late fee in integer paise using policy parameters and bye-law rules.
+
+        FINANCIAL INVARIANTS:
+        - Never uses floating-point arithmetic.
+        - Zero fee if unpaid balance <= 0 or days_overdue <= grace_period_days.
+        - FLAT_FEE: Fixed paise amount.
+        - PERCENTAGE_PER_MONTH: (unpaid_principal_paise * bps * months) // 10000.
+        - DAILY_INTEREST_PAISE: (unpaid_principal_paise * bps * days) // (365 * 10000).
+        - Enforces min_charge_paise and max_charge_paise caps.
+        """
+        if unpaid_principal_paise <= 0 or days_overdue <= policy.grace_period_days:
+            return 0, "Within grace period or zero unpaid balance"
+
+        fee = 0
+        expl = ""
+        effective_overdue_days = days_overdue - policy.grace_period_days
+
+        if policy.calculation_method == LateFeeCalculationMethod.FLAT_FEE:
+            fee = policy.amount_or_rate_bps
+            expl = f"Flat late fee: ₹{fee / 100:,.2f} ({days_overdue} days overdue, {policy.grace_period_days}d grace)"
+
+        elif policy.calculation_method == LateFeeCalculationMethod.PERCENTAGE_PER_MONTH:
+            months = max(1, (effective_overdue_days + 29) // 30)
+            raw_fee = (unpaid_principal_paise * policy.amount_or_rate_bps * months + 5000) // 10000
+            fee = raw_fee
+            rate_pct = policy.amount_or_rate_bps / 100.0
+            expl = f"{rate_pct:.1f}%/month on unpaid ₹{unpaid_principal_paise / 100:,.2f} ({months} mo): ₹{fee / 100:,.2f}"
+
+        elif policy.calculation_method == LateFeeCalculationMethod.DAILY_INTEREST_PAISE:
+            raw_fee = (
+                unpaid_principal_paise * policy.amount_or_rate_bps * effective_overdue_days
+                + 1825000
+            ) // 3650000
+            fee = raw_fee
+            rate_pct = policy.amount_or_rate_bps / 100.0
+            expl = f"{rate_pct:.1f}% p.a. interest for {effective_overdue_days} days overdue: ₹{fee / 100:,.2f}"
+
+        # Apply minimum charge cap
+        if policy.min_charge_paise > 0 and fee < policy.min_charge_paise:
+            fee = policy.min_charge_paise
+            expl += f" (Adjusted to min fee ₹{policy.min_charge_paise / 100:,.2f})"
+
+        # Apply maximum charge cap
+        if policy.max_charge_paise > 0 and fee > policy.max_charge_paise:
+            fee = policy.max_charge_paise
+            expl += f" (Capped at max fee ₹{policy.max_charge_paise / 100:,.2f})"
+
+        return fee, expl
+
+    def create_late_fee_policy(
+        self, society_id: UUID, req: CreateLateFeePolicyRequest
+    ) -> LateFeePolicyResponse:
+        """Creates an approved society late-fee policy following bye-laws."""
+        policy = self.repo.create_late_fee_policy(
+            society_id=society_id,
+            policy_name=req.policy_name,
+            calculation_method=req.calculation_method,
+            amount_or_rate_bps=req.amount_or_rate_bps,
+            grace_period_days=req.grace_period_days,
+            min_charge_paise=req.min_charge_paise,
+            max_charge_paise=req.max_charge_paise,
+            effective_from=req.effective_from,
+            is_active=req.is_active,
+        )
+        return LateFeePolicyResponse.model_validate(policy)
+
+    def list_late_fee_policies(self, society_id: UUID) -> list[LateFeePolicyResponse]:
+        """Lists all configured late-fee policies for a society."""
+        policies = self.repo.list_late_fee_policies(society_id)
+        return [LateFeePolicyResponse.model_validate(p) for p in policies]
+
+    def preview_late_fees(
+        self, society_id: UUID, as_of_date: datetime | None = None
+    ) -> LateFeePreviewResponse:
+        """Calculates proposed late fees across all overdue invoices without mutating state.
+
+        IMPORTANT:
+        - If no policy is configured, returns zero proposed fees and policy=None.
+        - Does not silently invent default rates.
+        """
+        eval_date = as_of_date or utc_now()
+        policy = self.repo.get_active_late_fee_policy(society_id, eval_date)
+
+        if not policy:
+            return LateFeePreviewResponse(
+                society_id=society_id,
+                policy=None,
+                total_eligible_invoices=0,
+                total_proposed_fee_paise=0,
+                as_of_date=eval_date,
+                items=[],
+            )
+
+        unpaid_invoices = self.repo.get_unpaid_invoices_for_society(society_id)
+        items: list[LateFeePreviewItem] = []
+        total_fee = 0
+        norm_eval = _to_utc(eval_date)
+
+        for inv in unpaid_invoices:
+            inv_due = _to_utc(inv.due_date)
+            if inv_due >= norm_eval:
+                continue
+
+            days_overdue = (norm_eval.date() - inv_due.date()).days
+            if days_overdue <= policy.grace_period_days:
+                continue
+
+            # Check if fee already assessed for this invoice's billing period
+            existing_app = self.repo.get_late_fee_application(inv.id, inv.billing_period)
+            if existing_app:
+                continue
+
+            _, outstanding_paise, _, _ = self.calculate_invoice_financials(inv)
+            if outstanding_paise <= 0:
+                continue
+
+            fee_paise, explanation = self.calculate_proposed_late_fee(
+                policy=policy,
+                unpaid_principal_paise=outstanding_paise,
+                days_overdue=days_overdue,
+            )
+
+            if fee_paise > 0:
+                flat = inv.flat if hasattr(inv, "flat") and inv.flat else None
+                tower = flat.tower if flat and hasattr(flat, "tower") and flat.tower else None
+                items.append(
+                    LateFeePreviewItem(
+                        invoice_id=inv.id,
+                        invoice_number=inv.invoice_number,
+                        flat_id=inv.flat_id,
+                        flat_number=flat.flat_number if flat else "",
+                        tower_number=tower.tower_number if tower else "",
+                        billing_period=inv.billing_period,
+                        due_date=inv.due_date,
+                        days_overdue=days_overdue,
+                        unpaid_principal_paise=outstanding_paise,
+                        proposed_fee_paise=fee_paise,
+                        calculation_explanation=explanation,
+                    )
+                )
+                total_fee += fee_paise
+
+        return LateFeePreviewResponse(
+            society_id=society_id,
+            policy=LateFeePolicyResponse.model_validate(policy),
+            total_eligible_invoices=len(items),
+            total_proposed_fee_paise=total_fee,
+            as_of_date=eval_date,
+            items=items,
+        )
+
+    def apply_late_fees(
+        self,
+        society_id: UUID,
+        as_of_date: datetime | None = None,
+        correlation_id: str | None = None,
+    ) -> ApplyLateFeesResponse:
+        """Atomically assesses and posts late fees following society bye-laws.
+
+        FINANCIAL INVARIANTS:
+        - Requires an active, authorized society LateFeePolicy.
+        - Idempotent: Skips invoices that already have a late fee for the billing period.
+        - Charges are appended to invoice as line items and to FinancialLedgerEntry as CHARGE.
+        - Triggers outbox event for async audit dispatch.
+        """
+        eval_date = as_of_date or utc_now()
+        corr_id = correlation_id or str(uuid.uuid4())
+        policy = self.repo.get_active_late_fee_policy(society_id, eval_date)
+
+        if not policy:
+            raise ValidationError(
+                "No approved late-fee policy configured for this society. "
+                "Per township bye-laws, late fees cannot be applied without an authorized policy."
+            )
+
+        unpaid_invoices = self.repo.get_unpaid_invoices_for_society(society_id)
+        applied_count = 0
+        already_assessed_count = 0
+        total_charged_paise = 0
+        norm_eval = _to_utc(eval_date)
+
+        for inv in unpaid_invoices:
+            inv_due = _to_utc(inv.due_date)
+            if inv_due >= norm_eval:
+                continue
+
+            days_overdue = (norm_eval.date() - inv_due.date()).days
+            if days_overdue <= policy.grace_period_days:
+                continue
+
+            # Idempotency check: already charged for this billing period?
+            existing_app = self.repo.get_late_fee_application(inv.id, inv.billing_period)
+            if existing_app:
+                already_assessed_count += 1
+                continue
+
+            _, outstanding_paise, _, _ = self.calculate_invoice_financials(inv)
+            if outstanding_paise <= 0:
+                continue
+
+            fee_paise, explanation = self.calculate_proposed_late_fee(
+                policy=policy,
+                unpaid_principal_paise=outstanding_paise,
+                days_overdue=days_overdue,
+            )
+
+            if fee_paise <= 0:
+                continue
+
+            # 1. Append InvoiceLineItem
+            line_item = InvoiceLineItem(
+                id=uuid.uuid4(),
+                invoice_id=inv.id,
+                description=f"Late Payment Surcharge ({policy.policy_name})",
+                quantity=1,
+                unit_rate_paise=fee_paise,
+                amount_paise=fee_paise,
+            )
+            self.db.add(line_item)
+
+            # 2. Update Invoice totals & status
+            inv.total_paise += fee_paise
+            inv.status = InvoiceStatus.OVERDUE
+
+            # 3. Append immutable FinancialLedgerEntry
+            ledger_entry = FinancialLedgerEntry(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                flat_id=inv.flat_id,
+                invoice_id=inv.id,
+                entry_type=LedgerEntryType.CHARGE,
+                amount_paise=fee_paise,
+                reference_id=f"LATEFEE-{inv.invoice_number}",
+                description=f"Late fee surcharge: {explanation}",
+            )
+            self.db.add(ledger_entry)
+
+            # 4. Record LateFeeApplication (idempotency token)
+            self.repo.create_late_fee_application(
+                society_id=society_id,
+                invoice_id=inv.id,
+                policy_id=policy.id,
+                billing_period=inv.billing_period,
+                days_overdue=days_overdue,
+                unpaid_principal_paise=outstanding_paise,
+                fee_paise=fee_paise,
+                applied_date=eval_date,
+            )
+
+            # 5. Record AuditEvent
+            audit = AuditEvent(
+                society_id=society_id,
+                actor_id=None,
+                action="LATE_FEE_APPLIED",
+                resource_type="invoice",
+                resource_id=str(inv.id),
+                correlation_id=corr_id,
+                event_metadata={
+                    "invoice_number": inv.invoice_number,
+                    "policy_id": str(policy.id),
+                    "days_overdue": days_overdue,
+                    "unpaid_principal_paise": outstanding_paise,
+                    "fee_paise": fee_paise,
+                },
+            )
+            self.db.add(audit)
+
+            # 6. Outbox Event
+            outbox = OutboxEvent(
+                event_type="billing.late_fee_applied",
+                aggregate_type="invoice",
+                aggregate_id=str(inv.id),
+                payload={
+                    "society_id": str(society_id),
+                    "invoice_id": str(inv.id),
+                    "fee_paise": fee_paise,
+                },
+                status=OutboxStatus.PENDING,
+            )
+            self.db.add(outbox)
+
+            applied_count += 1
+            total_charged_paise += fee_paise
+
+        self.db.commit()
+
+        return ApplyLateFeesResponse(
+            society_id=society_id,
+            policy_id=policy.id,
+            applied_invoices_count=applied_count,
+            total_fee_charged_paise=total_charged_paise,
+            already_assessed_count=already_assessed_count,
         )

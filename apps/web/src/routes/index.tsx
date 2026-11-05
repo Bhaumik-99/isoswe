@@ -14,6 +14,7 @@ import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
 import { StaffReconciliation } from '../features/staff/reconciliation/StaffReconciliation';
+import { ResidentsDirectory } from '../features/staff/residents/ResidentsDirectory';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
 import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
 import { NotFound } from '../components/NotFound';
@@ -95,20 +96,7 @@ export const AppRoutes: React.FC = () => {
         <Route path="helpdesk" element={<StaffHelpdesk />} />
         <Route path="billing" element={<StaffBilling />} />
         <Route path="reconciliation" element={<StaffReconciliation />} />
-        <Route
-          path="residents"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Township Resident & Unit Registry"
-              plannedPhase="Phase 2 - Master Registry"
-              description="Central registry of 2,400 flats across 28 towers, owner/tenant memberships, and move-in/move-out workflows."
-              deliverables={[
-                'Tenant lease verification and KYC documents store',
-                'Vehicle parking RFID management',
-              ]}
-            />
-          }
-        />
+        <Route path="residents" element={<ResidentsDirectory />} />
         <Route path="committee" element={<CommitteeOverview />} />
       </Route>
 

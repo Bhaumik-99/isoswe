@@ -98,6 +98,56 @@ class CurrentUserClaims(BaseModel):
     is_mock: bool = False
 
 
+class ResidentFlatInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    membership_id: UUID
+    flat_id: UUID
+    flat_number: str
+    tower_number: str
+    membership_type: MembershipType
+    status: MembershipStatus
+    valid_from: datetime
+    valid_until: datetime | None = None
+    is_primary: bool
+
+
+class ResidentDirectoryItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: UUID
+    full_name: str
+    phone: str | None = None
+    email: str | None = None
+    status: UserStatus
+    flats: list[ResidentFlatInfo] = Field(default_factory=list)
+    created_at: datetime
+
+
+class CreateMembershipRequest(BaseModel):
+    phone: str = Field(..., min_length=10, max_length=20, description="Phone number of resident")
+    full_name: str | None = None
+    flat_id: UUID
+    membership_type: MembershipType
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    is_primary: bool = False
+
+
+class UpdateMembershipStatusRequest(BaseModel):
+    status: MembershipStatus = Field(
+        ..., description="Target status: APPROVED, REJECTED, TERMINATED"
+    )
+    notes: str | None = None
+
+
+class ResidentJoinFlatRequest(BaseModel):
+    flat_id: UUID
+    membership_type: MembershipType = MembershipType.TENANT
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+
+
 class MeResponse(BaseModel):
     """GET /api/v1/me response payload."""
 

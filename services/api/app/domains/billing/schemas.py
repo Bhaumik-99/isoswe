@@ -14,7 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domains.billing.models import InvoiceStatus, PaymentStatus
+from app.domains.billing.models import InvoiceStatus, LateFeeCalculationMethod, PaymentStatus
 
 
 class InvoiceLineItemSchema(BaseModel):
@@ -189,3 +189,73 @@ class StaffBillingOverviewResponse(BaseModel):
     overdue_invoices_count: int
     active_rate_paise_per_sqft: int
     current_period: str
+
+
+class CreateLateFeePolicyRequest(BaseModel):
+    policy_name: str = Field(..., min_length=3, max_length=128)
+    calculation_method: LateFeeCalculationMethod = Field(
+        default=LateFeeCalculationMethod.FLAT_FEE,
+        description="Calculation method: FLAT_FEE, PERCENTAGE_PER_MONTH, or DAILY_INTEREST_PAISE",
+    )
+    amount_or_rate_bps: int = Field(
+        ...,
+        gt=0,
+        description="Fixed fee in paise or basis points (e.g. 200 bps = 2.0% per month)",
+    )
+    grace_period_days: int = Field(default=15, ge=0, le=90)
+    min_charge_paise: int = Field(default=0, ge=0)
+    max_charge_paise: int = Field(default=0, ge=0)
+    effective_from: datetime | None = None
+    is_active: bool = True
+
+
+class LateFeePolicyResponse(BaseModel):
+    id: UUID
+    society_id: UUID
+    policy_name: str
+    calculation_method: LateFeeCalculationMethod
+    amount_or_rate_bps: int
+    grace_period_days: int
+    min_charge_paise: int
+    max_charge_paise: int
+    is_active: bool
+    effective_from: datetime
+    effective_to: datetime | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LateFeePreviewItem(BaseModel):
+    invoice_id: UUID
+    invoice_number: str
+    flat_id: UUID
+    flat_number: str
+    tower_number: str
+    billing_period: str
+    due_date: datetime
+    days_overdue: int
+    unpaid_principal_paise: int
+    proposed_fee_paise: int
+    calculation_explanation: str
+
+
+class LateFeePreviewResponse(BaseModel):
+    society_id: UUID
+    policy: LateFeePolicyResponse | None
+    total_eligible_invoices: int
+    total_proposed_fee_paise: int
+    as_of_date: datetime
+    items: list[LateFeePreviewItem] = Field(default_factory=list)
+
+
+class ApplyLateFeesRequest(BaseModel):
+    as_of_date: datetime | None = None
+
+
+class ApplyLateFeesResponse(BaseModel):
+    society_id: UUID
+    policy_id: UUID
+    applied_invoices_count: int
+    total_fee_charged_paise: int
+    already_assessed_count: int = 0

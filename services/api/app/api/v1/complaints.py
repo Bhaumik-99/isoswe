@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
 from app.domains.complaints.models import ComplaintCategory, ComplaintPriority, ComplaintStatus
 from app.domains.complaints.schemas import (
+    AcknowledgeSafetyAlertRequest,
     AssignComplaintRequest,
     AttachmentResponse,
     CommentResponse,
@@ -23,9 +24,12 @@ from app.domains.complaints.schemas import (
     CreateComplaintRequest,
     HelpdeskDashboardMetricsResponse,
     InitiateAttachmentUploadRequest,
+    LinkDuplicateComplaintRequest,
     PresignedUploadResponse,
     RateComplaintRequest,
     ReopenComplaintRequest,
+    SafetyAlertResponse,
+    UpdateComplaintCategoryRequest,
     UpdateComplaintPriorityRequest,
     UpdateComplaintStatusRequest,
 )
@@ -173,6 +177,43 @@ def rate_resident_complaint(
 
 
 # =============================================================================
+# Safety Alerts Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/safety-alerts",
+    response_model=list[SafetyAlertResponse],
+    summary="List persistent safety alerts for duty manager emergency queue",
+)
+def list_safety_alerts(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None),
+    unacknowledged_only: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> list[SafetyAlertResponse]:
+    service = ComplaintService(db)
+    return service.list_safety_alerts(
+        claims, society_id=society_id, unacknowledged_only=unacknowledged_only
+    )
+
+
+@router.post(
+    "/safety-alerts/{alert_id}/ack",
+    response_model=SafetyAlertResponse,
+    summary="Acknowledge persistent safety alert",
+)
+def acknowledge_safety_alert(
+    alert_id: UUID,
+    payload: AcknowledgeSafetyAlertRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    db: Session = Depends(get_db),
+) -> SafetyAlertResponse:
+    service = ComplaintService(db)
+    return service.acknowledge_safety_alert(claims, alert_id, payload)
+
+
+# =============================================================================
 # Helpdesk Staff Operations Endpoints
 # =============================================================================
 
@@ -290,6 +331,84 @@ def update_helpdesk_complaint_priority(
 ) -> ComplaintResponse:
     service = ComplaintService(db)
     return service.update_priority(claims, complaint_id, payload)
+
+
+@router.patch(
+    "/{complaint_id}/category",
+    response_model=ComplaintResponse,
+    summary="Correct AI or resident assigned category in 1 action",
+)
+@router.patch(
+    "/helpdesk/{complaint_id}/category",
+    response_model=ComplaintResponse,
+    include_in_schema=False,
+)
+def correct_complaint_category(
+    complaint_id: UUID,
+    payload: UpdateComplaintCategoryRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    db: Session = Depends(get_db),
+) -> ComplaintResponse:
+    service = ComplaintService(db)
+    return service.correct_category(claims, complaint_id, payload)
+
+
+@router.post(
+    "/{complaint_id}/link-duplicate",
+    response_model=ComplaintResponse,
+    summary="Link complaint as duplicate without auto-closing",
+)
+@router.post(
+    "/helpdesk/{complaint_id}/link-duplicate",
+    response_model=ComplaintResponse,
+    include_in_schema=False,
+)
+def link_duplicate_complaint(
+    complaint_id: UUID,
+    payload: LinkDuplicateComplaintRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    db: Session = Depends(get_db),
+) -> ComplaintResponse:
+    service = ComplaintService(db)
+    return service.link_duplicate(claims, complaint_id, payload)
+
+
+@router.post(
+    "/{complaint_id}/unlink-duplicate",
+    response_model=ComplaintResponse,
+    summary="Unlink duplicate complaint relationship",
+)
+@router.post(
+    "/helpdesk/{complaint_id}/unlink-duplicate",
+    response_model=ComplaintResponse,
+    include_in_schema=False,
+)
+def unlink_duplicate_complaint(
+    complaint_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    db: Session = Depends(get_db),
+) -> ComplaintResponse:
+    service = ComplaintService(db)
+    return service.unlink_duplicate(claims, complaint_id)
+
+
+@router.get(
+    "/{complaint_id}/linked-duplicates",
+    response_model=list[ComplaintResponse],
+    summary="List complaints linked as duplicates of this complaint",
+)
+@router.get(
+    "/helpdesk/{complaint_id}/linked-duplicates",
+    response_model=list[ComplaintResponse],
+    include_in_schema=False,
+)
+def list_linked_duplicates(
+    complaint_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[ComplaintResponse]:
+    service = ComplaintService(db)
+    return service.list_linked_duplicates(claims, complaint_id)
 
 
 @router.post(

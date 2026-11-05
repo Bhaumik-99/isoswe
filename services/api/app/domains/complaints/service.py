@@ -11,6 +11,7 @@ Orchestrates authoritative business logic, safety rules, SLA tracking, and audit
 8. Transactional audit log & outbox event publishing
 """
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,10 +36,12 @@ from app.domains.complaints.models import (
     ComplaintComment,
     ComplaintPriority,
     ComplaintStatus,
+    SafetyAlert,
 )
 from app.domains.complaints.repository import ComplaintRepository
 from app.domains.complaints.safety import check_safety_escalation
 from app.domains.complaints.schemas import (
+    AcknowledgeSafetyAlertRequest,
     ActivityResponse,
     AssignComplaintRequest,
     AttachmentResponse,
@@ -48,9 +51,12 @@ from app.domains.complaints.schemas import (
     CreateComplaintRequest,
     HelpdeskDashboardMetricsResponse,
     InitiateAttachmentUploadRequest,
+    LinkDuplicateComplaintRequest,
     PresignedUploadResponse,
     RateComplaintRequest,
     ReopenComplaintRequest,
+    SafetyAlertResponse,
+    UpdateComplaintCategoryRequest,
     UpdateComplaintPriorityRequest,
     UpdateComplaintStatusRequest,
 )
@@ -139,6 +145,10 @@ class ComplaintService:
         if claims.society_ids:
             return claims.society_ids[0]
         raise AuthorizationError("No authorized society found for user")
+
+    def _verify_society_access(self, claims: CurrentUserClaims, society_id: UUID) -> None:
+        if society_id not in claims.society_ids:
+            raise AuthorizationError(f"Access denied: User does not belong to society {society_id}")
 
     def _emit_outbox(
         self, event_type: str, aggregate_id: str, payload: dict[str, Any]
@@ -319,6 +329,9 @@ class ComplaintService:
             safety_escalation_reason=complaint.safety_escalation_reason,
             duplicate_of_id=complaint.duplicate_of_id,
             duplicate_candidates=duplicate_candidates or [],
+            original_category=complaint.original_category,
+            category_corrected_at=complaint.category_corrected_at,
+            category_corrected_by=complaint.category_corrected_by,
             first_response_deadline=complaint.first_response_deadline,
             resolution_deadline=complaint.resolution_deadline,
             first_response_at=complaint.first_response_at,
@@ -435,6 +448,24 @@ class ComplaintService:
                 activity_type="SAFETY_ESCALATED",
                 notes=f"Forced CRITICAL priority: {safety_reason}",
             )
+            # Create persistent in-app safety alert for duty manager emergency queue
+            idempotency_hash = hashlib.sha256(
+                f"{society_id}:{complaint.id}:{safety_reason}".encode()
+            ).hexdigest()
+            alert = SafetyAlert(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                complaint_id=complaint.id,
+                hazard_type="SAFETY_HAZARD",
+                alert_title=f"CRITICAL SAFETY ALERT: {request.title[:200]}",
+                alert_details=f"{safety_reason}: {request.description}",
+                severity="CRITICAL",
+                is_acknowledged=False,
+                assigned_staff_id=assigned_staff_id,
+                idempotency_hash=idempotency_hash,
+                created_at=now,
+            )
+            self.db.add(alert)
 
         if assigned_staff_id:
             self._record_activity(
@@ -1113,3 +1144,221 @@ class ComplaintService:
         target_society_id = self._resolve_society_id(claims, society_id)
         metrics = self.repo.get_dashboard_metrics(target_society_id)
         return HelpdeskDashboardMetricsResponse(**metrics)
+
+    # =========================================================================
+    # Phase 5 Governance: Category Correction, Duplicate Linking & Safety Alerts
+    # =========================================================================
+
+    def correct_category(
+        self,
+        claims: CurrentUserClaims,
+        complaint_id: UUID,
+        req: UpdateComplaintCategoryRequest,
+    ) -> ComplaintResponse:
+        complaint = self.db.query(Complaint).filter(Complaint.id == complaint_id).first()
+        if not complaint:
+            raise NotFoundError(f"Complaint {complaint_id} not found")
+        self._verify_society_access(claims, complaint.society_id)
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can correct complaint categories")
+
+        old_cat = complaint.category
+        if old_cat == req.category:
+            return self._enrich_complaint_response(complaint, include_internal_comments=True)
+
+        if complaint.original_category is None:
+            complaint.original_category = old_cat
+        complaint.category = req.category
+        complaint.category_corrected_at = utc_now()
+        complaint.category_corrected_by = claims.user_id
+
+        self._record_activity(
+            complaint=complaint,
+            actor_id=claims.user_id,
+            activity_type="CATEGORY_CORRECTED",
+            old_value=old_cat.value,
+            new_value=req.category.value,
+            notes=req.notes
+            or f"Category manually corrected from {old_cat.value} to {req.category.value}",
+        )
+        self._emit_audit(
+            society_id=complaint.society_id,
+            actor_id=claims.user_id,
+            action="complaint.category_corrected",
+            resource_id=str(complaint.id),
+            metadata={
+                "old_category": old_cat.value,
+                "new_category": req.category.value,
+                "reason": req.notes,
+            },
+        )
+        self.db.commit()
+        self.db.refresh(complaint)
+        return self._enrich_complaint_response(complaint, include_internal_comments=True)
+
+    def link_duplicate(
+        self,
+        claims: CurrentUserClaims,
+        complaint_id: UUID,
+        req: LinkDuplicateComplaintRequest,
+    ) -> ComplaintResponse:
+        complaint = self.db.query(Complaint).filter(Complaint.id == complaint_id).first()
+        if not complaint:
+            raise NotFoundError(f"Complaint {complaint_id} not found")
+        self._verify_society_access(claims, complaint.society_id)
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can link duplicate complaints")
+
+        target = self.db.query(Complaint).filter(Complaint.id == req.duplicate_of_id).first()
+        if not target:
+            raise NotFoundError(f"Target complaint {req.duplicate_of_id} not found")
+        if target.society_id != complaint.society_id:
+            raise ValidationError("Cannot link complaints across different societies")
+
+        # Non-self validation
+        if complaint.id == target.id:
+            raise ValidationError("A complaint cannot be linked as a duplicate of itself")
+
+        # Non-circular validation
+        curr = target
+        visited = {complaint.id, target.id}
+        while curr.duplicate_of_id:
+            if curr.duplicate_of_id == complaint.id:
+                raise ValidationError("Circular duplicate reference detected")
+            if curr.duplicate_of_id in visited:
+                break
+            next_complaint = (
+                self.db.query(Complaint)
+                .filter(Complaint.id == curr.duplicate_of_id)
+                .first()
+            )
+            if not next_complaint:
+                break
+            curr = next_complaint
+            visited.add(curr.id)
+
+        complaint.duplicate_of_id = target.id
+        # Governance invariant: Keep both tickets open with independent SLAs and resident visibility!
+        self._record_activity(
+            complaint=complaint,
+            actor_id=claims.user_id,
+            activity_type="DUPLICATE_LINKED",
+            old_value=None,
+            new_value=str(target.id),
+            notes=req.notes or f"Linked as duplicate of #{target.complaint_number}",
+        )
+        self._emit_audit(
+            society_id=complaint.society_id,
+            actor_id=claims.user_id,
+            action="complaint.duplicate_linked",
+            resource_id=str(complaint.id),
+            metadata={"duplicate_of_id": str(target.id), "notes": req.notes},
+        )
+        self.db.commit()
+        self.db.refresh(complaint)
+        return self._enrich_complaint_response(complaint, include_internal_comments=True)
+
+    def unlink_duplicate(
+        self,
+        claims: CurrentUserClaims,
+        complaint_id: UUID,
+    ) -> ComplaintResponse:
+        complaint = self.db.query(Complaint).filter(Complaint.id == complaint_id).first()
+        if not complaint:
+            raise NotFoundError(f"Complaint {complaint_id} not found")
+        self._verify_society_access(claims, complaint.society_id)
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can unlink duplicate complaints")
+
+        old_target = complaint.duplicate_of_id
+        if not old_target:
+            return self._enrich_complaint_response(complaint, include_internal_comments=True)
+
+        complaint.duplicate_of_id = None
+        self._record_activity(
+            complaint=complaint,
+            actor_id=claims.user_id,
+            activity_type="DUPLICATE_UNLINKED",
+            old_value=str(old_target),
+            new_value=None,
+            notes="Unlinked duplicate complaint",
+        )
+        self._emit_audit(
+            society_id=complaint.society_id,
+            actor_id=claims.user_id,
+            action="complaint.duplicate_unlinked",
+            resource_id=str(complaint.id),
+            metadata={"previous_duplicate_of_id": str(old_target)},
+        )
+        self.db.commit()
+        self.db.refresh(complaint)
+        return self._enrich_complaint_response(complaint, include_internal_comments=True)
+
+    def list_linked_duplicates(
+        self,
+        claims: CurrentUserClaims,
+        complaint_id: UUID,
+    ) -> list[ComplaintResponse]:
+        complaint = self.db.query(Complaint).filter(Complaint.id == complaint_id).first()
+        if not complaint:
+            raise NotFoundError(f"Complaint {complaint_id} not found")
+        self._verify_society_access(claims, complaint.society_id)
+
+        duplicates = (
+            self.db.query(Complaint)
+            .filter(
+                Complaint.society_id == complaint.society_id,
+                Complaint.duplicate_of_id == complaint_id,
+            )
+            .all()
+        )
+        include_internal = RoleType.HELPDESK in claims.roles
+        return [
+            self._enrich_complaint_response(d, include_internal_comments=include_internal)
+            for d in duplicates
+        ]
+
+    def list_safety_alerts(
+        self,
+        claims: CurrentUserClaims,
+        society_id: UUID | None = None,
+        unacknowledged_only: bool = True,
+    ) -> list[SafetyAlertResponse]:
+        target_society_id = self._resolve_society_id(claims, society_id)
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can view safety alerts")
+
+        stmt = self.db.query(SafetyAlert).filter(SafetyAlert.society_id == target_society_id)
+        if unacknowledged_only:
+            stmt = stmt.filter(SafetyAlert.is_acknowledged == False)  # noqa: E712
+        alerts = stmt.order_by(SafetyAlert.created_at.desc()).all()
+        return [SafetyAlertResponse.model_validate(a) for a in alerts]
+
+    def acknowledge_safety_alert(
+        self,
+        claims: CurrentUserClaims,
+        alert_id: UUID,
+        req: AcknowledgeSafetyAlertRequest,
+    ) -> SafetyAlertResponse:
+        alert = self.db.query(SafetyAlert).filter(SafetyAlert.id == alert_id).first()
+        if not alert:
+            raise NotFoundError(f"Safety alert {alert_id} not found")
+        self._verify_society_access(claims, alert.society_id)
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can acknowledge safety alerts")
+
+        alert.is_acknowledged = True
+        alert.acknowledged_at = utc_now()
+        alert.acknowledged_by = claims.user_id
+        alert.acknowledgement_notes = req.notes
+
+        self._emit_audit(
+            society_id=alert.society_id,
+            actor_id=claims.user_id,
+            action="complaint.safety_alert_acknowledged",
+            resource_id=str(alert.id),
+            metadata={"complaint_id": str(alert.complaint_id), "notes": req.notes},
+        )
+        self.db.commit()
+        self.db.refresh(alert)
+        return SafetyAlertResponse.model_validate(alert)

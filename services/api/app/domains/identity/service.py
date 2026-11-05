@@ -3,21 +3,38 @@
 Implements core domain rules and access evaluation independent of web/HTTP mechanics.
 """
 
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.core.errors import AuthorizationError, ResourceNotFoundError, TenantIsolationError
+from app.core.errors import (
+    AuthorizationError,
+    ResourceNotFoundError,
+    TenantIsolationError,
+    ValidationError,
+)
 from app.domains.identity.models import (
+    FlatMembership,
+    MembershipStatus,
     RoleType,
+    User,
+    UserRole,
+    UserStatus,
 )
 from app.domains.identity.repository import IdentityRepository
 from app.domains.identity.schemas import (
+    CreateMembershipRequest,
     CurrentUserClaims,
     FlatDetailSchema,
     FlatMembershipSchema,
     MeResponse,
+    ResidentDirectoryItem,
+    ResidentFlatInfo,
+    ResidentJoinFlatRequest,
+    UpdateMembershipStatusRequest,
     UserProfileSchema,
     UserRoleSchema,
 )
@@ -134,3 +151,279 @@ class IdentityService:
         )
         self.db.add(event)
         return event
+
+    # =========================================================================
+    # Phase 5 Registry & Membership Management
+    # =========================================================================
+
+    def search_residents(
+        self,
+        claims: CurrentUserClaims,
+        society_id: UUID,
+        query: str | None = None,
+        tower_id: UUID | None = None,
+        flat_number: str | None = None,
+        status: MembershipStatus | None = None,
+    ) -> list[ResidentDirectoryItem]:
+        if society_id not in claims.society_ids:
+            raise TenantIsolationError(f"Access denied to society {society_id}")
+
+        users = self.repo.list_residents_in_society(
+            society_id=society_id,
+            query=query,
+            tower_id=tower_id,
+            flat_number=flat_number,
+            status=status,
+        )
+        items: list[ResidentDirectoryItem] = []
+        for u in users:
+            flat_infos: list[ResidentFlatInfo] = []
+            for m in u.memberships:
+                if m.society_id == society_id:
+                    flat_infos.append(
+                        ResidentFlatInfo(
+                            membership_id=m.id,
+                            flat_id=m.flat_id,
+                            flat_number=m.flat.flat_number if m.flat else "",
+                            tower_number=(
+                                m.flat.tower.tower_number if m.flat and m.flat.tower else ""
+                            ),
+                            membership_type=m.membership_type,
+                            status=m.status,
+                            valid_from=m.valid_from,
+                            valid_until=m.valid_until,
+                            is_primary=m.is_primary,
+                        )
+                    )
+            items.append(
+                ResidentDirectoryItem(
+                    user_id=u.id,
+                    full_name=u.full_name,
+                    phone=u.phone,
+                    email=u.email,
+                    status=u.status,
+                    flats=flat_infos,
+                    created_at=u.created_at,
+                )
+            )
+        return items
+
+    def list_memberships(
+        self,
+        claims: CurrentUserClaims,
+        society_id: UUID,
+        status: MembershipStatus | None = None,
+        flat_id: UUID | None = None,
+    ) -> list[FlatMembershipSchema]:
+        if society_id not in claims.society_ids:
+            raise TenantIsolationError(f"Access denied to society {society_id}")
+
+        memberships = self.repo.list_memberships(
+            society_id=society_id,
+            status=status,
+            flat_id=flat_id,
+        )
+        return [
+            FlatMembershipSchema(
+                id=m.id,
+                society_id=m.society_id,
+                flat_id=m.flat_id,
+                user_id=m.user_id,
+                membership_type=m.membership_type,
+                valid_from=m.valid_from,
+                valid_until=m.valid_until,
+                is_primary=m.is_primary,
+                status=m.status,
+                flat_number=m.flat.flat_number if m.flat else None,
+                tower_number=m.flat.tower.tower_number if m.flat and m.flat.tower else None,
+            )
+            for m in memberships
+        ]
+
+    def create_membership(
+        self,
+        claims: CurrentUserClaims,
+        society_id: UUID,
+        req: CreateMembershipRequest,
+    ) -> FlatMembershipSchema:
+        if society_id not in claims.society_ids:
+            raise TenantIsolationError(f"Access denied to society {society_id}")
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can register memberships directly")
+
+        # Lease validation: if valid_until is provided, ensure valid_until >= valid_from
+        v_from = req.valid_from or datetime.now(UTC)
+        v_until = req.valid_until
+        if v_until and v_until < v_from:
+            raise ValidationError(
+                "Lease end date (valid_until) cannot be before start date (valid_from)"
+            )
+
+        # Verify flat belongs to society
+        flat = self.repo.get_flat_by_id(req.flat_id)
+        if not flat or flat.society_id != society_id:
+            raise ResourceNotFoundError(f"Flat {req.flat_id} not found in society {society_id}")
+
+        # Find or create user by phone
+        clean_phone = req.phone.strip()
+        user = self.repo.get_user_by_phone(clean_phone)
+        if not user:
+            user = User(
+                id=uuid.uuid4(),
+                supabase_uid=uuid.uuid4(),
+                phone=clean_phone,
+                full_name=req.full_name or f"Resident {clean_phone[-4:]}",
+                status=UserStatus.ACTIVE,
+            )
+            self.db.add(user)
+            self.db.flush()
+
+        existing = (
+            self.db.query(FlatMembership)
+            .filter(FlatMembership.flat_id == flat.id, FlatMembership.user_id == user.id)
+            .first()
+        )
+        if existing:
+            existing.membership_type = req.membership_type
+            existing.valid_from = v_from
+            existing.valid_until = v_until
+            existing.is_primary = req.is_primary
+            existing.status = MembershipStatus.APPROVED
+            self.db.commit()
+            self.db.refresh(existing)
+            m = existing
+        else:
+            m = FlatMembership(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                flat_id=flat.id,
+                user_id=user.id,
+                membership_type=req.membership_type,
+                valid_from=v_from,
+                valid_until=v_until,
+                is_primary=req.is_primary,
+                status=MembershipStatus.APPROVED,
+            )
+            self.db.add(m)
+            self.db.commit()
+            self.db.refresh(m)
+
+        has_role = (
+            self.db.query(UserRole)
+            .filter(
+                UserRole.user_id == user.id,
+                UserRole.society_id == society_id,
+                UserRole.role == RoleType.RESIDENT,
+            )
+            .first()
+        )
+        if not has_role:
+            self.db.add(
+                UserRole(
+                    id=uuid.uuid4(),
+                    user_id=user.id,
+                    society_id=society_id,
+                    role=RoleType.RESIDENT,
+                )
+            )
+            self.db.commit()
+
+        return FlatMembershipSchema(
+            id=m.id,
+            society_id=m.society_id,
+            flat_id=m.flat_id,
+            user_id=m.user_id,
+            membership_type=m.membership_type,
+            valid_from=m.valid_from,
+            valid_until=m.valid_until,
+            is_primary=m.is_primary,
+            status=m.status,
+            flat_number=flat.flat_number,
+            tower_number=flat.tower.tower_number if flat.tower else None,
+        )
+
+    def update_membership_status(
+        self,
+        claims: CurrentUserClaims,
+        membership_id: UUID,
+        req: UpdateMembershipStatusRequest,
+    ) -> FlatMembershipSchema:
+        m = self.repo.get_membership_by_id(membership_id)
+        if not m:
+            raise ResourceNotFoundError(f"Membership {membership_id} not found")
+        if m.society_id not in claims.society_ids:
+            raise TenantIsolationError("Access denied to membership in different society")
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError("Only helpdesk staff can update membership status")
+
+        m.status = req.status
+        self.db.commit()
+        self.db.refresh(m)
+        return FlatMembershipSchema(
+            id=m.id,
+            society_id=m.society_id,
+            flat_id=m.flat_id,
+            user_id=m.user_id,
+            membership_type=m.membership_type,
+            valid_from=m.valid_from,
+            valid_until=m.valid_until,
+            is_primary=m.is_primary,
+            status=m.status,
+            flat_number=m.flat.flat_number if m.flat else None,
+            tower_number=m.flat.tower.tower_number if m.flat and m.flat.tower else None,
+        )
+
+    def request_join_flat(
+        self,
+        claims: CurrentUserClaims,
+        req: ResidentJoinFlatRequest,
+    ) -> FlatMembershipSchema:
+        flat = self.repo.get_flat_by_id(req.flat_id)
+        if not flat:
+            raise ResourceNotFoundError(f"Flat {req.flat_id} not found")
+        if flat.society_id not in claims.society_ids:
+            raise TenantIsolationError("Flat belongs to a society you are not authorized to join")
+
+        v_from = req.valid_from or datetime.now(UTC)
+        v_until = req.valid_until
+        if v_until and v_until < v_from:
+            raise ValidationError("Lease end date cannot be before start date")
+
+        existing = (
+            self.db.query(FlatMembership)
+            .filter(FlatMembership.flat_id == flat.id, FlatMembership.user_id == claims.user_id)
+            .first()
+        )
+        if existing and existing.status in (MembershipStatus.APPROVED, MembershipStatus.PENDING):
+            raise ValidationError(
+                f"You already have an active or pending membership for this flat ({existing.status.value})"
+            )
+
+        m = FlatMembership(
+            id=uuid.uuid4(),
+            society_id=flat.society_id,
+            flat_id=flat.id,
+            user_id=claims.user_id,
+            membership_type=req.membership_type,
+            valid_from=v_from,
+            valid_until=v_until,
+            is_primary=False,
+            status=MembershipStatus.PENDING,
+        )
+        self.db.add(m)
+        self.db.commit()
+        self.db.refresh(m)
+
+        return FlatMembershipSchema(
+            id=m.id,
+            society_id=m.society_id,
+            flat_id=m.flat_id,
+            user_id=m.user_id,
+            membership_type=m.membership_type,
+            valid_from=m.valid_from,
+            valid_until=m.valid_until,
+            is_primary=m.is_primary,
+            status=m.status,
+            flat_number=flat.flat_number,
+            tower_number=flat.tower.tower_number if flat.tower else None,
+        )

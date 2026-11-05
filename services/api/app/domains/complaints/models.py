@@ -171,6 +171,19 @@ class Complaint(Base):
         index=True,
     )
 
+    # Category correction governance
+    original_category: Mapped[ComplaintCategory | None] = mapped_column(
+        SAEnum(ComplaintCategory, native_enum=False), nullable=True
+    )
+    category_corrected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    category_corrected_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Deterministic safety escalation (runs prior to AI and cannot be overridden by AI)
     safety_escalated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     safety_escalation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -352,3 +365,53 @@ class ComplaintActivity(Base):
     __table_args__ = (Index("ix_complaint_activities_complaint", "complaint_id", "created_at"),)
 
     complaint: Mapped["Complaint"] = relationship("Complaint", back_populates="activities")
+
+
+class SafetyAlert(Base):
+    """Persistent in-app emergency alert for duty managers and facility staff."""
+
+    __tablename__ = "safety_alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    complaint_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("complaints.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    hazard_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    alert_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    alert_details: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, default="CRITICAL")
+    is_acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    acknowledgement_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assigned_staff_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    idempotency_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("society_id", "idempotency_hash", name="uq_safety_alerts_idempotency"),
+        Index("ix_safety_alerts_society_status", "society_id", "is_acknowledged"),
+    )

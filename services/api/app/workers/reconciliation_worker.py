@@ -31,6 +31,7 @@ from app.domains.reconciliation.models import (
     BankStatementImport,
     BankTransaction,
     ReconciliationMatch,
+    ResidentUPIMapping,
     StatementImportStatus,
     TransactionReconciliationStatus,
     TransactionType,
@@ -127,6 +128,27 @@ class ReconciliationJobHandler(MessageHandler):
                     f"[ReconciliationWorker] Transient error on event {envelope.event_id}: {exc}; re-raising for SQS retry."
                 )
                 raise RetryableReconciliationWorkerError(str(exc)) from exc
+
+            # Permanent failure: Transition processing import to FAILED so it does not remain stuck
+            if envelope.event_type == "reconciliation.process_bank_statement":
+                try:
+                    imp_failed = (
+                        db.query(BankStatementImport)
+                        .filter(BankStatementImport.id == aggregate_uuid)
+                        .first()
+                    )
+                    if imp_failed and imp_failed.status == StatementImportStatus.PROCESSING:
+                        imp_failed.status = StatementImportStatus.FAILED
+                        meta = dict(imp_failed.error_summary or {})
+                        meta["permanent_worker_error"] = str(exc)
+                        imp_failed.error_summary = meta
+                        db.commit()
+                except Exception as meta_exc:
+                    logger.error(
+                        f"[ReconciliationWorker] Failed to mark import {aggregate_uuid} as FAILED: {meta_exc}"
+                    )
+                    db.rollback()
+
             logger.error(
                 f"[ReconciliationWorker] Permanent error processing event {envelope.event_id}: {exc}; acknowledging poison message.",
                 exc_info=True,
@@ -178,6 +200,11 @@ class ReconciliationJobHandler(MessageHandler):
                 db.query(FlatMembership).filter(FlatMembership.society_id == imp.society_id).all()
             )
             users = {u.id: u for u in db.query(User).all()}
+            upi_mappings = (
+                db.query(ResidentUPIMapping)
+                .filter(ResidentUPIMapping.society_id == imp.society_id)
+                .all()
+            )
 
             engine = DeterministicMatchingEngine(imp.society_id)
             matches_to_create: list[ReconciliationMatch] = []
@@ -190,6 +217,7 @@ class ReconciliationJobHandler(MessageHandler):
                     flats=flats,
                     memberships=memberships,
                     users=users,
+                    upi_mappings=upi_mappings,
                 )
                 if evaluations:
                     top = evaluations[0]

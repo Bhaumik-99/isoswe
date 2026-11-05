@@ -23,6 +23,7 @@ from app.domains.reconciliation.normalizer import (
     compute_file_checksum,
     compute_transaction_fingerprint,
     decimal_to_paise,
+    extract_upi_vpa,
     extract_utr_and_reference,
     normalize_narration,
 )
@@ -141,6 +142,7 @@ class ParsedTransactionRow:
     credit_paise: int
     balance_paise: int | None
     transaction_fingerprint: str
+    payer_vpa: str | None = None
     raw_row: dict[str, Any] = field(default_factory=dict)
 
 
@@ -499,6 +501,9 @@ class BankStatementParser:
                         except Exception:
                             balance_paise = None
 
+                # Extract UPI VPA if present in description
+                payer_vpa = extract_upi_vpa(raw_desc)
+
                 # Compute deterministic fingerprint
                 fingerprint = compute_transaction_fingerprint(
                     society_id=self.society_id,
@@ -507,6 +512,7 @@ class BankStatementParser:
                     debit_paise=debit_paise,
                     reference=utr_num or ref_num,
                     normalized_desc=norm_desc,
+                    source_row_number=row_num,
                 )
 
                 valid_rows.append(
@@ -523,6 +529,7 @@ class BankStatementParser:
                         credit_paise=credit_paise,
                         balance_paise=balance_paise,
                         transaction_fingerprint=fingerprint,
+                        payer_vpa=payer_vpa,
                         raw_row=raw_dict,
                     )
                 )

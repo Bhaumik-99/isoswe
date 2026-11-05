@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -66,6 +67,12 @@ class LedgerEntryType(str, enum.Enum):
     PAYMENT_ALLOCATED = "PAYMENT_ALLOCATED"
     REVERSAL = "REVERSAL"
     ADJUSTMENT = "ADJUSTMENT"
+
+
+class LateFeeCalculationMethod(str, enum.Enum):
+    FLAT_FEE = "FLAT_FEE"
+    PERCENTAGE_PER_MONTH = "PERCENTAGE_PER_MONTH"
+    DAILY_INTEREST_PAISE = "DAILY_INTEREST_PAISE"
 
 
 class BillingConfiguration(Base):
@@ -384,3 +391,93 @@ class BillingRun(Base):
     )
 
     __table_args__ = (Index("ix_billing_runs_society_period", "society_id", "billing_period"),)
+
+
+class LateFeePolicy(Base):
+    """Configurable society maintenance late-fee policy following society bye-laws."""
+
+    __tablename__ = "late_fee_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    policy_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    calculation_method: Mapped[LateFeeCalculationMethod] = mapped_column(
+        SAEnum(LateFeeCalculationMethod, native_enum=False),
+        nullable=False,
+        default=LateFeeCalculationMethod.FLAT_FEE,
+    )
+    amount_or_rate_bps: Mapped[int] = mapped_column(
+        BigInteger, nullable=False
+    )  # Fixed paise or basis points (100 bps = 1.0%)
+    grace_period_days: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    min_charge_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    max_charge_paise: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "society_id",
+            "policy_name",
+            "effective_from",
+            name="uq_late_fee_policy_society_name_from",
+        ),
+        Index("ix_late_fee_policies_society_active", "society_id", "is_active"),
+    )
+
+
+class LateFeeApplication(Base):
+    """Idempotent audit record of late fee applied to an overdue invoice."""
+
+    __tablename__ = "late_fee_applications"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("invoices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    policy_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("late_fee_policies.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    billing_period: Mapped[str] = mapped_column(String(7), nullable=False)
+    applied_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    days_overdue: Mapped[int] = mapped_column(Integer, nullable=False)
+    unpaid_principal_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fee_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("invoice_id", "billing_period", name="uq_late_fee_invoice_billing_period"),
+        Index("ix_late_fee_apps_society_period", "society_id", "billing_period"),
+    )
+
+    # Relationships
+    invoice: Mapped["Invoice"] = relationship("Invoice")
+    policy: Mapped["LateFeePolicy"] = relationship("LateFeePolicy")

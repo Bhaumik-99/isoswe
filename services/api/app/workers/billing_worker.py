@@ -5,9 +5,12 @@ Consumes billing jobs from QUEUE_BILLING_JOBS:
 - billing.apply_late_fees
 """
 
+import uuid
+
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
+from app.domains.billing.service import BillingService
 from app.domains.reliability.models import AuditEvent
 from app.messaging.consumer import MessageHandler, dispatcher
 from app.messaging.envelope import EventEnvelope
@@ -30,9 +33,32 @@ class BillingJobHandler(MessageHandler):
             f"[BillingWorker] Processing billing event {envelope.event_id} ({envelope.event_type}) for aggregate {envelope.aggregate_id}"
         )
 
+        service = BillingService(db)
+        society_id = None
+        if "society_id" in envelope.payload and envelope.payload["society_id"]:
+            try:
+                society_id = uuid.UUID(str(envelope.payload["society_id"]))
+            except Exception:
+                society_id = None
+
+        if envelope.event_type == "billing.apply_late_fees" and society_id:
+            try:
+                result = service.apply_late_fees(
+                    society_id=society_id,
+                    correlation_id=envelope.metadata.correlation_id,
+                )
+                logger.info(
+                    f"[BillingWorker] Applied late fees for society {society_id}: "
+                    f"{result.applied_invoices_count} invoices charged, total ₹{result.total_fee_charged_paise / 100:,.2f}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[BillingWorker] Could not apply late fees for society {society_id}: {exc}"
+                )
+
         # Record idempotent execution audit record
         audit = AuditEvent(
-            society_id=None,
+            society_id=society_id,
             actor_id=None,
             action=f"{envelope.event_type}.processed",
             resource_type="Billing",
@@ -46,6 +72,7 @@ class BillingJobHandler(MessageHandler):
             },
         )
         db.add(audit)
+        db.commit()
         logger.info(
             f"[BillingWorker] Completed {envelope.event_type} for event {envelope.event_id}"
         )

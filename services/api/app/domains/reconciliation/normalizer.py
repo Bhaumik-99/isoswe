@@ -155,6 +155,36 @@ def extract_utr_and_reference(
     return utr, ref
 
 
+def extract_upi_vpa(narration: str) -> str | None:
+    """Extracts UPI Virtual Payment Address (VPA) from transaction narration.
+
+    Examples:
+    - "UPI/CR/123456789012/neeraj.kumar@okaxis/Payment" -> "neeraj.kumar@okaxis"
+    - "UPI-neeraj.kumar@okhdfcbank-123456789012" -> "neeraj.kumar@okhdfcbank"
+    - "TRANSFER FROM rahul123@oksbi" -> "rahul123@oksbi"
+    - "9876543210@paytm" -> "9876543210@paytm"
+    """
+    if not narration:
+        return None
+
+    m = re.search(
+        r"(?:UPI[-/:]|CR/|P2A/|P2P/|FROM\s+|BY\s+)?\b([a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]@[a-zA-Z]{2,32})\b",
+        narration,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    vpa = m.group(1).lower().strip()
+    if vpa.startswith("upi-") or vpa.startswith("upi_"):
+        vpa = vpa[4:]
+    return vpa
+
+
+def normalize_vpa(vpa: str) -> str:
+    """Normalizes a UPI VPA string (trimmed, lowercased)."""
+    return vpa.strip().lower()
+
+
 def extract_unit_clues(narration: str) -> list[str]:
     """Extracts possible apartment / tower / flat number tokens from transaction description.
 
@@ -202,6 +232,7 @@ def compute_transaction_fingerprint(
     debit_paise: int,
     reference: str | None,
     normalized_desc: str,
+    source_row_number: int | None = None,
 ) -> str:
     """Computes a deterministic cryptographic fingerprint for a transaction line item.
 
@@ -210,11 +241,13 @@ def compute_transaction_fingerprint(
     - date (YYYY-MM-DD)
     - credit_paise
     - debit_paise
-    - normalized reference or UTR
+    - normalized reference or UTR (falls back to source_row_number if absent to prevent multi-line collisions)
     - prefix of normalized description
     """
     date_str = txn_date.strftime("%Y-%m-%d")
     ref_str = (reference or "").strip().upper()
+    if not ref_str and source_row_number is not None:
+        ref_str = f"ROW_{source_row_number}"
     desc_sample = normalized_desc[:64].strip()
 
     fingerprint_raw = (

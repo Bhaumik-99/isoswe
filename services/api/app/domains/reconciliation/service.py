@@ -45,6 +45,7 @@ from app.domains.reconciliation.models import (
     ReconciliationAllocation,
     ReconciliationMatch,
     ReconciliationReview,
+    ResidentUPIMapping,
     StatementImportStatus,
     TransactionReconciliationStatus,
     TransactionType,
@@ -59,10 +60,12 @@ from app.domains.reconciliation.repository import ReconciliationRepository
 from app.domains.reconciliation.schemas import (
     BankStatementImportResponse,
     BankTransactionResponse,
+    CreateResidentUPIMappingRequest,
     ManualReviewQueueItem,
     ProposedAllocationItem,
     ReconciliationMatchResponse,
     ReconciliationSummaryResponse,
+    ResidentUPIMappingResponse,
     StatementUploadPreviewResponse,
     TransactionPreviewItem,
 )
@@ -122,14 +125,13 @@ class ReconciliationService:
         # 3. Cryptographic duplicate file detection (SHA-256)
         checksum = compute_file_checksum(file_bytes)
         existing_import = self.repo.get_statement_import_by_checksum(society_id, checksum)
-        if existing_import and existing_import.status in (
-            StatementImportStatus.COMPLETED,
-            StatementImportStatus.COMPLETED_WITH_ERRORS,
-            StatementImportStatus.PROCESSING,
+        if existing_import and existing_import.status not in (
+            StatementImportStatus.FAILED,
+            StatementImportStatus.CANCELLED,
         ):
             raise ConflictError(
-                f"Duplicate statement import: A file with identical content has already been imported "
-                f"on {existing_import.created_at.strftime('%Y-%m-%d %H:%M UTC')} (Import ID: {existing_import.id})."
+                f"Duplicate statement import: A file with identical content has already been uploaded or processed "
+                f"(Status: {existing_import.status}, Import ID: {existing_import.id})."
             )
 
         # 4. Parse statement
@@ -178,6 +180,7 @@ class ReconciliationService:
                     "credit_paise": r.credit_paise,
                     "balance_paise": r.balance_paise,
                     "transaction_fingerprint": r.transaction_fingerprint,
+                    "payer_vpa": r.payer_vpa,
                 }
                 for r in parse_result.valid_rows
             ],
@@ -193,6 +196,7 @@ class ReconciliationService:
                 description=r.description,
                 reference_number=r.reference_number,
                 utr_number=r.utr_number,
+                payer_vpa=r.payer_vpa,
                 transaction_type=r.transaction_type,
                 debit_paise=r.debit_paise,
                 credit_paise=r.credit_paise,
@@ -308,6 +312,7 @@ class ReconciliationService:
                     normalized_description=r["normalized_description"],
                     reference_number=r.get("reference_number"),
                     utr_number=r.get("utr_number"),
+                    payer_vpa=r.get("payer_vpa"),
                     transaction_type=TransactionType(r["transaction_type"]),
                     debit_paise=r["debit_paise"],
                     credit_paise=r["credit_paise"],
@@ -1237,3 +1242,114 @@ class ReconciliationService:
             )
 
         return output.getvalue()
+
+    # -------------------------------------------------------------------------
+    # 7. Resident UPI Mappings Management
+    # -------------------------------------------------------------------------
+    def list_resident_upi_mappings(
+        self, claims: CurrentUserClaims, society_id: UUID
+    ) -> list[ResidentUPIMappingResponse]:
+        self._verify_society_access(claims, society_id)
+        mappings = (
+            self.db.query(ResidentUPIMapping)
+            .filter(ResidentUPIMapping.society_id == society_id)
+            .order_by(ResidentUPIMapping.created_at.desc())
+            .all()
+        )
+        responses = []
+        for m in mappings:
+            flat = self.db.query(Flat).filter(Flat.id == m.flat_id).first()
+            tower = flat.tower if flat else None
+            user = self.db.query(User).filter(User.id == m.resident_id).first()
+            responses.append(
+                ResidentUPIMappingResponse(
+                    id=m.id,
+                    society_id=m.society_id,
+                    flat_id=m.flat_id,
+                    flat_number=flat.flat_number if flat else None,
+                    tower_number=tower.tower_number if tower else None,
+                    resident_id=m.resident_id,
+                    resident_name=user.full_name if user else None,
+                    vpa=m.vpa,
+                    account_holder_name=m.account_holder_name,
+                    is_verified=m.is_verified,
+                    created_at=m.created_at,
+                    updated_at=m.updated_at,
+                )
+            )
+        return responses
+
+    def create_resident_upi_mapping(
+        self, claims: CurrentUserClaims, society_id: UUID, req: CreateResidentUPIMappingRequest
+    ) -> ResidentUPIMappingResponse:
+        self._verify_society_access(claims, society_id)
+        norm_vpa = req.vpa.strip().lower()
+
+        flat = (
+            self.db.query(Flat)
+            .filter(Flat.id == req.flat_id, Flat.society_id == society_id)
+            .first()
+        )
+        if not flat:
+            raise NotFoundError(f"Flat {req.flat_id} not found in society {society_id}")
+
+        user = self.db.query(User).filter(User.id == req.resident_id).first()
+        if not user:
+            raise NotFoundError(f"Resident user {req.resident_id} not found")
+
+        existing = (
+            self.db.query(ResidentUPIMapping)
+            .filter(
+                ResidentUPIMapping.society_id == society_id,
+                ResidentUPIMapping.vpa == norm_vpa,
+            )
+            .first()
+        )
+        if existing:
+            raise ConflictError(f"VPA '{norm_vpa}' is already registered in this society")
+
+        mapping = ResidentUPIMapping(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            flat_id=req.flat_id,
+            resident_id=req.resident_id,
+            vpa=norm_vpa,
+            account_holder_name=req.account_holder_name,
+            is_verified=req.is_verified,
+        )
+        self.db.add(mapping)
+        self.db.commit()
+        self.db.refresh(mapping)
+
+        tower = flat.tower if flat else None
+        return ResidentUPIMappingResponse(
+            id=mapping.id,
+            society_id=mapping.society_id,
+            flat_id=mapping.flat_id,
+            flat_number=flat.flat_number,
+            tower_number=tower.tower_number if tower else None,
+            resident_id=mapping.resident_id,
+            resident_name=user.full_name,
+            vpa=mapping.vpa,
+            account_holder_name=mapping.account_holder_name,
+            is_verified=mapping.is_verified,
+            created_at=mapping.created_at,
+            updated_at=mapping.updated_at,
+        )
+
+    def delete_resident_upi_mapping(
+        self, claims: CurrentUserClaims, society_id: UUID, mapping_id: UUID
+    ) -> None:
+        self._verify_society_access(claims, society_id)
+        mapping = (
+            self.db.query(ResidentUPIMapping)
+            .filter(
+                ResidentUPIMapping.id == mapping_id,
+                ResidentUPIMapping.society_id == society_id,
+            )
+            .first()
+        )
+        if not mapping:
+            raise NotFoundError(f"UPI mapping {mapping_id} not found")
+        self.db.delete(mapping)
+        self.db.commit()

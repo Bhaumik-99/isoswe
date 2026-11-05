@@ -35,16 +35,19 @@ from app.domains.reconciliation.models import (
     TransactionReconciliationStatus,
     TransactionType,
 )
+from app.domains.reconciliation.normalizer import MAX_STATEMENT_FILE_SIZE
 from app.domains.reconciliation.schemas import (
     ApproveReconciliationRequest,
     BankStatementImportResponse,
     BankTransactionResponse,
+    CreateResidentUPIMappingRequest,
     ManualReviewQueueItem,
     MarkUnidentifiedRequest,
     QueueSummaryResponse,
     ReconciliationMatchResponse,
     ReconciliationSummaryResponse,
     RejectReconciliationRequest,
+    ResidentUPIMappingResponse,
     StatementUploadPreviewResponse,
     SubmitForApprovalRequest,
     SuggestMatchRequest,
@@ -83,7 +86,22 @@ async def upload_bank_statement(
     db: Session = Depends(get_db),
 ) -> StatementUploadPreviewResponse:
     target_society_id = _resolve_society_id(claims, society_id)
-    file_bytes = await file.read()
+
+    # Bounded stream reading to prevent unrestricted memory buffering
+    chunk_size = 64 * 1024  # 64 KB
+    total_bytes = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > MAX_STATEMENT_FILE_SIZE:
+            raise ValidationError(
+                f"File size exceeds maximum allowable limit of {MAX_STATEMENT_FILE_SIZE // (1024 * 1024)} MB."
+            )
+        chunks.append(chunk)
+    file_bytes = b"".join(chunks)
 
     mapping_dict: dict[str, str] | None = None
     if custom_mapping:
@@ -525,4 +543,59 @@ def export_reconciliation_report_csv(
         content=csv_data,
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# -----------------------------------------------------------------------------
+# 6. Resident UPI Mappings
+# -----------------------------------------------------------------------------
+@router.get(
+    "/upi-mappings",
+    response_model=list[ResidentUPIMappingResponse],
+    summary="List registered resident UPI VPAs for society",
+)
+def list_resident_upi_mappings(
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> list[ResidentUPIMappingResponse]:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    return service.list_resident_upi_mappings(claims=claims, society_id=target_society_id)
+
+
+@router.post(
+    "/upi-mappings",
+    response_model=ResidentUPIMappingResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register an authorized resident UPI VPA for flat auto-matching",
+)
+def create_resident_upi_mapping(
+    payload: CreateResidentUPIMappingRequest,
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> ResidentUPIMappingResponse:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    return service.create_resident_upi_mapping(
+        claims=claims, society_id=target_society_id, req=payload
+    )
+
+
+@router.delete(
+    "/upi-mappings/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a resident UPI VPA mapping",
+)
+def delete_resident_upi_mapping(
+    mapping_id: UUID,
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> None:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    service.delete_resident_upi_mapping(
+        claims=claims, society_id=target_society_id, mapping_id=mapping_id
     )

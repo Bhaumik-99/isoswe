@@ -1,16 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Building, ShieldCheck, Calendar, Maximize2, CreditCard, ArrowRight } from 'lucide-react';
+import {
+  Building,
+  ShieldCheck,
+  Calendar,
+  Maximize2,
+  CreditCard,
+  ArrowRight,
+  LifeBuoy,
+  PlusCircle,
+  Smartphone,
+  CheckCircle2,
+} from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient, ApiClientError } from '../../services/apiClient';
 import { billingService, formatINR, formatDateIST } from '../../services/billingService';
-import { FlatDetail } from '../../types';
+import { complaintsService } from '../../services/complaintsService';
+import { FlatDetail, Complaint } from '../../types';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
 
 export const ResidentOverview: React.FC = () => {
   const navigate = useNavigate();
@@ -18,11 +35,37 @@ export const ResidentOverview: React.FC = () => {
   const [flatDetail, setFlatDetail] = useState<FlatDetail | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [isInstallDismissed, setIsInstallDismissed] = useState<boolean>(false);
 
   const { data: billingSummary, isLoading: isBillingLoading } = useQuery({
     queryKey: ['billing-summary'],
     queryFn: billingService.getResidentSummary,
   });
+
+  const { data: residentComplaints = [], isLoading: isComplaintsLoading } = useQuery<Complaint[]>({
+    queryKey: ['resident-complaints-summary'],
+    queryFn: () => complaintsService.listResidentComplaints(),
+  });
+
+  useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e as BeforeInstallPromptEvent);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const choice = await deferredPrompt.userChoice;
+    if (choice.outcome === 'accepted') {
+      setDeferredPrompt(null);
+    }
+  };
 
   useEffect(() => {
     if (!selectedFlat) {
@@ -63,8 +106,48 @@ export const ResidentOverview: React.FC = () => {
     );
   }
 
+  const activeComplaints = residentComplaints.filter(
+    (c) => c.status !== 'RESOLVED' && c.status !== 'CLOSED'
+  );
+  const latestComplaint = residentComplaints[0];
+
   return (
     <div className="space-y-6">
+      {/* PWA Mobile App Install Prompt Banner */}
+      {deferredPrompt && !isInstallDismissed && (
+        <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-gradient-to-r from-indigo-700 to-indigo-900 text-white rounded-xl shadow-md gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-white/10 rounded-lg">
+              <Smartphone className="h-6 w-6 text-indigo-200" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-sm">Install Isoswe Township App</h3>
+              <p className="text-xs text-indigo-200">
+                1-tap access to maintenance payments, receipt downloads, and ticket tracking on your home screen.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setIsInstallDismissed(true)}
+              className="text-xs border-indigo-400 text-indigo-100 hover:bg-indigo-800"
+            >
+              Dismiss
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={handleInstallApp}
+              className="text-xs bg-white text-indigo-900 hover:bg-indigo-50 font-semibold"
+            >
+              Install App
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Page Title */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
@@ -153,8 +236,9 @@ export const ResidentOverview: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* Upcoming Modules Clarity Notice */}
+      {/* Primary Action Modules Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Maintenance Billing Card */}
         <Card className="border-l-4 border-l-indigo-600">
           <CardHeader>
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
@@ -221,41 +305,110 @@ export const ResidentOverview: React.FC = () => {
                   </div>
                 </div>
 
+                {/* 1-Tap Pay Now CTA */}
                 <div className="flex gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => navigate('/resident/billing')}
-                    className="w-full text-xs"
-                  >
-                    View Invoices & Pay
-                    <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                  </Button>
+                  {billingSummary.total_outstanding_paise > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => navigate('/resident/billing')}
+                      className="w-full text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+                    >
+                      1-Tap Pay Now ({formatINR(billingSummary.total_outstanding_paise)})
+                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => navigate('/resident/billing')}
+                      className="w-full text-xs"
+                    >
+                      View Billing History & Receipts
+                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                    </Button>
+                  )}
                 </div>
               </div>
             ) : null}
           </CardContent>
         </Card>
 
-        <Card>
+        {/* Facility Helpdesk & AI Complaints Card */}
+        <Card className="border-l-4 border-l-emerald-600">
           <CardHeader>
             <CardTitle className="text-sm font-semibold flex items-center justify-between">
-              <span>Facility Helpdesk & AI Complaints</span>
-              <Badge variant="warning">Phase 3 Scheduled</Badge>
+              <span className="flex items-center gap-2">
+                <LifeBuoy className="h-4 w-4 text-emerald-600" />
+                <span>Facility Helpdesk</span>
+              </span>
+              <Badge variant={activeComplaints.length > 0 ? 'warning' : 'success'}>
+                {activeComplaints.length > 0 ? `${activeComplaints.length} Active Ticket${activeComplaints.length > 1 ? 's' : ''}` : 'No Active Tickets'}
+              </Badge>
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-xs text-slate-600">
-            <p>
-              Facility management ticket tracking with asynchronous Bedrock LLM classification, priority scoring, and SLA technician dispatch.
-            </p>
-            <div className="p-3 bg-slate-50 rounded border border-slate-200 space-y-1 font-mono text-[11px]">
-              <div>Asynchronous Worker: complaint-ai-jobs (SQS)</div>
-              <div>Audit Logging: audit_events ledger</div>
-              <div>Technicians: 180 Facility Staff</div>
-            </div>
+            {isComplaintsLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <div>
+                    <span className="text-[11px] text-slate-500 uppercase font-semibold">Active Issues</span>
+                    <p className="text-xl font-bold text-slate-900">{activeComplaints.length}</p>
+                    <span className="text-[10px] text-slate-500">Under resolution</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] text-slate-500 uppercase font-semibold">Total Raised</span>
+                    <p className="text-xl font-bold text-indigo-600">{residentComplaints.length}</p>
+                    <span className="text-[10px] text-slate-500">All-time tickets</span>
+                  </div>
+                </div>
+
+                {latestComplaint ? (
+                  <div className="p-2.5 bg-slate-50 rounded border border-slate-200 space-y-1 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Recent:</span>
+                      <Badge variant="neutral" className="text-[10px] py-0">
+                        {latestComplaint.status}
+                      </Badge>
+                    </div>
+                    <div className="font-semibold text-slate-900 truncate">
+                      {latestComplaint.title}
+                    </div>
+                    <div className="flex items-center justify-between text-slate-500 text-[10px]">
+                      <span>{latestComplaint.category}</span>
+                      <span>{new Date(latestComplaint.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-emerald-50 rounded border border-emerald-100 flex items-center gap-2 text-emerald-800 text-[11px]">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                    <span>No active complaints recorded. All facility services operating normally.</span>
+                  </div>
+                )}
+
+                {/* 1-Tap Raise Complaint CTA */}
+                <div className="flex gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => navigate('/resident/complaints')}
+                    className="w-full text-xs font-semibold flex items-center justify-center gap-1.5"
+                  >
+                    <PlusCircle className="h-3.5 w-3.5" />
+                    1-Tap Raise Complaint
+                  </Button>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
   );
 };
+

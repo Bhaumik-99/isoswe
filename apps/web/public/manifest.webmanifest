@@ -1,0 +1,19 @@
+{
+  "name": "Isoswe Resident Portal",
+  "short_name": "Isoswe",
+  "description": "Township Operations & Resident Portal for Marvel Greenfield Residences",
+  "start_url": "/resident",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -38,8 +38,13 @@ from app.domains.reconciliation.models import (
     BankTransaction,
     MatchConfidenceTier,
     MatchingLevel,
+    ResidentUPIMapping,
 )
-from app.domains.reconciliation.normalizer import extract_unit_clues
+from app.domains.reconciliation.normalizer import (
+    extract_unit_clues,
+    extract_upi_vpa,
+    normalize_vpa,
+)
 
 
 def _parse_tower_flat_clue(clue: str) -> tuple[str | None, str | None]:
@@ -95,6 +100,7 @@ class MatchingEngine:
         flats: list[Flat],
         memberships: list[FlatMembership],
         users: dict[UUID, User],
+        upi_mappings: list[ResidentUPIMapping] | None = None,
     ) -> list[CandidateEvaluation]:
         """Evaluates a bank credit transaction against existing society records.
 
@@ -106,6 +112,17 @@ class MatchingEngine:
             return []
 
         candidates: list[CandidateEvaluation] = []
+
+        # Extract and normalize UPI VPA if present
+        txn_vpa = transaction.payer_vpa or extract_upi_vpa(transaction.description)
+        norm_txn_vpa = normalize_vpa(txn_vpa) if txn_vpa else None
+
+        vpa_matched_mapping: ResidentUPIMapping | None = None
+        if norm_txn_vpa and upi_mappings:
+            for mapping in upi_mappings:
+                if mapping.is_verified and normalize_vpa(mapping.vpa) == norm_txn_vpa:
+                    vpa_matched_mapping = mapping
+                    break
 
         # Build lookup maps for rapid deterministic evaluation
         flat_by_id = {f.id: f for f in flats}
@@ -304,6 +321,10 @@ class MatchingEngine:
         ]
 
         for inv in unpaid_invoices:
+            # If a verified payer VPA matched a specific flat, never match this transaction to other flats on amount alone
+            if vpa_matched_mapping and inv.flat_id != vpa_matched_mapping.flat_id:
+                continue
+
             flat = flat_by_id.get(inv.flat_id)
             flat_num = flat.flat_number if flat else "Unknown"
             score = 0.0
@@ -317,9 +338,17 @@ class MatchingEngine:
                     valid_allocated += alloc.allocated_paise
             outstanding_paise = max(0, inv.total_paise - valid_allocated)
 
+            # Check if this flat was detected from verified VPA
+            is_vpa_match = bool(vpa_matched_mapping and inv.flat_id == vpa_matched_mapping.flat_id)
+            if is_vpa_match and vpa_matched_mapping:
+                score += 45.0
+                evidence["level_1_vpa_match"] = norm_txn_vpa
+                evidence["vpa_resident_id"] = str(vpa_matched_mapping.resident_id)
+                level = MatchingLevel.LEVEL_3_NARRATION_RESIDENT
+
             # Check if this flat was detected from narration clues
             is_flat_clue = inv.flat_id in detected_flats
-            if is_flat_clue:
+            if is_flat_clue and not is_vpa_match:
                 score += 40.0
                 evidence["narration_unit_clue"] = flat_num
                 level = MatchingLevel.LEVEL_3_NARRATION_RESIDENT
@@ -349,8 +378,12 @@ class MatchingEngine:
                 evidence["due_date_proximity_days"] = days_from_due
 
             # Resident identity clue
-            resident_id = resident_by_flat.get(inv.flat_id)
-            if resident_id and resident_id in users:
+            resident_id = (
+                vpa_matched_mapping.resident_id
+                if is_vpa_match and vpa_matched_mapping
+                else resident_by_flat.get(inv.flat_id)
+            )
+            if resident_id and resident_id in users and not is_vpa_match:
                 res_user = users[resident_id]
                 if res_user.full_name and any(
                     part.upper() in norm_desc
@@ -365,6 +398,18 @@ class MatchingEngine:
                 score += 20.0
                 evidence["invoice_number_reference_match"] = inv.invoice_number
 
+            # Governance invariant: Never match on amount alone without unit or identity corroboration
+            if (
+                not is_vpa_match
+                and not is_flat_clue
+                and "resident_name_match" not in evidence
+                and "invoice_number_reference_match" not in evidence
+            ):
+                evidence["amount_alone_warning"] = (
+                    "Amount matched without unit or identity corroboration; manual review required."
+                )
+                score = min(score, 45.0)
+
             # Only suggest if score meets minimum heuristic threshold (at least 45)
             if score >= 45.0:
                 final_score = min(score, 100.0)
@@ -376,11 +421,15 @@ class MatchingEngine:
                     else MatchConfidenceTier.LOW
                 )
 
+                upi_text = f"verified payer VPA '{norm_txn_vpa}', " if is_vpa_match else ""
+                unit_text = "unit narration clue, " if is_flat_clue and not is_vpa_match else ""
+                bal_text = (
+                    "exact balance match, " if "exact_invoice_outstanding_match" in evidence else ""
+                )
                 explanation = (
                     f"Suggested match for Flat {flat_num} (Invoice {inv.invoice_number}, "
                     f"Outstanding ₹{outstanding_paise / 100:,.2f}) based on "
-                    f"{'unit narration clue, ' if is_flat_clue else ''}"
-                    f"{'exact balance match, ' if 'exact_invoice_outstanding_match' in evidence else ''}"
+                    f"{upi_text}{unit_text}{bal_text}"
                     f"confidence: {int(final_score)}%."
                 )
 

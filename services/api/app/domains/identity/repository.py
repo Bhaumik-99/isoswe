@@ -15,6 +15,7 @@ from app.domains.identity.models import (
     MembershipStatus,
     MembershipType,
     Society,
+    Tower,
     User,
     UserRole,
     UserStatus,
@@ -204,3 +205,71 @@ class IdentityRepository:
                     continue
             return True
         return False
+
+    def list_residents_in_society(
+        self,
+        society_id: UUID,
+        query: str | None = None,
+        tower_id: UUID | None = None,
+        flat_number: str | None = None,
+        status: MembershipStatus | None = None,
+    ) -> list[User]:
+        """Queries residents belonging to a society with their memberships and flats eagerly loaded."""
+        stmt = (
+            select(User)
+            .join(FlatMembership, FlatMembership.user_id == User.id)
+            .join(Flat, Flat.id == FlatMembership.flat_id)
+            .join(Tower, Tower.id == Flat.tower_id)
+            .options(
+                joinedload(User.memberships).joinedload(FlatMembership.flat).joinedload(Flat.tower)
+            )
+            .where(FlatMembership.society_id == society_id)
+        )
+        if status:
+            stmt = stmt.where(FlatMembership.status == status)
+        if tower_id:
+            stmt = stmt.where(Flat.tower_id == tower_id)
+        if flat_number:
+            stmt = stmt.where(Flat.flat_number.ilike(f"%{flat_number.strip()}%"))
+        if query:
+            q = f"%{query.strip()}%"
+            stmt = stmt.where(
+                (User.full_name.ilike(q)) | (User.phone.ilike(q)) | (User.email.ilike(q))
+            )
+
+        return list(self.db.scalars(stmt).unique().all())
+
+    def list_memberships(
+        self,
+        society_id: UUID,
+        status: MembershipStatus | None = None,
+        flat_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> list[FlatMembership]:
+        stmt = (
+            select(FlatMembership)
+            .options(
+                joinedload(FlatMembership.user),
+                joinedload(FlatMembership.flat).joinedload(Flat.tower),
+            )
+            .where(FlatMembership.society_id == society_id)
+        )
+        if status:
+            stmt = stmt.where(FlatMembership.status == status)
+        if flat_id:
+            stmt = stmt.where(FlatMembership.flat_id == flat_id)
+        if user_id:
+            stmt = stmt.where(FlatMembership.user_id == user_id)
+        stmt = stmt.order_by(FlatMembership.created_at.desc())
+        return list(self.db.scalars(stmt).unique().all())
+
+    def get_membership_by_id(self, membership_id: UUID) -> FlatMembership | None:
+        stmt = (
+            select(FlatMembership)
+            .options(
+                joinedload(FlatMembership.user),
+                joinedload(FlatMembership.flat).joinedload(Flat.tower),
+            )
+            .where(FlatMembership.id == membership_id)
+        )
+        return self.db.scalars(stmt).first()
