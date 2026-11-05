@@ -76,7 +76,15 @@ jobs:
         run: |
           cd services/api
           set -eo pipefail
-          pytest -v --cov=app --cov-report=term-missing --cov-report=xml --tb=short 2>&1 | tee pytest_output.log
+          if ! pytest -v --cov=app --cov-report=term-missing --cov-report=xml --tb=short 2>&1 | tee pytest_output.log; then
+            python -c "
+          with open('pytest_output.log') as f:
+              for line in f:
+                  if line.startswith('FAILED ') or line.startswith('ERROR ') or 'ERRORS' in line:
+                      print(f'::error::{line.strip()}')
+          "
+            exit 1
+          fi
 
       - name: Publish Test Summary to Step Summary
         if: always()

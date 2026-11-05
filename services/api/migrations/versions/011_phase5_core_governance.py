@@ -210,17 +210,21 @@ def upgrade() -> None:
 
     # 7. PostgreSQL-Specific Hardening & Row-Level Security
     if is_postgres:
-        # Secure is_reconciliation_helpdesk() with fixed search_path = public, pg_temp
+        # Secure is_helpdesk_for_society() with fixed search_path = public, pg_temp
         op.execute(
             """
-            ALTER FUNCTION public.is_reconciliation_helpdesk(UUID)
-            SET search_path = public, pg_temp;
-            """
-        )
-        op.execute(
-            """
-            REVOKE ALL ON FUNCTION public.is_reconciliation_helpdesk(UUID) FROM PUBLIC;
-            GRANT EXECUTE ON FUNCTION public.is_reconciliation_helpdesk(UUID) TO authenticated, service_role;
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_proc p
+                    JOIN pg_namespace n ON p.pronamespace = n.oid
+                    WHERE n.nspname = 'public' AND p.proname = 'is_helpdesk_for_society'
+                ) THEN
+                    ALTER FUNCTION public.is_helpdesk_for_society(UUID) SET search_path = public, pg_temp;
+                    REVOKE ALL ON FUNCTION public.is_helpdesk_for_society(UUID) FROM PUBLIC;
+                    GRANT EXECUTE ON FUNCTION public.is_helpdesk_for_society(UUID) TO authenticated, service_role;
+                END IF;
+            END $$;
             """
         )
 
@@ -263,8 +267,8 @@ def upgrade() -> None:
                     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = '{tbl}' AND policyname = '{tbl}_helpdesk_access') THEN
                         CREATE POLICY {tbl}_helpdesk_access ON {tbl}
                         FOR ALL TO authenticated
-                        USING (public.is_reconciliation_helpdesk(society_id))
-                        WITH CHECK (public.is_reconciliation_helpdesk(society_id));
+                        USING (public.is_helpdesk_for_society(society_id))
+                        WITH CHECK (public.is_helpdesk_for_society(society_id));
                     END IF;
                 END $$;
                 """
@@ -272,8 +276,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    is_postgres = bind.dialect.name == "postgresql"
+
     # Drop added columns
-    op.drop_index("ix_bank_transactions_payer_vpa", table_name="bank_transactions")
+    if is_postgres:
+        op.execute("DROP INDEX IF EXISTS ix_bank_transactions_payer_vpa;")
+    else:
+        op.drop_index("ix_bank_transactions_payer_vpa", table_name="bank_transactions")
     op.drop_column("bank_transactions", "payer_vpa")
     op.drop_column("complaints", "category_corrected_by")
     op.drop_column("complaints", "category_corrected_at")
