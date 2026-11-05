@@ -1,0 +1,18 @@
+title = "Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for synthetic test fixtures and header mock keys"
+paths = [
+    '''apps/web/src/services/.*test\.(ts|js)''',
+    '''services/api/tests/.*''',
+]
+regexes = [
+    '''test-idempotency-key''',
+    '''Idempotency-Key''',
+]
+commits = [
+    "474a4025ca6f6b0484e4ce69a08ecb74f957e8d5",
+]

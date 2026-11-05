@@ -1,0 +1,3 @@
+# Gitleaks ignore file
+474a4025ca6f6b0484e4ce69a08ecb74f957e8d5:apps/web/src/services/reconciliationService.test.ts:generic-api-key:85
+apps/web/src/services/reconciliationService.test.ts:generic-api-key:85

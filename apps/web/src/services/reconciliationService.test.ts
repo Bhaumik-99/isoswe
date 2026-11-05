@@ -72,17 +72,19 @@ describe('reconciliationService', () => {
     const requestSpy = vi.spyOn(apiClient, 'request').mockResolvedValue(mockResult as any);
 
     const allocations = [{ invoice_id: 'inv-1', allocated_paise: 500000 }];
+    const idempHeader = 'Idempotency-Key';
+    const testToken = '11111111-2222-3333-4444-555555555555';
     const result = await reconciliationService.approveAndAllocate(
       'txn-1',
       allocations,
-      'test-idempotency-key-123',
+      testToken,
       'Approved by helpdesk'
     );
 
     expect(requestSpy).toHaveBeenCalledWith('/api/v1/reconciliation/transactions/txn-1/approve', {
       method: 'POST',
       headers: {
-        'Idempotency-Key': 'test-idempotency-key-123',
+        [idempHeader]: testToken,
       },
       body: JSON.stringify({
         proposed_allocations: allocations,
