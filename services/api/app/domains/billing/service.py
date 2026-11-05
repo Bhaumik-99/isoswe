@@ -112,12 +112,6 @@ def _calculate_due_date_utc(year: int, month: int, due_day: int) -> datetime:
     return local_due.astimezone(UTC)
 
 
-def _to_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
 class BillingService:
     CHUNK_SIZE: int = 500
 
@@ -1385,7 +1379,7 @@ class BillingService:
         - If no policy is configured, returns zero proposed fees and policy=None.
         - Does not silently invent default rates.
         """
-        eval_date = as_of_date or utc_now()
+        eval_date = self._to_utc(as_of_date or utc_now())
         policy = self.repo.get_active_late_fee_policy(society_id, eval_date)
 
         if not policy:
@@ -1401,14 +1395,13 @@ class BillingService:
         unpaid_invoices = self.repo.get_unpaid_invoices_for_society(society_id)
         items: list[LateFeePreviewItem] = []
         total_fee = 0
-        norm_eval = _to_utc(eval_date)
 
         for inv in unpaid_invoices:
-            inv_due = _to_utc(inv.due_date)
-            if inv_due >= norm_eval:
+            due_dt = self._to_utc(inv.due_date)
+            if due_dt >= eval_date:
                 continue
 
-            days_overdue = (norm_eval.date() - inv_due.date()).days
+            days_overdue = (eval_date.date() - due_dt.date()).days
             if days_overdue <= policy.grace_period_days:
                 continue
 
@@ -1470,7 +1463,7 @@ class BillingService:
         - Charges are appended to invoice as line items and to FinancialLedgerEntry as CHARGE.
         - Triggers outbox event for async audit dispatch.
         """
-        eval_date = as_of_date or utc_now()
+        eval_date = self._to_utc(as_of_date or utc_now())
         corr_id = correlation_id or str(uuid.uuid4())
         policy = self.repo.get_active_late_fee_policy(society_id, eval_date)
 
@@ -1484,14 +1477,13 @@ class BillingService:
         applied_count = 0
         already_assessed_count = 0
         total_charged_paise = 0
-        norm_eval = _to_utc(eval_date)
 
         for inv in unpaid_invoices:
-            inv_due = _to_utc(inv.due_date)
-            if inv_due >= norm_eval:
+            due_dt = self._to_utc(inv.due_date)
+            if due_dt >= eval_date:
                 continue
 
-            days_overdue = (norm_eval.date() - inv_due.date()).days
+            days_overdue = (eval_date.date() - due_dt.date()).days
             if days_overdue <= policy.grace_period_days:
                 continue
 

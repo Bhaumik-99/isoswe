@@ -1228,9 +1228,7 @@ class ComplaintService:
             if curr.duplicate_of_id in visited:
                 break
             next_complaint = (
-                self.db.query(Complaint)
-                .filter(Complaint.id == curr.duplicate_of_id)
-                .first()
+                self.db.query(Complaint).filter(Complaint.id == curr.duplicate_of_id).first()
             )
             if not next_complaint:
                 break
