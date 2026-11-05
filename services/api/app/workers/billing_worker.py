@@ -52,9 +52,12 @@ class BillingJobHandler(MessageHandler):
                     f"{result.applied_invoices_count} invoices charged, total ₹{result.total_fee_charged_paise / 100:,.2f}"
                 )
             except Exception as exc:
-                logger.warning(
-                    f"[BillingWorker] Could not apply late fees for society {society_id}: {exc}"
+                logger.error(
+                    f"[BillingWorker] Failed to apply late fees for society {society_id}: {exc}",
+                    exc_info=True,
                 )
+                db.rollback()
+                raise exc
 
         # Record idempotent execution audit record
         audit = AuditEvent(

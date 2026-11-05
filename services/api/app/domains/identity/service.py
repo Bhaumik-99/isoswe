@@ -19,6 +19,7 @@ from app.core.errors import (
 from app.domains.identity.models import (
     FlatMembership,
     MembershipStatus,
+    MembershipType,
     RoleType,
     User,
     UserRole,
@@ -164,6 +165,7 @@ class IdentityService:
         tower_id: UUID | None = None,
         flat_number: str | None = None,
         status: MembershipStatus | None = None,
+        membership_type: MembershipType | None = None,
     ) -> list[ResidentDirectoryItem]:
         if society_id not in claims.society_ids:
             raise TenantIsolationError(f"Access denied to society {society_id}")
@@ -174,12 +176,17 @@ class IdentityService:
             tower_id=tower_id,
             flat_number=flat_number,
             status=status,
+            membership_type=membership_type,
         )
         items: list[ResidentDirectoryItem] = []
         for u in users:
             flat_infos: list[ResidentFlatInfo] = []
             for m in u.memberships:
                 if m.society_id == society_id:
+                    if membership_type and m.membership_type != membership_type:
+                        continue
+                    if status and m.status != status:
+                        continue
                     flat_infos.append(
                         ResidentFlatInfo(
                             membership_id=m.id,
@@ -190,6 +197,7 @@ class IdentityService:
                             ),
                             membership_type=m.membership_type,
                             status=m.status,
+                            membership_status=m.status,
                             valid_from=m.valid_from,
                             valid_until=m.valid_until,
                             is_primary=m.is_primary,
@@ -202,6 +210,7 @@ class IdentityService:
                     phone=u.phone,
                     email=u.email,
                     status=u.status,
+                    user_status=u.status,
                     flats=flat_infos,
                     created_at=u.created_at,
                 )
@@ -328,6 +337,22 @@ class IdentityService:
             )
             self.db.commit()
 
+        self.record_audit(
+            action="identity.membership.created",
+            resource_type="flat_membership",
+            resource_id=str(m.id),
+            correlation_id=str(uuid.uuid4()),
+            actor_id=claims.user_id,
+            society_id=society_id,
+            metadata={
+                "flat_id": str(flat.id),
+                "user_id": str(user.id),
+                "membership_type": m.membership_type.value,
+                "status": m.status.value,
+            },
+        )
+        self.db.commit()
+
         return FlatMembershipSchema(
             id=m.id,
             society_id=m.society_id,
@@ -356,7 +381,22 @@ class IdentityService:
         if RoleType.HELPDESK not in claims.roles:
             raise AuthorizationError("Only helpdesk staff can update membership status")
 
+        prev_status = m.status
         m.status = req.status
+        notes = req.notes or req.rejection_reason
+        self.record_audit(
+            action=f"identity.membership.{req.status.value.lower()}",
+            resource_type="flat_membership",
+            resource_id=str(m.id),
+            correlation_id=str(uuid.uuid4()),
+            actor_id=claims.user_id,
+            society_id=m.society_id,
+            metadata={
+                "previous_status": prev_status.value,
+                "new_status": req.status.value,
+                "notes": notes,
+            },
+        )
         self.db.commit()
         self.db.refresh(m)
         return FlatMembershipSchema(
@@ -413,6 +453,21 @@ class IdentityService:
         self.db.add(m)
         self.db.commit()
         self.db.refresh(m)
+
+        self.record_audit(
+            action="identity.membership.join_requested",
+            resource_type="flat_membership",
+            resource_id=str(m.id),
+            correlation_id=str(uuid.uuid4()),
+            actor_id=claims.user_id,
+            society_id=flat.society_id,
+            metadata={
+                "flat_id": str(flat.id),
+                "membership_type": req.membership_type.value,
+                "status": m.status.value,
+            },
+        )
+        self.db.commit()
 
         return FlatMembershipSchema(
             id=m.id,

@@ -202,7 +202,12 @@ class CreateLateFeePolicyRequest(BaseModel):
         gt=0,
         description="Fixed fee in paise or basis points (e.g. 200 bps = 2.0% per month)",
     )
-    grace_period_days: int = Field(default=15, ge=0, le=90)
+    grace_period_days: int = Field(
+        ...,
+        ge=0,
+        le=90,
+        description="Grace period in days as explicitly specified in society bye-laws",
+    )
     min_charge_paise: int = Field(default=0, ge=0)
     max_charge_paise: int = Field(default=0, ge=0)
     effective_from: datetime | None = None

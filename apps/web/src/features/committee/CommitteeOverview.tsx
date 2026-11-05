@@ -154,7 +154,7 @@ export const CommitteeOverview: React.FC = () => {
                 {overview.complaints.safety_escalated_count === 0 ? 'Normal' : `${overview.complaints.safety_escalated_count} Alert${overview.complaints.safety_escalated_count > 1 ? 's' : ''}`}
               </div>
               <div className="text-xs text-slate-500 mt-0.5">
-                SLA Breaches: {overview.complaints.sla_breached_count} | Turnaround: {overview.complaints.avg_resolution_hours.toFixed(1)}h
+                Resolution: {overview.complaints.sla_breached_count} breach{overview.complaints.sla_breached_count === 1 ? '' : 'es'} | 1st-Resp: {overview.complaints.first_response_sla_breached_count || 0} breach{overview.complaints.first_response_sla_breached_count === 1 ? '' : 'es'}
               </div>
             </CardContent>
           </Card>
@@ -236,9 +236,35 @@ export const CommitteeOverview: React.FC = () => {
                   </div>
                 </div>
               </div>
-              <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded border border-slate-200 text-xs">
-                <span className="text-slate-600">Reopened by Residents:</span>
-                <span className="font-semibold text-slate-900">{overview.complaints.reopened_count}</span>
+              <div className="space-y-1.5 pt-1 text-xs">
+                <div className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200">
+                  <span className="text-slate-600">First-Response SLA Breaches:</span>
+                  <span className={`font-semibold ${(overview.complaints.first_response_sla_breached_count || 0) > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                    {overview.complaints.first_response_sla_breached_count || 0}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200">
+                  <span className="text-slate-600">Avg First Response:</span>
+                  <span className="font-semibold text-slate-900">
+                    {(overview.complaints.avg_first_response_hours || 0).toFixed(1)}h
+                    <span className="text-[10px] text-slate-500 font-normal ml-1">
+                      (med: {(overview.complaints.median_first_response_hours || 0).toFixed(1)}h)
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200">
+                  <span className="text-slate-600">Avg Resolution Turnaround:</span>
+                  <span className="font-semibold text-slate-900">
+                    {overview.complaints.avg_resolution_hours.toFixed(1)}h
+                    <span className="text-[10px] text-slate-500 font-normal ml-1">
+                      (med: {(overview.complaints.median_resolution_hours || 0).toFixed(1)}h)
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-200">
+                  <span className="text-slate-600">Reopened by Residents:</span>
+                  <span className="font-semibold text-slate-900">{overview.complaints.reopened_count}</span>
+                </div>
               </div>
             </CardContent>
           </Card>

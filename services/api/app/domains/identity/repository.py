@@ -213,6 +213,7 @@ class IdentityRepository:
         tower_id: UUID | None = None,
         flat_number: str | None = None,
         status: MembershipStatus | None = None,
+        membership_type: MembershipType | None = None,
     ) -> list[User]:
         """Queries residents belonging to a society with their memberships and flats eagerly loaded."""
         stmt = (
@@ -227,6 +228,8 @@ class IdentityRepository:
         )
         if status:
             stmt = stmt.where(FlatMembership.status == status)
+        if membership_type:
+            stmt = stmt.where(FlatMembership.membership_type == membership_type)
         if tower_id:
             stmt = stmt.where(Flat.tower_id == tower_id)
         if flat_number:
@@ -234,7 +237,12 @@ class IdentityRepository:
         if query:
             q = f"%{query.strip()}%"
             stmt = stmt.where(
-                (User.full_name.ilike(q)) | (User.phone.ilike(q)) | (User.email.ilike(q))
+                (User.full_name.ilike(q))
+                | (User.phone.ilike(q))
+                | (User.email.ilike(q))
+                | (Flat.flat_number.ilike(q))
+                | (Tower.tower_number.ilike(q))
+                | (Tower.name.ilike(q))
             )
 
         return list(self.db.scalars(stmt).unique().all())

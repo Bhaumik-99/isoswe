@@ -86,7 +86,19 @@ def test_create_and_list_late_fee_policies(client: TestClient) -> None:
     )
     assert res_forbidden.status_code == 403
 
-    # 2. Helpdesk creates Flat Fee policy (₹250 flat after 15 days grace)
+    # 2. Policy creation requires explicit grace_period_days (no implicit bye-law default)
+    res_no_grace = client.post(
+        "/api/v1/billing/late-fee-policies",
+        json={
+            "policy_name": "No Grace Period Attempt",
+            "calculation_method": "FLAT_FEE",
+            "amount_or_rate_bps": 25000,
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert res_no_grace.status_code == 422
+
+    # 3. Helpdesk creates Flat Fee policy (₹250 flat after 15 days grace)
     res_create = client.post(
         "/api/v1/billing/late-fee-policies",
         json={

@@ -20,12 +20,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.errors import AuthorizationError
-from app.core.security import require_roles
+from app.core.security import require_permissions
 from app.domains.billing.models import (
     Invoice,
     InvoiceStatus,
@@ -34,7 +34,7 @@ from app.domains.billing.models import (
     PaymentStatus,
 )
 from app.domains.complaints.models import Complaint, ComplaintStatus
-from app.domains.identity.models import Flat, RoleType, Society, Tower
+from app.domains.identity.models import Flat, Permission, Society, Tower
 from app.domains.identity.schemas import CurrentUserClaims
 from app.domains.reconciliation.normalizer import sanitize_for_csv_export
 
@@ -75,8 +75,12 @@ class ComplaintSummary(BaseModel):
     closed_complaints: int
     safety_escalated_count: int
     sla_breached_count: int
+    first_response_sla_breached_count: int = 0
     reopened_count: int
     avg_resolution_hours: float
+    median_resolution_hours: float = 0.0
+    avg_first_response_hours: float = 0.0
+    median_first_response_hours: float = 0.0
 
 
 class TowerFinancialMetric(BaseModel):
@@ -116,7 +120,9 @@ class MonthlyReportItem(BaseModel):
     summary="Get live database aggregates and governance metrics for committee review",
 )
 def get_committee_overview(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMITTEE_REPORT_READ))
+    ],
     society_id: UUID | None = Query(None),
     db: Session = Depends(get_db),
 ) -> CommitteeOverviewResponse:
@@ -264,6 +270,27 @@ def get_committee_overview(
         or 0
     )
 
+    first_response_sla_breached_count = (
+        db.scalar(
+            select(func.count(Complaint.id)).where(
+                Complaint.society_id == target_soc,
+                Complaint.first_response_deadline.isnot(None),
+                Complaint.status != ComplaintStatus.CANCELLED,
+                or_(
+                    and_(
+                        Complaint.first_response_at.isnot(None),
+                        Complaint.first_response_at > Complaint.first_response_deadline,
+                    ),
+                    and_(
+                        Complaint.first_response_at.is_(None),
+                        Complaint.first_response_deadline < now,
+                    ),
+                ),
+            )
+        )
+        or 0
+    )
+
     reopened_count = (
         db.scalar(
             select(func.coalesce(func.sum(Complaint.reopened_count), 0)).where(
@@ -279,11 +306,45 @@ def get_committee_overview(
     )
     resolved_pairs = db.execute(resolved_times_stmt).all()
     avg_turnaround = 0.0
+    median_resolution = 0.0
     if resolved_pairs:
-        durations = [
-            max(0, (r.resolved_at - r.created_at).total_seconds() / 3600.0) for r in resolved_pairs
-        ]
+        durations = sorted(
+            [
+                max(0.0, (r.resolved_at - r.created_at).total_seconds() / 3600.0)
+                for r in resolved_pairs
+            ]
+        )
         avg_turnaround = round(sum(durations) / len(durations), 1)
+        n_res = len(durations)
+        if n_res % 2 == 1:
+            median_resolution = round(durations[n_res // 2], 1)
+        else:
+            median_resolution = round(
+                (durations[(n_res // 2) - 1] + durations[n_res // 2]) / 2.0, 1
+            )
+
+    # First response turnaround time
+    first_resp_times_stmt = select(Complaint.created_at, Complaint.first_response_at).where(
+        Complaint.society_id == target_soc, Complaint.first_response_at.isnot(None)
+    )
+    first_resp_pairs = db.execute(first_resp_times_stmt).all()
+    avg_first_response = 0.0
+    median_first_response = 0.0
+    if first_resp_pairs:
+        first_durations = sorted(
+            [
+                max(0.0, (r.first_response_at - r.created_at).total_seconds() / 3600.0)
+                for r in first_resp_pairs
+            ]
+        )
+        avg_first_response = round(sum(first_durations) / len(first_durations), 1)
+        n_first = len(first_durations)
+        if n_first % 2 == 1:
+            median_first_response = round(first_durations[n_first // 2], 1)
+        else:
+            median_first_response = round(
+                (first_durations[(n_first // 2) - 1] + first_durations[n_first // 2]) / 2.0, 1
+            )
 
     complaints = ComplaintSummary(
         total_complaints=total_complaints,
@@ -293,8 +354,12 @@ def get_committee_overview(
         closed_complaints=closed_c,
         safety_escalated_count=safety_count,
         sla_breached_count=sla_breached_count,
+        first_response_sla_breached_count=first_response_sla_breached_count,
         reopened_count=reopened_count,
         avg_resolution_hours=avg_turnaround,
+        median_resolution_hours=median_resolution,
+        avg_first_response_hours=avg_first_response,
+        median_first_response_hours=median_first_response,
     )
 
     # 5. Tower-level breakdown
@@ -380,7 +445,9 @@ def get_committee_overview(
     summary="Get monthly financial summaries for committee governance",
 )
 def get_monthly_reports(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMITTEE_REPORT_READ))
+    ],
     society_id: UUID | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[MonthlyReportItem]:
@@ -438,7 +505,9 @@ def get_monthly_reports(
     summary="Export committee financial statement as CSV with formula injection protection",
 )
 def export_committee_report_csv(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMITTEE_REPORT_READ))
+    ],
     society_id: UUID | None = Query(None),
     db: Session = Depends(get_db),
 ) -> Response:

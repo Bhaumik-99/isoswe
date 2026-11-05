@@ -33,8 +33,12 @@ export interface ComplaintSummary {
   closed_complaints: number;
   safety_escalated_count: number;
   sla_breached_count: number;
+  first_response_sla_breached_count: number;
   reopened_count: number;
   avg_resolution_hours: number;
+  median_resolution_hours: number;
+  avg_first_response_hours: number;
+  median_first_response_hours: number;
 }
 
 export interface TowerFinancialMetric {

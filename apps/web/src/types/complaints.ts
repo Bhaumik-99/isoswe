@@ -100,6 +100,11 @@ export interface Complaint {
   safety_escalated: boolean;
   safety_escalation_reason?: string | null;
 
+  // Category Correction Tracking
+  original_category?: ComplaintCategory | string | null;
+  category_corrected_at?: string | null;
+  category_corrected_by?: string | null;
+
   // Duplicate Tracking
   duplicate_of_id?: string | null;
   duplicate_candidates: string[];
@@ -201,5 +206,24 @@ export interface HelpdeskQueryParams {
   is_sla_breached?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export interface SafetyAlert {
+  id: string;
+  society_id: string;
+  complaint_id: string;
+  hazard_type: string;
+  severity: string;
+  assigned_staff_id?: string | null;
+  is_read: boolean;
+  read_at?: string | null;
+  read_by?: string | null;
+  is_acknowledged: boolean;
+  acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
+  acknowledgement_notes?: string | null;
+  created_at: string;
+  complaint_title?: string;
+  flat_number?: string;
 }
 

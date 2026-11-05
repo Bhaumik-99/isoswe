@@ -495,6 +495,7 @@ class ReconciliationService:
             normalized_description=txn.normalized_description,
             reference_number=txn.reference_number,
             utr_number=txn.utr_number,
+            payer_vpa=txn.payer_vpa,
             transaction_type=txn.transaction_type,
             debit_paise=txn.debit_paise,
             credit_paise=txn.credit_paise,

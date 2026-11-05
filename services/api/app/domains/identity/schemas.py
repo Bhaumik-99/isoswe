@@ -6,7 +6,7 @@ Defines strong contract models for user identity, flats, societies, and session 
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.domains.identity.models import (
     FlatStatus,
@@ -107,9 +107,16 @@ class ResidentFlatInfo(BaseModel):
     tower_number: str
     membership_type: MembershipType
     status: MembershipStatus
+    membership_status: MembershipStatus | None = None
     valid_from: datetime
     valid_until: datetime | None = None
     is_primary: bool
+
+    @model_validator(mode="after")
+    def sync_membership_status(self) -> "ResidentFlatInfo":
+        if self.membership_status is None:
+            self.membership_status = self.status
+        return self
 
 
 class ResidentDirectoryItem(BaseModel):
@@ -120,8 +127,15 @@ class ResidentDirectoryItem(BaseModel):
     phone: str | None = None
     email: str | None = None
     status: UserStatus
+    user_status: UserStatus | None = None
     flats: list[ResidentFlatInfo] = Field(default_factory=list)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def sync_user_status(self) -> "ResidentDirectoryItem":
+        if self.user_status is None:
+            self.user_status = self.status
+        return self
 
 
 class CreateMembershipRequest(BaseModel):
@@ -139,6 +153,13 @@ class UpdateMembershipStatusRequest(BaseModel):
         ..., description="Target status: APPROVED, REJECTED, TERMINATED"
     )
     notes: str | None = None
+    rejection_reason: str | None = None
+
+    @model_validator(mode="after")
+    def sync_notes_reason(self) -> "UpdateMembershipStatusRequest":
+        if not self.notes and self.rejection_reason:
+            self.notes = self.rejection_reason
+        return self
 
 
 class ResidentJoinFlatRequest(BaseModel):

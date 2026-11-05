@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.domains.identity.models import Flat, FlatMembership, MembershipStatus, MembershipType, User
+from app.domains.reliability.models import AuditEvent
 
 SOCIETY_ID = "11111111-1111-1111-1111-111111111111"
 AUTH_HELPDESK = {"X-Dev-User": "helpdesk"}
@@ -39,6 +40,14 @@ def test_staff_resident_directory_search(client: TestClient) -> None:
     neeraj_entry = next(r for r in residents if "Neeraj" in r["full_name"])
     assert len(neeraj_entry["flats"]) >= 1
     assert neeraj_entry["flats"][0]["flat_number"] == "1203"
+
+    # 3. Filter by membership_type OWNER
+    res_owner = client.get(
+        "/api/v1/registry/residents?membership_type=OWNER", headers=AUTH_HELPDESK
+    )
+    assert res_owner.status_code == 200
+    owners = res_owner.json()
+    assert all(any(f["membership_type"] == "OWNER" for f in r["flats"]) for r in owners)
 
 
 def test_membership_creation_with_lease_validity(client: TestClient, db_session: Session) -> None:
@@ -87,6 +96,18 @@ def test_membership_creation_with_lease_validity(client: TestClient, db_session:
     assert created["status"] == "APPROVED"
     assert created["flat_number"] == flat.flat_number
 
+    # Verify audit event recorded
+    audit = (
+        db_session.query(AuditEvent)
+        .filter(
+            AuditEvent.action == "identity.membership.created",
+            AuditEvent.resource_id == created["id"],
+        )
+        .first()
+    )
+    assert audit is not None
+    assert audit.event_metadata["membership_type"] == "TENANT"
+
 
 def test_membership_lifecycle_state_transitions(client: TestClient, db_session: Session) -> None:
     """Staff can update membership status between APPROVED, REJECTED, and TERMINATED."""
@@ -119,11 +140,23 @@ def test_membership_lifecycle_state_transitions(client: TestClient, db_session: 
     # 2. Staff terminates membership on tenant vacate
     res_term = client.patch(
         f"/api/v1/registry/memberships/{m.id}/status",
-        json={"status": "TERMINATED", "notes": "Tenancy concluded"},
+        json={"status": "TERMINATED", "rejection_reason": "Tenancy concluded"},
         headers=AUTH_HELPDESK,
     )
     assert res_term.status_code == 200
     assert res_term.json()["status"] == "TERMINATED"
+
+    # Verify audit event for termination
+    term_audit = (
+        db_session.query(AuditEvent)
+        .filter(
+            AuditEvent.action == "identity.membership.terminated",
+            AuditEvent.resource_id == str(m.id),
+        )
+        .first()
+    )
+    assert term_audit is not None
+    assert term_audit.event_metadata["notes"] == "Tenancy concluded"
 
     # 3. List memberships with status filter
     res_list = client.get(

@@ -115,6 +115,10 @@ export const ResidentsDirectory: React.FC = () => {
       setFormError('Resident full name is required');
       return;
     }
+    if (!newResident.phone.trim() || newResident.phone.trim().length < 10) {
+      setFormError('A valid phone number (at least 10 digits) is required for registration');
+      return;
+    }
     if (!newResident.flat_id.trim()) {
       setFormError('Flat ID is required');
       return;
@@ -128,7 +132,7 @@ export const ResidentsDirectory: React.FC = () => {
     registerMutation.mutate({
       full_name: newResident.full_name.trim(),
       email: newResident.email.trim() || undefined,
-      phone: newResident.phone.trim() || undefined,
+      phone: newResident.phone.trim(),
       flat_id: newResident.flat_id.trim(),
       membership_type: newResident.membership_type,
       valid_from: new Date(newResident.valid_from).toISOString(),
@@ -323,19 +327,19 @@ export const ResidentsDirectory: React.FC = () => {
                           <td className="py-3 px-3">
                             <Badge
                               variant={
-                                flat.membership_status === 'APPROVED'
+                                (flat.membership_status || flat.status) === 'APPROVED'
                                   ? 'success'
-                                  : flat.membership_status === 'PENDING'
+                                  : (flat.membership_status || flat.status) === 'PENDING'
                                   ? 'warning'
                                   : 'danger'
                               }
                             >
-                              {flat.membership_status}
+                              {flat.membership_status || flat.status}
                             </Badge>
                           </td>
                           <td className="py-3 px-3 text-right">
                             <div className="flex items-center justify-end gap-1.5">
-                              {flat.membership_status === 'PENDING' && (
+                              {(flat.membership_status || flat.status) === 'PENDING' && (
                                 <>
                                   <Button
                                     size="sm"
@@ -368,7 +372,7 @@ export const ResidentsDirectory: React.FC = () => {
                                   </Button>
                                 </>
                               )}
-                              {flat.membership_status === 'APPROVED' && flat.membership_type === 'TENANT' && (
+                              {(flat.membership_status || flat.status) === 'APPROVED' && flat.membership_type === 'TENANT' && (
                                 <Button
                                   size="sm"
                                   variant="outline"

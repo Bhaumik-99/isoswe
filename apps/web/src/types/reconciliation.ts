@@ -46,6 +46,7 @@ export interface TransactionPreviewItem {
   description: string;
   reference_number?: string | null;
   utr_number?: string | null;
+  payer_vpa?: string | null;
   transaction_type: TransactionType;
   debit_paise: number;
   credit_paise: number;
@@ -119,6 +120,7 @@ export interface BankTransaction {
   normalized_description: string;
   reference_number?: string | null;
   utr_number?: string | null;
+  payer_vpa?: string | null;
   transaction_type: TransactionType;
   debit_paise: number;
   credit_paise: number;
@@ -140,6 +142,19 @@ export interface ManualReviewQueueItem {
   candidates_count: number;
   queue_category: string;
   latest_review_note?: string | null;
+}
+
+export interface ResidentUPIMapping {
+  id: string;
+  society_id: string;
+  flat_id: string;
+  user_id?: string | null;
+  vpa: string;
+  is_verified: boolean;
+  notes?: string | null;
+  created_at: string;
+  flat_number?: string | null;
+  tower_number?: string | null;
 }
 
 export interface ReconciliationSummary {

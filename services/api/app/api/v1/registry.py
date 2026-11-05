@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.errors import AuthorizationError
 from app.core.security import require_roles
-from app.domains.identity.models import MembershipStatus, RoleType
+from app.domains.identity.models import MembershipStatus, MembershipType, RoleType
 from app.domains.identity.schemas import (
     CreateMembershipRequest,
     CurrentUserClaims,
@@ -52,6 +52,7 @@ def list_residents(
     tower_id: UUID | None = Query(None),
     flat_number: str | None = Query(None),
     status: MembershipStatus | None = Query(None),
+    membership_type: MembershipType | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[ResidentDirectoryItem]:
     target_soc = _resolve_society_id(claims, society_id)
@@ -63,6 +64,7 @@ def list_residents(
         tower_id=tower_id,
         flat_number=flat_number,
         status=status,
+        membership_type=membership_type,
     )
 
 

@@ -141,8 +141,13 @@ export const TransactionListView: React.FC = () => {
                       year: 'numeric',
                     })}
                   </td>
-                  <td className="py-2.5 px-3 max-w-xs truncate text-slate-700" title={tx.description}>
-                    {tx.description}
+                  <td className="py-2.5 px-3 max-w-xs text-slate-700" title={tx.description}>
+                    <div className="truncate">{tx.description}</div>
+                    {tx.payer_vpa && (
+                      <span className="inline-flex items-center gap-1 text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 rounded font-mono mt-0.5">
+                        UPI: {tx.payer_vpa}
+                      </span>
+                    )}
                   </td>
                   <td className="py-2.5 px-3 font-mono text-slate-600">
                     {tx.utr_number || tx.reference_number || '—'}

@@ -9,6 +9,7 @@ import {
   ManualReviewQueueItem,
   ProposedAllocation,
   ReconciliationSummary,
+  ResidentUPIMapping,
   StatementUploadPreview,
   TransactionReconciliationStatus,
   TransactionType,
@@ -155,5 +156,31 @@ export const reconciliationService = {
   /** Returns direct CSV export URL */
   getExportReportUrl(): string {
     return '/api/v1/reconciliation/reports/export';
+  },
+
+  /** Lists registered resident UPI VPAs for auto-matching */
+  async listUpiMappings(societyId?: string): Promise<ResidentUPIMapping[]> {
+    const params = societyId ? `?society_id=${societyId}` : '';
+    return apiClient.request<ResidentUPIMapping[]>(`/api/v1/reconciliation/upi-mappings${params}`);
+  },
+
+  /** Registers an authorized resident UPI VPA for a flat */
+  async createUpiMapping(payload: {
+    flat_id: string;
+    vpa: string;
+    user_id?: string;
+    notes?: string;
+  }): Promise<ResidentUPIMapping> {
+    return apiClient.request<ResidentUPIMapping>('/api/v1/reconciliation/upi-mappings', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Deletes a registered resident UPI VPA mapping */
+  async deleteUpiMapping(mappingId: string): Promise<void> {
+    await apiClient.request<void>(`/api/v1/reconciliation/upi-mappings/${mappingId}`, {
+      method: 'DELETE',
+    });
   },
 };

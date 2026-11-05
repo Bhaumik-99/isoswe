@@ -102,11 +102,89 @@ export const StaffHelpdesk: React.FC = () => {
   const [transitionNotes, setTransitionNotes] = useState('');
   const [feedbackNotice, setFeedbackNotice] = useState<string | null>(null);
 
+  // Governance state
+  const [newCategorySelection, setNewCategorySelection] = useState<ComplaintCategory | ''>('');
+  const [categoryCorrectionReason, setCategoryCorrectionReason] = useState('');
+  const [primaryTicketIdInput, setPrimaryTicketIdInput] = useState('');
+  const [duplicateLinkReason, setDuplicateLinkReason] = useState('');
+
   // Queries
   const { data: metrics, isLoading: isMetricsLoading } = useQuery({
     queryKey: ['helpdesk-dashboard-metrics'],
     queryFn: () => complaintsService.getHelpdeskDashboardMetrics(),
     refetchInterval: 15000,
+  });
+
+  const { data: safetyAlerts = [] } = useQuery({
+    queryKey: ['helpdesk-safety-alerts'],
+    queryFn: () => complaintsService.getSafetyAlerts(true),
+    refetchInterval: 10000,
+  });
+
+  const ackSafetyAlertMutation = useMutation({
+    mutationFn: (alertId: string) => complaintsService.acknowledgeSafetyAlert(alertId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-safety-alerts'] });
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-dashboard-metrics'] });
+      setFeedbackNotice('Safety alert acknowledged by duty manager');
+    },
+  });
+
+  const correctCategoryMutation = useMutation({
+    mutationFn: () => {
+      if (!activeTicket || !newCategorySelection) throw new Error('Category required');
+      return complaintsService.correctCategory(
+        activeTicket.id,
+        newCategorySelection as ComplaintCategory,
+        categoryCorrectionReason.trim() || undefined
+      );
+    },
+    onSuccess: (updated) => {
+      setActiveTicket(updated);
+      setNewCategorySelection('');
+      setCategoryCorrectionReason('');
+      setFeedbackNotice('Category successfully corrected and audit trail recorded');
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+    },
+    onError: (err: any) => {
+      setFeedbackNotice(err?.message || 'Failed to correct category');
+    },
+  });
+
+  const linkDuplicateMutation = useMutation({
+    mutationFn: () => {
+      if (!activeTicket || !primaryTicketIdInput.trim()) throw new Error('Primary ID required');
+      return complaintsService.linkDuplicate(
+        activeTicket.id,
+        primaryTicketIdInput.trim(),
+        duplicateLinkReason.trim() || undefined
+      );
+    },
+    onSuccess: (updated) => {
+      setActiveTicket(updated);
+      setPrimaryTicketIdInput('');
+      setDuplicateLinkReason('');
+      setFeedbackNotice('Complaint linked as duplicate (independent SLA preserved)');
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+    },
+    onError: (err: any) => {
+      setFeedbackNotice(err?.message || 'Failed to link duplicate');
+    },
+  });
+
+  const unlinkDuplicateMutation = useMutation({
+    mutationFn: () => {
+      if (!activeTicket) throw new Error('No active ticket');
+      return complaintsService.unlinkDuplicate(activeTicket.id);
+    },
+    onSuccess: (updated) => {
+      setActiveTicket(updated);
+      setFeedbackNotice('Duplicate link removed');
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+    },
+    onError: (err: any) => {
+      setFeedbackNotice(err?.message || 'Failed to unlink duplicate');
+    },
   });
 
   const { data: complaints = [], isLoading: isListLoading, refetch } = useQuery({
@@ -202,6 +280,49 @@ export const StaffHelpdesk: React.FC = () => {
           <RefreshCw className="h-4 w-4" /> Refresh
         </Button>
       </div>
+
+      {/* Emergency Duty Manager Safety Alerts Banner */}
+      {safetyAlerts.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-xl p-4 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-rose-800 font-bold text-sm">
+              <ShieldAlert className="h-5 w-5 text-rose-600 animate-pulse" />
+              <span>EMERGENCY DUTY-MANAGER SAFETY QUEUE ({safetyAlerts.length} Unacknowledged)</span>
+            </div>
+            <Badge variant="danger" className="text-xs font-mono">
+              CRITICAL HAZARD DISPATCH
+            </Badge>
+          </div>
+          <div className="space-y-2">
+            {safetyAlerts.map((alert) => (
+              <div
+                key={alert.id}
+                className="flex flex-col sm:flex-row sm:items-center justify-between bg-white p-3 rounded-lg border border-rose-200 gap-2 shadow-xs"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-rose-900 text-xs font-mono">{alert.hazard_type}</span>
+                    <span className="text-slate-500 text-[11px]">• Flat {alert.flat_number || 'Common Area'}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Raised {new Date(alert.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-800 font-medium mt-0.5">{alert.complaint_title}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => ackSafetyAlertMutation.mutate(alert.id)}
+                  disabled={ackSafetyAlertMutation.isPending}
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs shrink-0"
+                >
+                  {ackSafetyAlertMutation.isPending ? 'Acknowledging...' : 'Acknowledge Hazard'}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* KPI Cards */}
       {isMetricsLoading ? (
@@ -535,6 +656,104 @@ export const StaffHelpdesk: React.FC = () => {
                   <span className="text-[10px] text-gray-400">Locked to Critical due to safety escalation</span>
                 )}
               </div>
+            </div>
+
+            {/* Category Governance & AI Feedback */}
+            <div className="bg-indigo-50/60 border border-indigo-200 rounded-lg p-3 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-indigo-950 flex items-center gap-1.5">
+                  <Sparkles className="h-4 w-4 text-indigo-600" />
+                  <span>Category Governance & AI Feedback</span>
+                </div>
+                {activeTicket.original_category && (
+                  <Badge variant="warning" className="text-[10px] py-0 px-1.5 font-mono">
+                    Original AI Category: {activeTicket.original_category} (Corrected)
+                  </Badge>
+                )}
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <select
+                  value={newCategorySelection}
+                  onChange={(e) => setNewCategorySelection(e.target.value as ComplaintCategory)}
+                  className="border rounded p-1.5 bg-white text-gray-900 border-indigo-300 flex-1 text-xs"
+                >
+                  <option value="">Change Category (Current: {activeTicket.category})...</option>
+                  {CATEGORIES.filter((c) => c.value !== activeTicket.category).map((cat) => (
+                    <option key={cat.value} value={cat.value}>
+                      {cat.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  placeholder="Correction reason (optional audit note)"
+                  value={categoryCorrectionReason}
+                  onChange={(e) => setCategoryCorrectionReason(e.target.value)}
+                  className="border rounded p-1.5 bg-white text-gray-900 border-indigo-300 flex-1 text-xs"
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={!newCategorySelection || correctCategoryMutation.isPending}
+                  onClick={() => correctCategoryMutation.mutate()}
+                  className="text-xs shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  {correctCategoryMutation.isPending ? 'Updating...' : 'Correct Category'}
+                </Button>
+              </div>
+            </div>
+
+            {/* Duplicate Incident Linking (Independent SLAs) */}
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <Copy className="h-4 w-4 text-slate-600" />
+                  <span>Duplicate Incident Linking (Independent SLAs Preserved)</span>
+                </div>
+                {activeTicket.duplicate_of_id ? (
+                  <div className="flex items-center gap-2">
+                    <Badge variant="info" className="text-[10px] py-0 font-mono">
+                      Linked to Parent #{activeTicket.duplicate_of_id.slice(0, 8)}
+                    </Badge>
+                    <button
+                      onClick={() => unlinkDuplicateMutation.mutate()}
+                      disabled={unlinkDuplicateMutation.isPending}
+                      className="text-rose-600 hover:text-rose-800 text-[11px] underline"
+                    >
+                      Unlink
+                    </button>
+                  </div>
+                ) : (
+                  <span className="text-[11px] text-slate-500">Primary Incident</span>
+                )}
+              </div>
+              {!activeTicket.duplicate_of_id && (
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    placeholder="Parent Complaint UUID..."
+                    value={primaryTicketIdInput}
+                    onChange={(e) => setPrimaryTicketIdInput(e.target.value)}
+                    className="border rounded p-1.5 bg-white text-gray-900 border-gray-300 flex-1 text-xs font-mono"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Linking note..."
+                    value={duplicateLinkReason}
+                    onChange={(e) => setDuplicateLinkReason(e.target.value)}
+                    className="border rounded p-1.5 bg-white text-gray-900 border-gray-300 flex-1 text-xs"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!primaryTicketIdInput.trim() || linkDuplicateMutation.isPending}
+                    onClick={() => linkDuplicateMutation.mutate()}
+                    className="text-xs shrink-0"
+                  >
+                    {linkDuplicateMutation.isPending ? 'Linking...' : 'Link Duplicate'}
+                  </Button>
+                </div>
+              )}
             </div>
 
             {/* Resident Description & Metadata */}

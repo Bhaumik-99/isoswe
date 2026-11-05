@@ -6,6 +6,7 @@ import {
   AssignComplaintRequest,
   Complaint,
   ComplaintAttachment,
+  ComplaintCategory,
   ComplaintComment,
   ComplaintPriority,
   ComplaintStatus,
@@ -17,6 +18,7 @@ import {
   PresignedUploadResponse,
   RateComplaintRequest,
   ReopenComplaintRequest,
+  SafetyAlert,
   UpdateComplaintPriorityRequest,
   UpdateComplaintStatusRequest,
 } from '../types';
@@ -201,5 +203,62 @@ export const complaintsService = {
     }
 
     return this.completeAttachmentUpload(complaintId, presigned.attachment_id, isStaff);
+  },
+
+  // =========================================================================
+  // Phase 5 Complaint Governance & Safety Alerts
+  // =========================================================================
+
+  async correctCategory(
+    complaintId: string,
+    newCategory: ComplaintCategory,
+    reason?: string
+  ): Promise<Complaint> {
+    return apiClient.request<Complaint>(`/api/v1/complaints/${complaintId}/category`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        new_category: newCategory,
+        reason,
+      }),
+    });
+  },
+
+  async linkDuplicate(
+    complaintId: string,
+    primaryComplaintId: string,
+    reason?: string
+  ): Promise<Complaint> {
+    return apiClient.request<Complaint>(`/api/v1/complaints/${complaintId}/link-duplicate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        primary_complaint_id: primaryComplaintId,
+        reason,
+      }),
+    });
+  },
+
+  async unlinkDuplicate(complaintId: string): Promise<Complaint> {
+    return apiClient.request<Complaint>(`/api/v1/complaints/${complaintId}/unlink-duplicate`, {
+      method: 'POST',
+    });
+  },
+
+  async getLinkedDuplicates(complaintId: string): Promise<Complaint[]> {
+    return apiClient.request<Complaint[]>(`/api/v1/complaints/${complaintId}/linked-duplicates`);
+  },
+
+  async getSafetyAlerts(unreadOnly = true): Promise<SafetyAlert[]> {
+    return apiClient.request<SafetyAlert[]>(
+      `/api/v1/complaints/safety-alerts?unread_only=${unreadOnly}`
+    );
+  },
+
+  async acknowledgeSafetyAlert(alertId: string, notes?: string): Promise<SafetyAlert> {
+    return apiClient.request<SafetyAlert>(`/api/v1/complaints/safety-alerts/${alertId}/ack`, {
+      method: 'POST',
+      body: JSON.stringify({
+        notes: notes || 'Acknowledged by duty manager',
+      }),
+    });
   },
 };

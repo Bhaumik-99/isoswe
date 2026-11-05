@@ -9,10 +9,11 @@ export interface ResidentFlatInfo {
   membership_id: string;
   flat_id: string;
   flat_number: string;
-  tower_id: string;
+  tower_id?: string;
   tower_number: string;
   membership_type: MembershipType;
-  membership_status: MembershipStatus;
+  status: MembershipStatus;
+  membership_status?: MembershipStatus;
   valid_from: string;
   valid_until?: string | null;
   is_primary: boolean;
@@ -23,7 +24,8 @@ export interface ResidentDirectoryItem {
   full_name: string;
   email?: string | null;
   phone?: string | null;
-  user_status: string;
+  status: string;
+  user_status?: string;
   flats: ResidentFlatInfo[];
 }
 
@@ -32,7 +34,7 @@ export interface CreateMembershipPayload {
   user_id?: string;
   full_name?: string;
   email?: string;
-  phone?: string;
+  phone: string;
   flat_id: string;
   membership_type: MembershipType;
   valid_from: string;
@@ -42,6 +44,7 @@ export interface CreateMembershipPayload {
 
 export interface UpdateMembershipStatusPayload {
   status: MembershipStatus;
+  notes?: string;
   rejection_reason?: string;
 }
 
@@ -82,9 +85,13 @@ export const registryService = {
     membershipId: string,
     payload: UpdateMembershipStatusPayload
   ): Promise<ResidentFlatInfo> {
+    const bodyPayload = {
+      ...payload,
+      notes: payload.notes || payload.rejection_reason,
+    };
     return apiClient.request<ResidentFlatInfo>(`/api/v1/registry/memberships/${membershipId}/status`, {
       method: 'PATCH',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(bodyPayload),
     });
   },
 };

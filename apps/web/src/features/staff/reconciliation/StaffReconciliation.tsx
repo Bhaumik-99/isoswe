@@ -11,8 +11,10 @@ import { StatementUploadView } from './StatementUploadView';
 import { ManualReviewQueueView } from './ManualReviewQueueView';
 import { TransactionListView } from './TransactionListView';
 import { ReconciliationReportsView } from './ReconciliationReportsView';
+import { UpiMappingsView } from './UpiMappingsView';
+import { Smartphone } from 'lucide-react';
 
-type ReconciliationTab = 'overview' | 'upload' | 'queue' | 'transactions' | 'reports';
+type ReconciliationTab = 'overview' | 'upload' | 'queue' | 'transactions' | 'reports' | 'upi_mappings';
 
 export const StaffReconciliation: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ReconciliationTab>('overview');
@@ -26,6 +28,7 @@ export const StaffReconciliation: React.FC = () => {
     { id: 'upload', label: 'Upload Statement', icon: UploadCloud },
     { id: 'queue', label: 'Review Queue', icon: ListFilter },
     { id: 'transactions', label: 'All Transactions', icon: Receipt },
+    { id: 'upi_mappings', label: 'Resident UPI Mappings', icon: Smartphone },
     { id: 'reports', label: 'Reports & Audit', icon: FileSpreadsheet },
   ];
 
@@ -80,6 +83,7 @@ export const StaffReconciliation: React.FC = () => {
         )}
         {activeTab === 'queue' && <ManualReviewQueueView />}
         {activeTab === 'transactions' && <TransactionListView />}
+        {activeTab === 'upi_mappings' && <UpiMappingsView />}
         {activeTab === 'reports' && <ReconciliationReportsView />}
       </div>
     </div>

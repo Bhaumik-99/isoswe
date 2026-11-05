@@ -53,7 +53,11 @@ def test_committee_overview_sql_aggregates(client: TestClient) -> None:
     assert comp["resolved_complaints"] >= 0
     assert comp["safety_escalated_count"] >= 0
     assert comp["sla_breached_count"] >= 0
+    assert comp["first_response_sla_breached_count"] >= 0
     assert comp["avg_resolution_hours"] >= 0.0
+    assert comp["median_resolution_hours"] >= 0.0
+    assert comp["avg_first_response_hours"] >= 0.0
+    assert comp["median_first_response_hours"] >= 0.0
 
     # Tower breakdown
     towers = data["towers"]
@@ -65,6 +69,9 @@ def test_committee_overview_sql_aggregates(client: TestClient) -> None:
 
 def test_committee_monthly_reports(client: TestClient) -> None:
     """Monthly financial statement lists historical billing periods with collection rates."""
+    res_forbidden = client.get("/api/v1/committee/reports/monthly", headers=AUTH_RESIDENT)
+    assert res_forbidden.status_code == 403
+
     res = client.get("/api/v1/committee/reports/monthly", headers=AUTH_HELPDESK)
     assert res.status_code == 200
     periods = res.json()
@@ -81,6 +88,9 @@ def test_committee_monthly_reports(client: TestClient) -> None:
 
 def test_committee_report_csv_export(client: TestClient) -> None:
     """CSV export produces downloadable statement protected against formula injection."""
+    res_forbidden = client.get("/api/v1/committee/reports/export", headers=AUTH_RESIDENT)
+    assert res_forbidden.status_code == 403
+
     res = client.get("/api/v1/committee/reports/export", headers=AUTH_HELPDESK)
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/csv")

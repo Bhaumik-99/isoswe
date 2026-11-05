@@ -10,8 +10,19 @@ import {
   CheckCircle2,
   X,
   Search,
+  Clock,
+  ShieldCheck,
+  Plus,
+  Scale,
 } from 'lucide-react';
-import { billingService, formatINR, formatDateIST } from '../../services/billingService';
+import {
+  billingService,
+  formatINR,
+  formatDateIST,
+  LateFeePolicy,
+  LateFeePreviewResponse,
+  ApplyLateFeesResponse,
+} from '../../services/billingService';
 import { BillingRun, BillingRunPreview, Invoice, InvoiceStatus } from '../../types/billing';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
@@ -21,6 +32,9 @@ import { Alert } from '../../components/ui/Alert';
 
 export const StaffBilling: React.FC = () => {
   const queryClient = useQueryClient();
+
+  // Tab navigation
+  const [activeTab, setActiveTab] = useState<'INVOICES' | 'LATE_FEES'>('INVOICES');
 
   // Filters
   const [selectedPeriod, setSelectedPeriod] = useState<string>('2026-11');
@@ -37,6 +51,28 @@ export const StaffBilling: React.FC = () => {
   const [executionResult, setExecutionResult] = useState<BillingRun | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [selectedInvoiceDetail, setSelectedInvoiceDetail] = useState<Invoice | null>(null);
+
+  // Late Fee State
+  const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const [newPolicy, setNewPolicy] = useState<{
+    policy_name: string;
+    calculation_method: 'FLAT_FEE' | 'PERCENTAGE_PER_MONTH' | 'DAILY_INTEREST_PAISE';
+    rate_or_amount: string;
+    grace_period_days: number;
+    min_charge_inr: string;
+    max_charge_inr: string;
+  }>({
+    policy_name: 'Standard Society Bye-Law Late Fee',
+    calculation_method: 'PERCENTAGE_PER_MONTH',
+    rate_or_amount: '2.0',
+    grace_period_days: 15,
+    min_charge_inr: '100',
+    max_charge_inr: '1000',
+  });
+  const [lateFeePreview, setLateFeePreview] = useState<LateFeePreviewResponse | null>(null);
+  const [lateFeeResult, setLateFeeResult] = useState<ApplyLateFeesResponse | null>(null);
+  const [lateFeeActionError, setLateFeeActionError] = useState<string | null>(null);
 
   // Queries
   const {
@@ -63,6 +99,66 @@ export const StaffBilling: React.FC = () => {
         limit: PAGE_SIZE,
         offset: (currentPage - 1) * PAGE_SIZE,
       }),
+  });
+
+  const {
+    data: lateFeePolicies = [],
+    isLoading: isPoliciesLoading,
+  } = useQuery<LateFeePolicy[]>({
+    queryKey: ['staff-late-fee-policies'],
+    queryFn: () => billingService.getLateFeePolicies(),
+  });
+
+  const createPolicyMutation = useMutation({
+    mutationFn: () => {
+      const isPercent = newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH';
+      const bpsOrPaise = isPercent
+        ? Math.round(parseFloat(newPolicy.rate_or_amount) * 100)
+        : Math.round(parseFloat(newPolicy.rate_or_amount) * 100);
+      return billingService.createLateFeePolicy({
+        policy_name: newPolicy.policy_name,
+        calculation_method: newPolicy.calculation_method,
+        amount_or_rate_bps: bpsOrPaise,
+        grace_period_days: Number(newPolicy.grace_period_days),
+        min_charge_paise: Math.round((parseFloat(newPolicy.min_charge_inr) || 0) * 100),
+        max_charge_paise: Math.round((parseFloat(newPolicy.max_charge_inr) || 0) * 100),
+        is_active: true,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['staff-late-fee-policies'] });
+      setIsPolicyModalOpen(false);
+      setPolicyError(null);
+    },
+    onError: (err: any) => {
+      setPolicyError(err?.message || 'Failed to configure policy');
+    },
+  });
+
+  const previewLateFeeMutation = useMutation({
+    mutationFn: () => billingService.previewLateFees(),
+    onSuccess: (data) => {
+      setLateFeePreview(data);
+      setLateFeeActionError(null);
+    },
+    onError: (err: any) => {
+      setLateFeeActionError(err?.message || 'Failed to preview late fees');
+    },
+  });
+
+  const applyLateFeeMutation = useMutation({
+    mutationFn: () => billingService.applyLateFees(),
+    onSuccess: (res) => {
+      setLateFeeResult(res);
+      setLateFeePreview(null);
+      setLateFeeActionError(null);
+      queryClient.invalidateQueries({ queryKey: ['staff-invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['staff-billing-overview'] });
+      queryClient.invalidateQueries({ queryKey: ['staff-late-fee-policies'] });
+    },
+    onError: (err: any) => {
+      setLateFeeActionError(err?.message || 'Failed to apply late fees');
+    },
   });
 
   // Mutations
@@ -221,8 +317,41 @@ export const StaffBilling: React.FC = () => {
         </Card>
       </div>
 
-      {/* Filter Bar */}
-      <Card>
+      {/* Sub-navigation Tabs */}
+      <div className="flex border-b border-slate-200 gap-6 text-xs font-medium">
+        <button
+          onClick={() => setActiveTab('INVOICES')}
+          className={`pb-3 px-1 border-b-2 flex items-center gap-1.5 ${
+            activeTab === 'INVOICES'
+              ? 'border-indigo-600 text-indigo-600 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <FileText className="h-4 w-4" />
+          <span>Invoices & Accounts</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('LATE_FEES')}
+          className={`pb-3 px-1 border-b-2 flex items-center gap-1.5 ${
+            activeTab === 'LATE_FEES'
+              ? 'border-indigo-600 text-indigo-600 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Scale className="h-4 w-4" />
+          <span>Late-Fee Bye-Law Governance</span>
+          {lateFeePolicies.length > 0 && (
+            <Badge variant="success" className="text-[10px] py-0 px-1.5 ml-1">
+              {lateFeePolicies.length} Configured
+            </Badge>
+          )}
+        </button>
+      </div>
+
+      {activeTab === 'INVOICES' && (
+        <>
+          {/* Filter Bar */}
+          <Card>
         <CardContent className="pt-4 pb-4">
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
             <div>
@@ -407,6 +536,354 @@ export const StaffBilling: React.FC = () => {
           )}
         </CardContent>
       </Card>
+      </>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* Tab: Late-Fee Bye-Law Governance */}
+      {/* ------------------------------------------------------------- */}
+      {activeTab === 'LATE_FEES' && (
+        <div className="space-y-6">
+          {/* Action & Alerts Header */}
+          {lateFeeActionError && (
+            <Alert variant="error" title="Late Fee Assessment Error">
+              {lateFeeActionError}
+            </Alert>
+          )}
+
+          {lateFeeResult && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg space-y-2">
+              <div className="flex items-center gap-2 text-emerald-800 font-bold text-sm">
+                <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                <span>Late Fees Assessed Successfully</span>
+              </div>
+              <p className="text-xs text-emerald-900 font-mono">
+                {lateFeeResult.message} • Invoices Charged: {lateFeeResult.applied_invoices_count} • Total Assessed:{' '}
+                {formatINR(lateFeeResult.total_fee_charged_paise)}
+              </p>
+            </div>
+          )}
+
+          {/* Configured Bye-Law Policies */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <div>
+                <CardTitle className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-indigo-600" />
+                  Configured Society Bye-Law Late Fee Policies
+                </CardTitle>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Society maintenance bye-laws dictate permissible interest and surcharge formulas.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => setIsPolicyModalOpen(true)}
+                className="text-xs"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Configure Bye-Law Policy
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {isPoliciesLoading ? (
+                <div className="space-y-2 py-4">
+                  <Skeleton className="h-8 w-full" />
+                  <Skeleton className="h-8 w-full" />
+                </div>
+              ) : lateFeePolicies.length === 0 ? (
+                <div className="p-8 text-center text-xs text-slate-500">
+                  <AlertTriangle className="h-8 w-8 text-amber-500 mx-auto mb-2" />
+                  <p className="font-semibold text-slate-800">No Approved Late Fee Policy Configured</p>
+                  <p className="mt-1">
+                    The platform requires an explicit bye-law policy. Dues cannot be surcharged without an active policy.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setIsPolicyModalOpen(true)}
+                    className="mt-3 text-xs"
+                  >
+                    Configure Policy Now
+                  </Button>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                      <tr>
+                        <th className="py-2.5 px-3">Policy Name</th>
+                        <th className="py-2.5 px-3">Calculation Method</th>
+                        <th className="py-2.5 px-3">Rate / Amount</th>
+                        <th className="py-2.5 px-3">Grace Period</th>
+                        <th className="py-2.5 px-3">Min / Max Cap</th>
+                        <th className="py-2.5 px-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                      {lateFeePolicies.map((pol) => (
+                        <tr key={pol.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 font-semibold text-slate-900 font-sans">{pol.policy_name}</td>
+                          <td className="py-3 px-3 font-sans">
+                            <Badge variant="neutral">{pol.calculation_method}</Badge>
+                          </td>
+                          <td className="py-3 px-3">
+                            {pol.calculation_method === 'PERCENTAGE_PER_MONTH'
+                              ? `${(pol.amount_or_rate_bps / 100).toFixed(2)}% / month`
+                              : formatINR(pol.amount_or_rate_bps)}
+                          </td>
+                          <td className="py-3 px-3 font-sans">
+                            <span className="font-bold text-indigo-700">{pol.grace_period_days} days</span> from due date
+                          </td>
+                          <td className="py-3 px-3 text-slate-500">
+                            {pol.min_charge_paise > 0 ? formatINR(pol.min_charge_paise) : 'None'} /{' '}
+                            {pol.max_charge_paise > 0 ? formatINR(pol.max_charge_paise) : 'No Cap'}
+                          </td>
+                          <td className="py-3 px-3 font-sans">
+                            <Badge variant={pol.is_active ? 'success' : 'neutral'}>
+                              {pol.is_active ? 'ACTIVE' : 'INACTIVE'}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Assessment & Preview */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <div>
+                <CardTitle className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-rose-600" />
+                  Overdue Accounts Assessment & Execution
+                </CardTitle>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Evaluates unpaid principal after grace period. Surcharges are partial-payment aware and generate immutable ledger entries.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => previewLateFeeMutation.mutate()}
+                  disabled={previewLateFeeMutation.isPending || lateFeePolicies.length === 0}
+                  className="text-xs"
+                >
+                  <Eye className="h-3.5 w-3.5 mr-1" />
+                  {previewLateFeeMutation.isPending ? 'Evaluating...' : 'Preview Surcharges'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => applyLateFeeMutation.mutate()}
+                  disabled={applyLateFeeMutation.isPending || lateFeePolicies.length === 0}
+                  className="text-xs bg-rose-600 hover:bg-rose-700 text-white"
+                >
+                  <Play className="h-3.5 w-3.5 mr-1" />
+                  {applyLateFeeMutation.isPending ? 'Applying...' : 'Apply Late Fees'}
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {lateFeePreview ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                    <div>
+                      <span className="text-slate-500 block">Active Policy:</span>
+                      <span className="font-bold text-slate-900">{lateFeePreview.policy?.policy_name || 'None'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Eligible Overdue Invoices:</span>
+                      <span className="font-bold text-rose-600">{lateFeePreview.total_eligible_invoices}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Total Proposed Surcharges:</span>
+                      <span className="font-bold text-slate-900">{formatINR(lateFeePreview.total_proposed_fee_paise)}</span>
+                    </div>
+                  </div>
+
+                  {lateFeePreview.items.length === 0 ? (
+                    <p className="text-center py-6 text-slate-500 text-xs">
+                      No invoices are currently beyond their grace period for this billing cycle.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                          <tr>
+                            <th className="py-2.5 px-3">Invoice</th>
+                            <th className="py-2.5 px-3">Flat / Tower</th>
+                            <th className="py-2.5 px-3">Period</th>
+                            <th className="py-2.5 px-3">Due Date</th>
+                            <th className="py-2.5 px-3">Days Overdue</th>
+                            <th className="py-2.5 px-3">Unpaid Principal</th>
+                            <th className="py-2.5 px-3">Proposed Surcharge</th>
+                            <th className="py-2.5 px-3">Calculation Basis</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                          {lateFeePreview.items.map((item) => (
+                            <tr key={item.invoice_id} className="hover:bg-slate-50">
+                              <td className="py-2.5 px-3 font-semibold text-slate-900">{item.invoice_number}</td>
+                              <td className="py-2.5 px-3 font-sans">
+                                {item.tower_number} - {item.flat_number}
+                              </td>
+                              <td className="py-2.5 px-3">{item.billing_period}</td>
+                              <td className="py-2.5 px-3">{formatDateIST(item.due_date)}</td>
+                              <td className="py-2.5 px-3 text-rose-600 font-bold">{item.days_overdue} days</td>
+                              <td className="py-2.5 px-3">{formatINR(item.unpaid_principal_paise)}</td>
+                              <td className="py-2.5 px-3 font-bold text-slate-900">{formatINR(item.proposed_fee_paise)}</td>
+                              <td className="py-2.5 px-3 text-slate-500 font-sans text-[10px]">{item.explanation}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-8 text-center text-xs text-slate-500">
+                  <p>Click <strong>Preview Surcharges</strong> to inspect eligible overdue accounts before execution.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* Modal: Configure Bye-Law Policy */}
+      {/* ------------------------------------------------------------- */}
+      {isPolicyModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <Scale className="h-5 w-5 text-indigo-600" />
+                <h3 className="text-sm font-bold text-slate-900">Configure Bye-Law Late Fee Policy</h3>
+              </div>
+              <button onClick={() => setIsPolicyModalOpen(false)} className="text-slate-400 hover:text-slate-600 rounded p-1">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              {policyError && (
+                <Alert variant="error" title="Policy Configuration Error">
+                  {policyError}
+                </Alert>
+              )}
+
+              <div className="space-y-1">
+                <label className="block font-semibold text-slate-700">Policy Name</label>
+                <input
+                  type="text"
+                  value={newPolicy.policy_name}
+                  onChange={(e) => setNewPolicy((p) => ({ ...p, policy_name: e.target.value }))}
+                  className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block font-semibold text-slate-700">Calculation Method</label>
+                  <select
+                    value={newPolicy.calculation_method}
+                    onChange={(e) =>
+                      setNewPolicy((p) => ({
+                        ...p,
+                        calculation_method: e.target.value as any,
+                      }))
+                    }
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                  >
+                    <option value="PERCENTAGE_PER_MONTH">Percentage per Month</option>
+                    <option value="FLAT_FEE">Flat Fee (₹)</option>
+                    <option value="DAILY_INTEREST_PAISE">Daily Interest (paise)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block font-semibold text-slate-700">
+                    {newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH'
+                      ? 'Rate (% per month)'
+                      : 'Fixed Amount (₹)'}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={newPolicy.rate_or_amount}
+                    onChange={(e) => setNewPolicy((p) => ({ ...p, rate_or_amount: e.target.value }))}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block font-semibold text-slate-700">
+                  Explicit Grace Period (Days from Due Date)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="90"
+                  value={newPolicy.grace_period_days}
+                  onChange={(e) =>
+                    setNewPolicy((p) => ({
+                      ...p,
+                      grace_period_days: parseInt(e.target.value, 10) || 0,
+                    }))
+                  }
+                  className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                />
+                <p className="text-[10px] text-slate-500">
+                  Must strictly align with society bye-laws. Surcharges begin after grace period expires.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block font-semibold text-slate-700">Minimum Surcharge (₹)</label>
+                  <input
+                    type="number"
+                    value={newPolicy.min_charge_inr}
+                    onChange={(e) => setNewPolicy((p) => ({ ...p, min_charge_inr: e.target.value }))}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block font-semibold text-slate-700">Maximum Cap (₹, 0 for none)</label>
+                  <input
+                    type="number"
+                    value={newPolicy.max_charge_inr}
+                    onChange={(e) => setNewPolicy((p) => ({ ...p, max_charge_inr: e.target.value }))}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
+                <Button size="sm" variant="outline" onClick={() => setIsPolicyModalOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => createPolicyMutation.mutate()}
+                  disabled={createPolicyMutation.isPending}
+                >
+                  {createPolicyMutation.isPending ? 'Saving...' : 'Save & Activate Policy'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ------------------------------------------------------------- */}
       {/* Modal: Run Monthly Billing Execution & Preview */}

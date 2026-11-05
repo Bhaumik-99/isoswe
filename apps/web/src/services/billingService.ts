@@ -53,6 +53,60 @@ export function formatDateTimeIST(dateStr: string): string {
   }
 }
 
+export type LateFeeCalculationMethod = 'FLAT_FEE' | 'PERCENTAGE_PER_MONTH' | 'DAILY_INTEREST_PAISE';
+
+export interface LateFeePolicy {
+  id: string;
+  society_id: string;
+  policy_name: string;
+  calculation_method: LateFeeCalculationMethod;
+  amount_or_rate_bps: number;
+  grace_period_days: number;
+  min_charge_paise: number;
+  max_charge_paise: number;
+  is_active: boolean;
+  effective_from: string;
+  effective_to?: string | null;
+}
+
+export interface CreateLateFeePolicyPayload {
+  policy_name: string;
+  calculation_method: LateFeeCalculationMethod;
+  amount_or_rate_bps: number;
+  grace_period_days: number;
+  min_charge_paise?: number;
+  max_charge_paise?: number;
+  is_active?: boolean;
+  effective_from?: string;
+}
+
+export interface LateFeePreviewItem {
+  invoice_id: string;
+  invoice_number: string;
+  flat_number: string;
+  tower_number: string;
+  billing_period: string;
+  due_date: string;
+  days_overdue: number;
+  unpaid_principal_paise: number;
+  proposed_fee_paise: number;
+  explanation: string;
+}
+
+export interface LateFeePreviewResponse {
+  policy: LateFeePolicy | null;
+  evaluated_at: string;
+  total_eligible_invoices: number;
+  total_proposed_fee_paise: number;
+  items: LateFeePreviewItem[];
+}
+
+export interface ApplyLateFeesResponse {
+  applied_invoices_count: number;
+  total_fee_charged_paise: number;
+  message: string;
+}
+
 export const billingService = {
   // Resident endpoints
   async getResidentSummary(): Promise<ResidentBillingSummary> {
@@ -137,5 +191,26 @@ export const billingService = {
 
   async getBillingRun(runId: string): Promise<BillingRun> {
     return apiClient.get<BillingRun>(`/api/v1/billing/staff/runs/${runId}`);
+  },
+
+  async getLateFeePolicies(societyId?: string): Promise<LateFeePolicy[]> {
+    const params = societyId ? `?society_id=${societyId}` : '';
+    return apiClient.get<LateFeePolicy[]>(`/api/v1/billing/late-fee-policies${params}`);
+  },
+
+  async createLateFeePolicy(payload: CreateLateFeePolicyPayload): Promise<LateFeePolicy> {
+    return apiClient.post<LateFeePolicy>('/api/v1/billing/late-fee-policies', payload);
+  },
+
+  async previewLateFees(asOfDate?: string): Promise<LateFeePreviewResponse> {
+    return apiClient.post<LateFeePreviewResponse>('/api/v1/billing/late-fees/preview', {
+      as_of_date: asOfDate,
+    });
+  },
+
+  async applyLateFees(asOfDate?: string): Promise<ApplyLateFeesResponse> {
+    return apiClient.post<ApplyLateFeesResponse>('/api/v1/billing/late-fees/apply', {
+      as_of_date: asOfDate,
+    });
   },
 };
