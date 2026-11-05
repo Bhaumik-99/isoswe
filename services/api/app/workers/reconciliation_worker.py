@@ -33,6 +33,7 @@ from app.domains.reconciliation.models import (
     ReconciliationMatch,
     StatementImportStatus,
     TransactionReconciliationStatus,
+    TransactionType,
 )
 from app.domains.reliability.models import AuditEvent
 from app.messaging.consumer import MessageHandler, dispatcher
@@ -135,7 +136,13 @@ class ReconciliationJobHandler(MessageHandler):
         self, import_id: UUID, envelope: EventEnvelope, db: Session
     ) -> None:
         """Asynchronously executes matching engine for transactions associated with a statement import."""
-        imp = db.query(BankStatementImport).filter(BankStatementImport.id == import_id).first()
+        # 1. Atomically claim job with row-level lock
+        imp = (
+            db.query(BankStatementImport)
+            .filter(BankStatementImport.id == import_id)
+            .with_for_update()
+            .first()
+        )
         if not imp:
             logger.warning(
                 f"[ReconciliationWorker] Statement import {import_id} not found; skipping."
@@ -143,7 +150,10 @@ class ReconciliationJobHandler(MessageHandler):
             return
 
         # Idempotency guard: skip if already completed
-        if imp.status == StatementImportStatus.COMPLETED:
+        if imp.status in (
+            StatementImportStatus.COMPLETED,
+            StatementImportStatus.COMPLETED_WITH_ERRORS,
+        ):
             logger.info(
                 f"[ReconciliationWorker] Statement {import_id} already COMPLETED; skipping."
             )
@@ -155,6 +165,7 @@ class ReconciliationJobHandler(MessageHandler):
             .filter(
                 BankTransaction.import_id == import_id,
                 BankTransaction.reconciliation_status == TransactionReconciliationStatus.UNMATCHED,
+                BankTransaction.transaction_type == TransactionType.CREDIT,
             )
             .all()
         )
@@ -169,6 +180,8 @@ class ReconciliationJobHandler(MessageHandler):
             users = {u.id: u for u in db.query(User).all()}
 
             engine = DeterministicMatchingEngine(imp.society_id)
+            matches_to_create: list[ReconciliationMatch] = []
+
             for txn in unmatched_txns:
                 evaluations = engine.evaluate_transaction(
                     transaction=txn,
@@ -183,8 +196,9 @@ class ReconciliationJobHandler(MessageHandler):
                     if top.confidence_score >= 70.0:
                         txn.reconciliation_status = TransactionReconciliationStatus.SUGGESTED
                     for idx, ev in enumerate(evaluations[:5]):
-                        db.add(
+                        matches_to_create.append(
                             ReconciliationMatch(
+                                society_id=imp.society_id,
                                 transaction_id=txn.id,
                                 flat_id=ev.flat_id,
                                 resident_id=ev.resident_id,
@@ -195,11 +209,17 @@ class ReconciliationJobHandler(MessageHandler):
                                 matching_level=ev.matching_level,
                                 explanation=ev.explanation,
                                 evidence=ev.evidence,
-                                is_selected=(idx == 0),
+                                is_selected=(idx == 0 and top.confidence_score >= 70.0),
                             )
                         )
+            if matches_to_create:
+                db.add_all(matches_to_create)
 
-        imp.status = StatementImportStatus.COMPLETED
+        imp.status = (
+            StatementImportStatus.COMPLETED
+            if imp.rejected_rows == 0
+            else StatementImportStatus.COMPLETED_WITH_ERRORS
+        )
         db.commit()
         logger.info(f"[ReconciliationWorker] Completed async matching for statement {import_id}")
 

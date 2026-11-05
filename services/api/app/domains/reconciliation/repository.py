@@ -63,6 +63,17 @@ class ReconciliationRepository:
             stmt = stmt.where(BankStatementImport.society_id == society_id)
         return self.db.scalar(stmt)
 
+    def get_statement_import_for_update(
+        self, import_id: UUID, society_id: UUID | None = None
+    ) -> BankStatementImport | None:
+        """Locks bank statement import row using SELECT FOR UPDATE to prevent concurrent confirmation claims."""
+        stmt = (
+            select(BankStatementImport).where(BankStatementImport.id == import_id).with_for_update()
+        )
+        if society_id:
+            stmt = stmt.where(BankStatementImport.society_id == society_id)
+        return self.db.scalar(stmt)
+
     def get_statement_import_by_checksum(
         self, society_id: UUID, file_checksum: str
     ) -> BankStatementImport | None:

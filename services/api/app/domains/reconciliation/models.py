@@ -216,7 +216,9 @@ class BankTransaction(Base):
         ),
         Index("ix_bank_txns_society_status", "society_id", "reconciliation_status"),
         Index("ix_bank_txns_society_date", "society_id", "transaction_date"),
-        Index("ix_bank_txns_society_fingerprint", "society_id", "transaction_fingerprint"),
+        UniqueConstraint(
+            "society_id", "transaction_fingerprint", name="uq_bank_transactions_society_fingerprint"
+        ),
         Index("ix_bank_txns_society_utr", "society_id", "utr_number"),
     )
 

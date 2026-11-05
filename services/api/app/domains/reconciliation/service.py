@@ -36,9 +36,8 @@ from app.domains.billing.models import (
 )
 from app.domains.billing.repository import BillingRepository
 from app.domains.billing.service import BillingService
-from app.domains.identity.models import Flat, FlatMembership, RoleType, User
+from app.domains.identity.models import Flat, RoleType, User
 from app.domains.identity.schemas import CurrentUserClaims
-from app.domains.reconciliation.matching import MatchingEngine
 from app.domains.reconciliation.models import (
     BankTransaction,
     MatchConfidenceTier,
@@ -220,7 +219,7 @@ class ReconciliationService:
         )
 
     # -------------------------------------------------------------------------
-    # 2. Confirm Import & Run Deterministic Matching
+    # 2. Confirm Import & Run Deterministic Matching Asynchronously
     # -------------------------------------------------------------------------
     def confirm_import(
         self,
@@ -229,7 +228,8 @@ class ReconciliationService:
     ) -> BankStatementImportResponse:
         self._verify_helpdesk_role(claims)
 
-        import_record = self.repo.get_statement_import_by_id(import_id)
+        # 1. Atomically claim the statement import row using SELECT FOR UPDATE
+        import_record = self.repo.get_statement_import_for_update(import_id)
         if not import_record:
             raise NotFoundError(f"Statement import {import_id} not found")
         self._verify_society_access(claims, import_record.society_id)
@@ -254,7 +254,7 @@ class ReconciliationService:
 
         society_id = import_record.society_id
 
-        # 1. Multi-layer duplicate detection
+        # 2. Multi-layer duplicate detection
         fingerprints = [r["transaction_fingerprint"] for r in cached_rows]
         utrs = [r["utr_number"] for r in cached_rows if r.get("utr_number")]
 
@@ -273,30 +273,24 @@ class ReconciliationService:
             fp = r["transaction_fingerprint"]
             utr = r.get("utr_number")
 
-            is_dup = False
-            dup_id: UUID | None = None
-
-            if fp in existing_fps:
-                is_dup = True
-                dup_id = existing_fps[fp]
-            elif utr and utr in existing_utrs:
-                is_dup = True
-                dup_id = existing_utrs[utr]
-            elif fp in seen_fps_in_file:
-                is_dup = True
-                dup_id = seen_fps_in_file[fp]
-            elif utr and utr in seen_utrs_in_file:
-                is_dup = True
-                dup_id = seen_utrs_in_file[utr]
-
-            if is_dup:
+            if fp in existing_fps or fp in seen_fps_in_file:
+                # Fingerprint already exists in DB or earlier in file -> skip insertion to satisfy uq_bank_transactions_society_fingerprint
                 duplicate_count += 1
+                continue
+            elif utr and (utr in existing_utrs or utr in seen_utrs_in_file):
+                # Duplicate by UTR, but with unique fingerprint
+                duplicate_count += 1
+                seen_fps_in_file[fp] = txn_id
+                dup_id = existing_utrs.get(utr) or seen_utrs_in_file.get(utr)
                 status = TransactionReconciliationStatus.DUPLICATE
+                is_dup = True
             else:
-                status = TransactionReconciliationStatus.UNMATCHED
                 seen_fps_in_file[fp] = txn_id
                 if utr:
                     seen_utrs_in_file[utr] = txn_id
+                status = TransactionReconciliationStatus.UNMATCHED
+                is_dup = False
+                dup_id = None
 
             v_date = datetime.fromisoformat(r["value_date"]) if r.get("value_date") else None
             t_date = datetime.fromisoformat(r["transaction_date"])
@@ -325,99 +319,22 @@ class ReconciliationService:
                 )
             )
 
-        self.repo.create_transactions_batch(transactions_to_create)
+        if transactions_to_create:
+            self.repo.create_transactions_batch(transactions_to_create)
 
-        # 2. Run Deterministic Matching Engine on valid unmatched credits
-        eligible_credits = [
-            t
-            for t in transactions_to_create
-            if t.transaction_type == TransactionType.CREDIT
-            and t.reconciliation_status == TransactionReconciliationStatus.UNMATCHED
-        ]
-
-        if eligible_credits:
-            # Preload society financial and resident master records
-            invoices = self.db.query(Invoice).filter(Invoice.society_id == society_id).all()
-            payments = self.db.query(Payment).filter(Payment.society_id == society_id).all()
-            flats = self.db.query(Flat).filter(Flat.society_id == society_id).all()
-            memberships = (
-                self.db.query(FlatMembership).filter(FlatMembership.society_id == society_id).all()
-            )
-            users = {u.id: u for u in self.db.query(User).all()}
-
-            matching_engine = MatchingEngine(society_id)
-            matches_to_create: list[ReconciliationMatch] = []
-
-            for txn in eligible_credits:
-                evaluations = matching_engine.evaluate_transaction(
-                    transaction=txn,
-                    invoices=invoices,
-                    payments=payments,
-                    flats=flats,
-                    memberships=memberships,
-                    users=users,
-                )
-
-                if evaluations:
-                    top = evaluations[0]
-                    # If high or medium confidence, promote status to SUGGESTED
-                    if top.confidence_score >= 70.0:
-                        txn.reconciliation_status = TransactionReconciliationStatus.SUGGESTED
-
-                    for idx, ev in enumerate(evaluations[:5]):  # Keep top 5 candidates
-                        matches_to_create.append(
-                            ReconciliationMatch(
-                                society_id=society_id,
-                                transaction_id=txn.id,
-                                flat_id=ev.flat_id,
-                                resident_id=ev.resident_id,
-                                invoice_id=ev.invoice_id,
-                                existing_payment_id=ev.existing_payment_id,
-                                confidence_score=ev.confidence_score,
-                                confidence_tier=ev.confidence_tier,
-                                matching_level=ev.matching_level,
-                                explanation=ev.explanation,
-                                evidence=ev.evidence,
-                                is_selected=(idx == 0 and top.confidence_score >= 70.0),
-                            )
-                        )
-
-            if matches_to_create:
-                self.repo.create_matches_batch(matches_to_create)
-
-        # 3. Finalize Import Status
+        # 3. Finalize Ingestion Metadata
         import_record.duplicate_rows = duplicate_count
         import_record.imported_rows = len(transactions_to_create)
-        import_record.status = (
-            StatementImportStatus.COMPLETED
-            if import_record.rejected_rows == 0
-            else StatementImportStatus.COMPLETED_WITH_ERRORS
-        )
+        import_record.status = StatementImportStatus.PROCESSING
 
         # Clear cached raw rows from metadata to save storage
         meta = dict(import_record.error_summary)
         meta.pop("cached_valid_rows", None)
         import_record.error_summary = meta
 
-        # Audit and outbox events
-        audit = AuditEvent(
-            society_id=society_id,
-            actor_id=claims.user_id,
-            action="STATEMENT_IMPORTED",
-            resource_type="bank_statement_import",
-            resource_id=str(import_record.id),
-            correlation_id=str(uuid.uuid4()),
-            event_metadata={
-                "file_name": import_record.file_name,
-                "imported_rows": import_record.imported_rows,
-                "duplicate_rows": import_record.duplicate_rows,
-                "rejected_rows": import_record.rejected_rows,
-            },
-        )
-        self.db.add(audit)
-
+        # 4. Outbox Event: enqueue reconciliation.process_bank_statement for asynchronous matching worker
         outbox = OutboxEvent(
-            event_type="reconciliation.statement_imported",
+            event_type="reconciliation.process_bank_statement",
             aggregate_type="bank_statement_import",
             aggregate_id=str(import_record.id),
             payload={
@@ -430,8 +347,26 @@ class ReconciliationService:
         )
         self.db.add(outbox)
 
+        # 5. Audit event
+        audit = AuditEvent(
+            society_id=society_id,
+            actor_id=claims.user_id,
+            action="STATEMENT_CONFIRMED",
+            resource_type="bank_statement_import",
+            resource_id=str(import_record.id),
+            correlation_id=str(uuid.uuid4()),
+            event_metadata={
+                "file_name": import_record.file_name,
+                "imported_rows": import_record.imported_rows,
+                "duplicate_rows": import_record.duplicate_rows,
+                "rejected_rows": import_record.rejected_rows,
+            },
+        )
+        self.db.add(audit)
+
         self.db.commit()
         self.db.refresh(import_record)
+        return BankStatementImportResponse.model_validate(import_record)
 
         return BankStatementImportResponse.model_validate(import_record)
 

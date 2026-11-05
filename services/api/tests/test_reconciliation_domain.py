@@ -87,6 +87,34 @@ AUTH_HELPDESK = {"Authorization": "Bearer dev-token-helpdesk"}
 AUTH_NEERAJ = {"Authorization": "Bearer dev-token-neeraj"}
 
 
+def drain_reconciliation_worker_jobs(db_session: Session) -> None:
+    """Helper to process all pending reconciliation.process_bank_statement outbox events."""
+    from app.domains.reliability.models import OutboxEvent, OutboxStatus
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.reconciliation_worker import reconciliation_handler
+
+    events = (
+        db_session.query(OutboxEvent)
+        .filter(
+            OutboxEvent.event_type == "reconciliation.process_bank_statement",
+            OutboxEvent.status == OutboxStatus.PENDING,
+        )
+        .all()
+    )
+    for evt in events:
+        envelope = EventEnvelope(
+            event_id=evt.id,
+            event_type=evt.event_type,
+            aggregate_type=evt.aggregate_type,
+            aggregate_id=evt.aggregate_id,
+            payload=evt.payload,
+            metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        )
+        reconciliation_handler.process(envelope, db_session)
+        evt.status = OutboxStatus.PUBLISHED
+    db_session.commit()
+
+
 # =============================================================================
 # 1. UNIT TESTS: Normalizer, Parser, Formula Injection & Matching Engine
 # =============================================================================
@@ -318,7 +346,9 @@ def test_reconciliation_resident_role_forbidden(client: TestClient) -> None:
     assert res2.status_code == 403
 
 
-def test_reconciliation_upload_preview_and_duplicate_file_rejection(client: TestClient) -> None:
+def test_reconciliation_upload_preview_and_duplicate_file_rejection(
+    client: TestClient, db_session: Session
+) -> None:
     """Uploads CSV bank statement, verifies preview, and verifies SHA-256 duplicate file rejection."""
     csv_content = (
         b"Date,Narration,Chq / Ref No.,Withdrawal (INR),Deposit (INR),Balance (INR)\n"
@@ -340,13 +370,23 @@ def test_reconciliation_upload_preview_and_duplicate_file_rejection(client: Test
     assert data1["file_checksum"] == compute_file_checksum(csv_content)
     import_id = data1["import_id"]
 
-    # 2. Confirm the import
+    # 2. Confirm the import asynchronously
     confirm_res = client.post(
         f"/api/v1/reconciliation/statements/{import_id}/confirm",
         headers=AUTH_HELPDESK,
     )
     assert confirm_res.status_code == 200
-    assert confirm_res.json()["status"] == "COMPLETED"
+    assert confirm_res.json()["status"] == "PROCESSING"
+
+    # Background worker executes deterministic matching
+    drain_reconciliation_worker_jobs(db_session)
+    imp = (
+        db_session.query(BankStatementImport)
+        .filter(BankStatementImport.id == uuid.UUID(import_id))
+        .first()
+    )
+    assert imp is not None
+    assert imp.status == StatementImportStatus.COMPLETED
 
     # 3. Attempt duplicate file upload -> must reject with 409 Conflict
     res2 = client.post(
@@ -601,6 +641,7 @@ def test_reconcile_existing_payment_provider_record_without_double_count(
     )
     import_id = up_res.json()["import_id"]
     client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    drain_reconciliation_worker_jobs(db_session)
 
     # 3. Retrieve transaction and verify it was matched to existing payment (Level 1)
     txns_res = client.get(
@@ -734,6 +775,7 @@ def test_reconcile_existing_payment_multiple_allocations_correct_links(
     )
     import_id = up_res.json()["import_id"]
     client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    drain_reconciliation_worker_jobs(db_session)
 
     txns_res = client.get(
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
@@ -835,6 +877,7 @@ def test_reconcile_existing_payment_rejects_cross_flat_invoice(
     )
     import_id = up_res.json()["import_id"]
     client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    drain_reconciliation_worker_jobs(db_session)
     txns = client.get(
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()
@@ -900,6 +943,7 @@ def test_reconcile_existing_payment_rejects_mismatched_amount(
     )
     import_id = up_res.json()["import_id"]
     client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    drain_reconciliation_worker_jobs(db_session)
     txns = client.get(
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()
@@ -1428,7 +1472,8 @@ def test_reconciliation_additional_endpoints_and_aliases(
         headers=AUTH_HELPDESK,
     )
     assert proc_res.status_code == 200
-    assert proc_res.json()["status"] == "COMPLETED"
+    assert proc_res.json()["status"] in ("PROCESSING", "COMPLETED")
+    drain_reconciliation_worker_jobs(db_session)
 
     # Get transaction from this import
     txns_res = client.get(
@@ -1517,3 +1562,206 @@ def test_reconciliation_worker_and_error_handling(
     reconciliation_handler.process(envelope, db_session)
     db_session.refresh(imp)
     assert imp.status == StatementImportStatus.COMPLETED
+
+
+def test_bank_transaction_fingerprint_unique_constraint(db_session: Session) -> None:
+    """Verifies that uq_bank_transactions_society_fingerprint prevents duplicate transaction fingerprints within a society."""
+    from sqlalchemy.exc import IntegrityError
+
+    soc_id = uuid.UUID(SOCIETY_ID)
+    user_id = db_session.query(User).first().id
+    imp = BankStatementImport(
+        society_id=soc_id,
+        file_name="fp_test.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=user_id,
+        status=StatementImportStatus.READY_FOR_IMPORT,
+    )
+    db_session.add(imp)
+    db_session.commit()
+
+    fp = f"fp_{uuid.uuid4().hex}"
+    txn1 = BankTransaction(
+        import_id=imp.id,
+        society_id=soc_id,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=500000,
+        description="UPI/CR/123456/NEERAJ",
+        normalized_description="UPI CR 123456 NEERAJ",
+        transaction_fingerprint=fp,
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn1)
+    db_session.commit()
+
+    # Attempting to insert another transaction with identical (society_id, transaction_fingerprint)
+    txn2 = BankTransaction(
+        import_id=imp.id,
+        society_id=soc_id,
+        source_row_number=2,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=500000,
+        description="UPI/CR/123456/NEERAJ DUPLICATE",
+        normalized_description="UPI CR 123456 NEERAJ DUPLICATE",
+        transaction_fingerprint=fp,
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn2)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+    # Same fingerprint in a DIFFERENT society is allowed (composite multi-tenant uniqueness)
+    other_soc = Society(
+        id=uuid.uuid4(),
+        name=f"Other Society {uuid.uuid4().hex[:6]}",
+        status=SocietyStatus.ACTIVE,
+    )
+    db_session.add(other_soc)
+    db_session.commit()
+
+    other_imp = BankStatementImport(
+        society_id=other_soc.id,
+        file_name="other_soc.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=user_id,
+        status=StatementImportStatus.READY_FOR_IMPORT,
+    )
+    db_session.add(other_imp)
+    db_session.commit()
+
+    txn_other_soc = BankTransaction(
+        import_id=other_imp.id,
+        society_id=other_soc.id,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=500000,
+        description="Same fingerprint across different tenant",
+        normalized_description="SAME FINGERPRINT ACROSS DIFFERENT TENANT",
+        transaction_fingerprint=fp,
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn_other_soc)
+    db_session.commit()
+    assert txn_other_soc.id is not None
+
+
+def test_reconciliation_worker_matches_sets_society_id_and_completes(db_session: Session) -> None:
+    """Verifies that the background worker accurately claims the import, populates society_id on ReconciliationMatch, and completes."""
+    from app.domains.reconciliation.models import ReconciliationMatch
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.reconciliation_worker import reconciliation_handler
+
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat = db_session.query(Flat).filter(Flat.society_id == soc_id).first()
+    assert flat is not None
+    user_id = db_session.query(User).first().id
+
+    # Create an unpaid invoice
+    inv = Invoice(
+        society_id=soc_id,
+        flat_id=flat.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-ASYNC-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=747500,
+        total_paise=747500,
+        due_date=datetime.now(UTC) + timedelta(days=15),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(inv)
+    db_session.commit()
+
+    # Create statement import and transaction
+    imp = BankStatementImport(
+        society_id=soc_id,
+        file_name="async_match_test.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=user_id,
+        status=StatementImportStatus.PROCESSING,
+    )
+    db_session.add(imp)
+    db_session.commit()
+
+    narration = f"NEFT/REF{uuid.uuid4().hex[:8]}/{flat.flat_number} MAINT"
+    txn = BankTransaction(
+        import_id=imp.id,
+        society_id=soc_id,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=747500,
+        description=narration,
+        normalized_description=narration.upper(),
+        transaction_fingerprint=f"fp_{uuid.uuid4().hex}",
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="reconciliation.process_bank_statement",
+        aggregate_type="BankStatementImport",
+        aggregate_id=str(imp.id),
+        payload={"society_id": str(soc_id)},
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+    )
+
+    reconciliation_handler.process(envelope, db_session)
+
+    db_session.refresh(imp)
+    assert imp.status == StatementImportStatus.COMPLETED
+
+    db_session.refresh(txn)
+    assert txn.reconciliation_status == TransactionReconciliationStatus.SUGGESTED
+
+    matches = (
+        db_session.query(ReconciliationMatch)
+        .filter(ReconciliationMatch.transaction_id == txn.id)
+        .all()
+    )
+    assert len(matches) > 0
+    for match in matches:
+        assert match.society_id == soc_id, "society_id must be set on ReconciliationMatch"
+        assert match.society_id is not None
+
+
+def test_concurrency_safe_import_confirmation_guards(client: TestClient) -> None:
+    """Verifies that confirm_import cannot be re-confirmed once claimed and set to PROCESSING."""
+    csv_content = (
+        b"Date,Narration,Chq / Ref No.,Withdrawal (INR),Deposit (INR),Balance (INR)\n"
+        b"05/11/2026,UPI/CR/111222333444/ROHIT SHARMA/T07-1203,111222333444,,7475.00,107475.00\n"
+    )
+    up_res = client.post(
+        "/api/v1/reconciliation/statements",
+        files={"file": ("concurrency_test.csv", csv_content, "text/csv")},
+        headers=AUTH_HELPDESK,
+    )
+    assert up_res.status_code == 201
+    import_id = up_res.json()["import_id"]
+
+    # First confirm -> 200 PROCESSING
+    confirm_1 = client.post(
+        f"/api/v1/reconciliation/statements/{import_id}/confirm",
+        headers=AUTH_HELPDESK,
+    )
+    assert confirm_1.status_code == 200
+    assert confirm_1.json()["status"] == "PROCESSING"
+
+    # Second confirm -> 400 Bad Request because status is PROCESSING, not READY_FOR_IMPORT
+    confirm_2 = client.post(
+        f"/api/v1/reconciliation/statements/{import_id}/confirm",
+        headers=AUTH_HELPDESK,
+    )
+    assert confirm_2.status_code == 400
+    assert "Only READY_FOR_IMPORT statements can be confirmed" in confirm_2.text
