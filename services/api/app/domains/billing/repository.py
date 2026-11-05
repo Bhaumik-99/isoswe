@@ -780,4 +780,5 @@ class BillingRepository:
         stmt = delete(IdempotencyKey).where(IdempotencyKey.expires_at <= now)
         res = self.db.execute(stmt)
         self.db.commit()
-        return res.rowcount or 0
+        count = getattr(res, "rowcount", 0)
+        return int(count) if count is not None else 0
