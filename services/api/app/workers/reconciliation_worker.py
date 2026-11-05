@@ -1,8 +1,13 @@
 """Bank Statement Reconciliation Asynchronous Queue Worker
 
-Consumes reconciliation jobs from QUEUE_RECONCILIATION_JOBS:
+Consumes reconciliation jobs and events from QUEUE_RECONCILIATION_JOBS:
 - reconciliation.process_bank_statement
+- reconciliation.statement_imported
+- reconciliation.approved_and_posted
 """
+
+import uuid
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -21,17 +26,35 @@ class ReconciliationJobHandler(MessageHandler):
     def supported_event_types(self) -> list[str]:
         return [
             "reconciliation.process_bank_statement",
+            "reconciliation.statement_imported",
+            "reconciliation.approved_and_posted",
         ]
 
     def process(self, envelope: EventEnvelope, db: Session) -> None:
         logger.info(
-            f"[ReconciliationWorker] Processing bank statement {envelope.event_id} for aggregate {envelope.aggregate_id}"
+            f"[ReconciliationWorker] Processing event {envelope.event_id} ({envelope.event_type}) for aggregate {envelope.aggregate_id}"
         )
 
+        society_id: UUID | None = None
+        try:
+            if "society_id" in envelope.payload and envelope.payload["society_id"]:
+                society_id = uuid.UUID(str(envelope.payload["society_id"]))
+        except Exception:
+            society_id = None
+
+        if envelope.event_type == "reconciliation.statement_imported":
+            logger.info(
+                f"[ReconciliationWorker] Statement import {envelope.aggregate_id} confirmed and matched."
+            )
+        elif envelope.event_type == "reconciliation.approved_and_posted":
+            logger.info(
+                f"[ReconciliationWorker] Bank transaction {envelope.aggregate_id} allocated and posted."
+            )
+
         audit = AuditEvent(
-            society_id=None,
+            society_id=society_id,
             actor_id=None,
-            action="reconciliation.processed",
+            action=f"{envelope.event_type}.processed",
             resource_type="Reconciliation",
             resource_id=str(envelope.aggregate_id),
             correlation_id=envelope.metadata.correlation_id,
@@ -39,11 +62,13 @@ class ReconciliationJobHandler(MessageHandler):
                 "event_id": str(envelope.event_id),
                 "event_type": envelope.event_type,
                 "consumer": self.consumer_name,
+                "payload": envelope.payload,
             },
         )
         db.add(audit)
+        db.commit()
         logger.info(
-            f"[ReconciliationWorker] Completed statement processing for event {envelope.event_id}"
+            f"[ReconciliationWorker] Completed handling event {envelope.event_id} ({envelope.event_type})"
         )
 
 

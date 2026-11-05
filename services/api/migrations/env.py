@@ -13,7 +13,10 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, ".")
 
 # Import all model modules so Base.metadata is populated with all tables
+import app.domains.billing.models  # noqa: F401
+import app.domains.complaints.models  # noqa: F401
 import app.domains.identity.models  # noqa: F401
+import app.domains.reconciliation.models  # noqa: F401
 import app.domains.reliability.models  # noqa: F401
 from app.core.config import settings
 from app.core.database import Base

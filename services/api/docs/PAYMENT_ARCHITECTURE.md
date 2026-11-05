@@ -50,6 +50,14 @@ CREATED → PROCESSING → SUCCEEDED / FAILED
 5. If FAILED: payment marked FAILED, no allocation created, ledger unchanged
 6. Response returned; idempotency key cached for 24h
 
+## Bank Statement Reconciliation Integration (Phase 4)
+
+In addition to resident-initiated online payments via payment providers, the platform supports offline direct credits (NEFT, RTGS, IMPS, UPI) reconciled through the Bank Reconciliation domain:
+
+- **Settled Direct Credits**: Approved bank statement credits create `Payment` entries with `provider = 'BANK_TRANSFER'`, accompanied by `PaymentAllocation` rows and standard `FinancialLedgerEntry` records (`PAYMENT_RECEIVED`, `PAYMENT_ALLOCATED`).
+- **Zero Double-Posting**: When an incoming bank statement line reflects an online payment previously settled through the gateway, reconciliation marks the transaction `POSTED` and links `existing_payment_id` without creating duplicate `Payment` or ledger entries.
+- **Pessimistic Locking & Post-Lock Re-Check**: The reconciliation service locks target invoices with `SELECT FOR UPDATE` and re-verifies outstanding balances before allocation to prevent concurrent over-collection across both online and offline channels.
+
 ## Running Payment Tests Locally
 
 ```bash

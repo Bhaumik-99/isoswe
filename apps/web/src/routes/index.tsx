@@ -13,6 +13,7 @@ import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
+import { StaffReconciliation } from '../features/staff/reconciliation/StaffReconciliation';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
 import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
 import { NotFound } from '../components/NotFound';
@@ -93,21 +94,7 @@ export const AppRoutes: React.FC = () => {
         <Route path="overview" element={<StaffOverview />} />
         <Route path="helpdesk" element={<StaffHelpdesk />} />
         <Route path="billing" element={<StaffBilling />} />
-        <Route
-          path="reconciliation"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Automated Bank Statement Reconciliation"
-              plannedPhase="Phase 3 - Financial Reconciliation"
-              description="Upload society bank statements (CSV/MT940) with automated algorithmic transaction matching and suspense resolution."
-              deliverables={[
-                'Asynchronous reconciliation-jobs queue processing',
-                'Automated NEFT/RTGS transaction reference matching',
-                'Suspense account ledger workflow',
-              ]}
-            />
-          }
-        />
+        <Route path="reconciliation" element={<StaffReconciliation />} />
         <Route
           path="residents"
           element={

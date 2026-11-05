@@ -51,12 +51,16 @@ class ApiClient {
     const correlationId = sessionStorage.getItem('correlation_id') || requestId;
     sessionStorage.setItem('correlation_id', correlationId);
 
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       'X-Request-ID': requestId,
       'X-Correlation-ID': correlationId,
       ...(options.headers as Record<string, string>),
     };
+    if (isFormData && headers['Content-Type']) {
+      delete headers['Content-Type'];
+    }
 
     const token = this.getToken();
     if (token) {

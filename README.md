@@ -217,4 +217,41 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `POST` | `/api/v1/complaints/helpdesk/{id}/comments` | Helpdesk | Add public resident reply or private internal helpdesk note |
 | `POST` | `/api/v1/complaints/helpdesk/{id}/attachments/{att_id}/complete` | Helpdesk | Complete and verify staff attachment upload |
 
+---
 
+## 8. Phase 4 — Bank Statement Reconciliation
+
+### Core Capabilities
+- **Multi-Bank Statement Ingestion**: Automated CSV parsing supporting UTF-8 BOM, delimiter sniffing (`,`, `;`, `	`), and automatic profile detection for HDFC Bank, ICICI Bank, State Bank of India (SBI), Axis Bank, and generic society formats.
+- **Three-Tier Duplicate Prevention**:
+  1. *File Checksum*: SHA-256 hash on file contents rejects re-uploading identical statement files with `409 Conflict`.
+  2. *Transaction Fingerprint*: SHA-256 hash on `(society_id, date, type, paise, ref, normalized_narration)` prevents ingesting duplicate lines inside or across files.
+  3. *Bank Reference/UTR Matching*: Validates Indian banking transaction references against settled records.
+- **Layered Deterministic Matching Engine**: 5 deterministic matching tiers:
+  - *Level 1 (HIGH, 95-100%)*: Exact Bank UTR or payment reference match against online payments or invoice codes.
+  - *Level 2 (HIGH, 85-90%)*: Exact transaction amount plus partial reference clue match.
+  - *Level 3 (MEDIUM, 70-80%)*: Normalized narration clues identifying Tower/Flat (e.g. `T07-1203`) or resident name.
+  - *Level 4 (MEDIUM, 55-65%)*: Exact single invoice outstanding balance match without narration clue.
+  - *Level 5 (LOW, 0-30%)*: Unmatched credits or partial receipts queued for manual operator review or suspense classification.
+- **Zero Double-Posting Guarantee**: Bank credits matching existing online gateway payments are linked to `payment_id` and marked `POSTED` without creating duplicate payments or duplicate ledger credits.
+- **Atomic Concurrency & Balance Recalculation**: `SELECT FOR UPDATE` locks both transaction and candidate invoices, recalculating remaining balances post-lock to guarantee neither credits nor invoices can be over-allocated.
+- **Direct Bank Transfer Settlement**: Direct credits generate a `Payment` (`provider = 'BANK_TRANSFER'`), `PaymentAllocation` rows, and immutable `FinancialLedgerEntry` items (`PAYMENT_RECEIVED`, `PAYMENT_ALLOCATED`). Multi-flat splits generate flat-specific payments to maintain billing invariants.
+- **Spreadsheet Formula Injection Defense**: Pre-pends `'` to export cells starting with `=`, `+`, `-`, or `@` to neutralize DDE formula execution in spreadsheet software.
+- **Mandatory Idempotency**: Financial settlement requires an `Idempotency-Key` header with 24-hour response caching.
+
+### Reconciliation API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/reconciliation/statements` | Helpdesk | Upload CSV bank statement and receive validation preview |
+| `GET` | `/api/v1/reconciliation/statements` | Helpdesk | List previously uploaded bank statements and parsing status |
+| `POST` | `/api/v1/reconciliation/statements/{id}/confirm` | Helpdesk | Confirm validated statement and trigger deterministic matching |
+| `POST` | `/api/v1/reconciliation/statements/{id}/cancel` | Helpdesk | Cancel and discard unconfirmed statement import |
+| `GET` | `/api/v1/reconciliation/transactions` | Helpdesk | Filter and search normalized bank transactions |
+| `GET` | `/api/v1/reconciliation/transactions/{id}` | Helpdesk | Inspect single transaction with candidate matches |
+| `GET` | `/api/v1/reconciliation/queue` | Helpdesk | Fetch manual review queue filtered by category |
+| `POST` | `/api/v1/reconciliation/transactions/{id}/suggest` | Helpdesk | Suggest manual match with flat and invoice |
+| `POST` | `/api/v1/reconciliation/transactions/{id}/approve` | Helpdesk | Atomic financial ledger settlement (requires `Idempotency-Key`) |
+| `POST` | `/api/v1/reconciliation/transactions/{id}/reject` | Helpdesk | Reject candidate match and return transaction to unmatched |
+| `POST` | `/api/v1/reconciliation/transactions/{id}/mark-unidentified`| Helpdesk | Move unidentified mystery credit to suspense account |
+| `GET` | `/api/v1/reconciliation/summary` | Helpdesk | Retrieve society-wide reconciliation KPIs and ratios |
+| `GET` | `/api/v1/reconciliation/reports/export` | Helpdesk | Download formula-sanitized CSV reconciliation report |
