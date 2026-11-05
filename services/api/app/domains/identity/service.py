@@ -42,7 +42,7 @@ from app.domains.reliability.models import AuditEvent
 
 
 class IdentityService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         self.db = db
         self.repo = IdentityRepository(db)
 

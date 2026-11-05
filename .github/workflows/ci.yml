@@ -60,7 +60,12 @@ jobs:
         run: |
           cd services/api
           set -eo pipefail
-          mypy app --config-file pyproject.toml 2>&1 | tee mypy_output.log
+          if ! mypy app --config-file pyproject.toml 2>&1 | tee mypy_output.log; then
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < mypy_output.log
+            exit 1
+          fi
 
       - name: Run Pytest Suite with Coverage
         env:
@@ -94,7 +99,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-output-log
-          path: services/api/pytest_output.log
+          path: |
+            services/api/mypy_output.log
+            services/api/pytest_output.log
           if-no-files-found: ignore
 
       - name: Dependency Vulnerability Audit (pip-audit)

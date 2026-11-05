@@ -46,7 +46,7 @@ def normalize_phone_e164(phone: str) -> str:
 
 
 class IdentityRepository:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session) -> None:
         self.db = db
 
     def get_user_by_supabase_uid(self, supabase_uid: UUID) -> User | None:

@@ -44,6 +44,7 @@ ignore = ["E501", "B008", "E402", "B904", "B023", "N806", "SIM118", "N818", "UP0
 
 [tool.mypy]
 python_version = "3.11"
+mypy_path = "."
 strict = true
 ignore_missing_imports = true
 disallow_untyped_defs = true

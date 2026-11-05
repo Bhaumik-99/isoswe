@@ -328,7 +328,7 @@ class MatchingEngine:
             flat = flat_by_id.get(inv.flat_id)
             flat_num = flat.flat_number if flat else "Unknown"
             score = 0.0
-            evidence = {}
+            inv_evidence: dict[str, Any] = {}
             level = MatchingLevel.LEVEL_4_INVOICE_AMOUNT
 
             # Calculate current outstanding balance
@@ -342,40 +342,40 @@ class MatchingEngine:
             is_vpa_match = bool(vpa_matched_mapping and inv.flat_id == vpa_matched_mapping.flat_id)
             if is_vpa_match and vpa_matched_mapping:
                 score += 45.0
-                evidence["level_1_vpa_match"] = norm_txn_vpa
-                evidence["vpa_resident_id"] = str(vpa_matched_mapping.resident_id)
+                inv_evidence["level_1_vpa_match"] = norm_txn_vpa
+                inv_evidence["vpa_resident_id"] = str(vpa_matched_mapping.resident_id)
                 level = MatchingLevel.LEVEL_3_NARRATION_RESIDENT
 
             # Check if this flat was detected from narration clues
             is_flat_clue = inv.flat_id in detected_flats
             if is_flat_clue and not is_vpa_match:
                 score += 40.0
-                evidence["narration_unit_clue"] = flat_num
+                inv_evidence["narration_unit_clue"] = flat_num
                 level = MatchingLevel.LEVEL_3_NARRATION_RESIDENT
 
             # Check exact amount match
             if transaction.credit_paise == outstanding_paise:
                 score += 35.0
-                evidence["exact_invoice_outstanding_match"] = outstanding_paise
+                inv_evidence["exact_invoice_outstanding_match"] = outstanding_paise
             elif transaction.credit_paise == inv.total_paise:
                 score += 30.0
-                evidence["exact_invoice_total_match"] = inv.total_paise
+                inv_evidence["exact_invoice_total_match"] = inv.total_paise
             elif transaction.credit_paise < outstanding_paise:
                 score += 15.0
-                evidence["partial_payment_amount"] = transaction.credit_paise
+                inv_evidence["partial_payment_amount"] = transaction.credit_paise
             elif transaction.credit_paise > outstanding_paise:
                 score += 10.0
-                evidence["overpayment_amount"] = transaction.credit_paise - outstanding_paise
+                inv_evidence["overpayment_amount"] = transaction.credit_paise - outstanding_paise
 
             # Date proximity (invoice due date vs transaction date)
             inv_date = inv.due_date
             days_from_due = abs((inv_date.date() - transaction.transaction_date.date()).days)
             if days_from_due <= 15:
                 score += 10.0
-                evidence["due_date_proximity_days"] = days_from_due
+                inv_evidence["due_date_proximity_days"] = days_from_due
             elif days_from_due <= 45:
                 score += 5.0
-                evidence["due_date_proximity_days"] = days_from_due
+                inv_evidence["due_date_proximity_days"] = days_from_due
 
             # Resident identity clue
             resident_id = (
@@ -391,21 +391,21 @@ class MatchingEngine:
                     if len(part) >= 3
                 ):
                     score += 15.0
-                    evidence["resident_name_match"] = res_user.full_name
+                    inv_evidence["resident_name_match"] = res_user.full_name
 
             # Check reference overlap
             if txn_ref and txn_ref in inv.invoice_number.upper():
                 score += 20.0
-                evidence["invoice_number_reference_match"] = inv.invoice_number
+                inv_evidence["invoice_number_reference_match"] = inv.invoice_number
 
             # Governance invariant: Never match on amount alone without unit or identity corroboration
             if (
                 not is_vpa_match
                 and not is_flat_clue
-                and "resident_name_match" not in evidence
-                and "invoice_number_reference_match" not in evidence
+                and "resident_name_match" not in inv_evidence
+                and "invoice_number_reference_match" not in inv_evidence
             ):
-                evidence["amount_alone_warning"] = (
+                inv_evidence["amount_alone_warning"] = (
                     "Amount matched without unit or identity corroboration; manual review required."
                 )
                 score = min(score, 45.0)
@@ -424,7 +424,9 @@ class MatchingEngine:
                 upi_text = f"verified payer VPA '{norm_txn_vpa}', " if is_vpa_match else ""
                 unit_text = "unit narration clue, " if is_flat_clue and not is_vpa_match else ""
                 bal_text = (
-                    "exact balance match, " if "exact_invoice_outstanding_match" in evidence else ""
+                    "exact balance match, "
+                    if "exact_invoice_outstanding_match" in inv_evidence
+                    else ""
                 )
                 explanation = (
                     f"Suggested match for Flat {flat_num} (Invoice {inv.invoice_number}, "
@@ -443,7 +445,7 @@ class MatchingEngine:
                         confidence_tier=tier,
                         matching_level=level,
                         explanation=explanation,
-                        evidence=evidence,
+                        evidence=inv_evidence,
                     )
                 )
 
