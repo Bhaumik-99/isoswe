@@ -411,6 +411,9 @@ class ReconciliationAllocation(Base):
         Index("ix_recon_allocations_txn", "transaction_id"),
         Index("ix_recon_allocations_invoice", "invoice_id"),
         Index("ix_recon_allocations_payment", "payment_id"),
+        Index("ix_recon_allocations_society_txn", "society_id", "transaction_id"),
+        Index("ix_recon_allocations_society_invoice", "society_id", "invoice_id"),
+        Index("ix_recon_allocations_society_payment", "society_id", "payment_id"),
     )
 
     # Relationships

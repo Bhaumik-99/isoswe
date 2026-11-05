@@ -358,6 +358,32 @@ class BillingRepository:
             stmt = stmt.where(Payment.society_id == society_id)
         return self.db.scalars(stmt).unique().first()
 
+    def get_payment_for_update(self, payment_id: UUID, society_id: UUID) -> Payment | None:
+        """Fetches payment with a PostgreSQL SELECT ... FOR UPDATE row lock.
+
+        MUST be called inside an active transaction.
+        After acquiring the lock, reload allocations separately to get the freshest data.
+        """
+        lock_stmt = (
+            select(Payment)
+            .where(
+                Payment.id == payment_id,
+                Payment.society_id == society_id,
+            )
+            .with_for_update()
+        )
+        payment = self.db.scalar(lock_stmt)
+        if not payment:
+            return None
+        full_stmt = (
+            select(Payment)
+            .options(
+                joinedload(Payment.allocations).joinedload(PaymentAllocation.invoice),
+            )
+            .where(Payment.id == payment_id)
+        )
+        return self.db.scalars(full_stmt).unique().first()
+
     def get_payment_by_reference(self, provider: str, provider_reference: str) -> Payment | None:
         """Finds a payment record by payment provider and reference (e.g. Razorpay order_id or payment_id)."""
         stmt = (

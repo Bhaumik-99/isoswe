@@ -33,12 +33,13 @@ Covers Phase 4 Requirements:
    - Prove sum(invoice_allocations) <= invoice_outstanding_at_posting
 """
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.domains.billing.models import (
     FinancialLedgerEntry,
@@ -49,7 +50,14 @@ from app.domains.billing.models import (
     PaymentAllocation,
     PaymentStatus,
 )
-from app.domains.identity.models import Flat, FlatMembership, Society, User
+from app.domains.identity.models import (
+    Flat,
+    FlatMembership,
+    Society,
+    SocietyStatus,
+    Tower,
+    User,
+)
 from app.domains.reconciliation.matching import MatchingEngine
 from app.domains.reconciliation.models import (
     BankStatementImport,
@@ -58,6 +66,7 @@ from app.domains.reconciliation.models import (
     MatchingLevel,
     ReconciliationAllocation,
     StatementImportStatus,
+    TransactionReconciliationStatus,
     TransactionType,
 )
 from app.domains.reconciliation.normalizer import (
@@ -573,6 +582,11 @@ def test_reconcile_existing_payment_provider_record_without_double_count(
     initial_payment_count = (
         db_session.query(Payment).filter(Payment.society_id == society_id).count()
     )
+    initial_ledger_count = (
+        db_session.query(FinancialLedgerEntry)
+        .filter(FinancialLedgerEntry.society_id == society_id)
+        .count()
+    )
 
     # 2. Bank statement arrives with the matching UTR/provider_reference
     csv_data = (
@@ -615,7 +629,17 @@ def test_reconcile_existing_payment_provider_record_without_double_count(
         "Reconciling existing payment must NOT create new Payment rows!"
     )
 
-    # ReconciliationAllocation links existing payment
+    # VERIFY: Zero additional FinancialLedgerEntry rows created (No positive ADJUSTMENT)!
+    final_ledger_count = (
+        db_session.query(FinancialLedgerEntry)
+        .filter(FinancialLedgerEntry.society_id == society_id)
+        .count()
+    )
+    assert final_ledger_count == initial_ledger_count, (
+        "Reconciling existing payment must NOT create positive ADJUSTMENT or duplicate ledger entries!"
+    )
+
+    # ReconciliationAllocation links existing payment and exact payment allocation
     ra = (
         db_session.query(ReconciliationAllocation)
         .filter(ReconciliationAllocation.transaction_id == uuid.UUID(txn["id"]))
@@ -623,6 +647,392 @@ def test_reconcile_existing_payment_provider_record_without_double_count(
     )
     assert ra is not None
     assert ra.payment_id == existing_payment.id
+    assert ra.payment_allocation_id == payment_alloc.id, (
+        "Must link to the exact PaymentAllocation ID!"
+    )
+    assert ra.invoice_id == invoice.id
+
+
+def test_reconcile_existing_payment_multiple_allocations_correct_links(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verifies that reconciling a multi-allocation existing payment correctly associates
+
+    EACH reconciliation allocation with its exact corresponding PaymentAllocation ID,
+    rather than associating all items with the first payment allocation.
+    """
+    society_id = uuid.UUID(SOCIETY_ID)
+    flat_id = uuid.UUID(FLAT_0408_ID)
+    admin_user = db_session.query(User).first()
+
+    # 1. Create two separate invoices for the same flat
+    inv_1 = Invoice(
+        society_id=society_id,
+        flat_id=flat_id,
+        billing_period="2026-10",
+        invoice_number=f"INV-MULTI-A-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=980,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=300000,
+        total_paise=300000,
+        due_date=datetime.now(UTC),
+        status=InvoiceStatus.PAID,
+    )
+    inv_2 = Invoice(
+        society_id=society_id,
+        flat_id=flat_id,
+        billing_period="2026-11",
+        invoice_number=f"INV-MULTI-B-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=980,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=337000,
+        total_paise=337000,
+        due_date=datetime.now(UTC),
+        status=InvoiceStatus.PAID,
+    )
+    db_session.add_all([inv_1, inv_2])
+    db_session.flush()
+
+    # 2. Create single existing payment of ₹6,370 with two distinct allocations
+    provider_ref = f"MULTI-PAY-{uuid.uuid4().hex[:8].upper()}"
+    payment = Payment(
+        society_id=society_id,
+        flat_id=flat_id,
+        amount_paise=637000,
+        currency="INR",
+        provider="GATEWAY",
+        provider_reference=provider_ref,
+        status=PaymentStatus.SUCCESS,
+        initiated_by=admin_user.id,
+    )
+    db_session.add(payment)
+    db_session.flush()
+
+    pa_1 = PaymentAllocation(
+        payment_id=payment.id,
+        invoice_id=inv_1.id,
+        allocated_paise=300000,
+    )
+    pa_2 = PaymentAllocation(
+        payment_id=payment.id,
+        invoice_id=inv_2.id,
+        allocated_paise=337000,
+    )
+    db_session.add_all([pa_1, pa_2])
+    db_session.commit()
+
+    # 3. Bank statement arrives with the matching UTR/provider_reference
+    csv_data = (
+        "Date,Narration,Reference,Credit\n"
+        f"05/11/2026,SETTLEMENT GATEWAY {provider_ref},{provider_ref},6370.00\n"
+    ).encode()
+
+    up_res = client.post(
+        "/api/v1/reconciliation/statements",
+        files={"file": ("multi_alloc_statement.csv", csv_data, "text/csv")},
+        headers=AUTH_HELPDESK,
+    )
+    import_id = up_res.json()["import_id"]
+    client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+
+    txns_res = client.get(
+        f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
+    )
+    txn = txns_res.json()[0]
+
+    # 4. Approve reconciliation with proposed allocations for both invoices
+    idemp = str(uuid.uuid4())
+    app_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn['id']}/approve",
+        json={
+            "proposed_allocations": [
+                {"invoice_id": str(inv_1.id), "allocated_paise": 300000},
+                {"invoice_id": str(inv_2.id), "allocated_paise": 337000},
+            ]
+        },
+        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp},
+    )
+    assert app_res.status_code == 200, app_res.text
+
+    # 5. VERIFY: Each ReconciliationAllocation connects to its DISTINCT PaymentAllocation!
+    db_session.expire_all()
+    allocs = (
+        db_session.query(ReconciliationAllocation)
+        .filter(ReconciliationAllocation.transaction_id == uuid.UUID(txn["id"]))
+        .all()
+    )
+    assert len(allocs) == 2
+
+    recon_by_inv = {a.invoice_id: a for a in allocs}
+    assert recon_by_inv[inv_1.id].payment_allocation_id == pa_1.id
+    assert recon_by_inv[inv_2.id].payment_allocation_id == pa_2.id
+    assert pa_1.id != pa_2.id
+
+
+def test_reconcile_existing_payment_rejects_cross_flat_invoice(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verifies that proposing an invoice from a flat different from the payment's flat is rejected."""
+    society_id = uuid.UUID(SOCIETY_ID)
+    flat_a = uuid.UUID(FLAT_0408_ID)
+    flat_b = uuid.UUID(FLAT_1203_ID)
+    admin_user = db_session.query(User).first()
+
+    # Invoice for Flat A (actual payment target)
+    inv_a = Invoice(
+        society_id=society_id,
+        flat_id=flat_a,
+        billing_period="2026-11",
+        invoice_number=f"INV-FLAT-A-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=980,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=637000,
+        total_paise=637000,
+        due_date=datetime.now(UTC),
+        status=InvoiceStatus.PAID,
+    )
+    # Invoice for Flat B (attacker or operator error)
+    inv_b = Invoice(
+        society_id=society_id,
+        flat_id=flat_b,
+        billing_period="2026-11",
+        invoice_number=f"INV-FLAT-B-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1150,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=637000,
+        total_paise=637000,
+        due_date=datetime.now(UTC),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add_all([inv_a, inv_b])
+    db_session.flush()
+
+    provider_ref = f"PAY-FLATA-{uuid.uuid4().hex[:8].upper()}"
+    payment = Payment(
+        society_id=society_id,
+        flat_id=flat_a,
+        amount_paise=637000,
+        currency="INR",
+        provider="GATEWAY",
+        provider_reference=provider_ref,
+        status=PaymentStatus.SUCCESS,
+        initiated_by=admin_user.id,
+    )
+    db_session.add(payment)
+    db_session.flush()
+
+    pa = PaymentAllocation(payment_id=payment.id, invoice_id=inv_a.id, allocated_paise=637000)
+    db_session.add(pa)
+    db_session.commit()
+
+    csv_data = (
+        f"Date,Narration,Reference,Credit\n05/11/2026,UPI PAYMENT,{provider_ref},6370.00\n".encode()
+    )
+    up_res = client.post(
+        "/api/v1/reconciliation/statements",
+        files={"file": ("cross_flat.csv", csv_data, "text/csv")},
+        headers=AUTH_HELPDESK,
+    )
+    import_id = up_res.json()["import_id"]
+    client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    txns = client.get(
+        f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
+    ).json()
+
+    # Try to approve by allocating to Invoice B (Flat B) against Flat A's payment
+    app_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txns[0]['id']}/approve",
+        json={"proposed_allocations": [{"invoice_id": str(inv_b.id), "allocated_paise": 637000}]},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert app_res.status_code in (400, 422), app_res.text
+    assert "Cross-flat reconciliation rejected" in app_res.text
+
+
+def test_reconcile_existing_payment_rejects_mismatched_amount(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verifies that proposing an allocation amount differing from the existing payment allocation is rejected."""
+    society_id = uuid.UUID(SOCIETY_ID)
+    flat_id = uuid.UUID(FLAT_0408_ID)
+    admin_user = db_session.query(User).first()
+
+    inv = Invoice(
+        society_id=society_id,
+        flat_id=flat_id,
+        billing_period="2026-11",
+        invoice_number=f"INV-MISMATCH-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=980,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=637000,
+        total_paise=637000,
+        due_date=datetime.now(UTC),
+        status=InvoiceStatus.PAID,
+    )
+    db_session.add(inv)
+    db_session.flush()
+
+    provider_ref = f"MISMATCH-PAY-{uuid.uuid4().hex[:8].upper()}"
+    payment = Payment(
+        society_id=society_id,
+        flat_id=flat_id,
+        amount_paise=637000,
+        currency="INR",
+        provider="GATEWAY",
+        provider_reference=provider_ref,
+        status=PaymentStatus.SUCCESS,
+        initiated_by=admin_user.id,
+    )
+    db_session.add(payment)
+    db_session.flush()
+
+    pa = PaymentAllocation(payment_id=payment.id, invoice_id=inv.id, allocated_paise=637000)
+    db_session.add(pa)
+    db_session.commit()
+
+    csv_data = (
+        f"Date,Narration,Reference,Credit\n05/11/2026,UPI PAYMENT,{provider_ref},6370.00\n".encode()
+    )
+    up_res = client.post(
+        "/api/v1/reconciliation/statements",
+        files={"file": ("mismatch.csv", csv_data, "text/csv")},
+        headers=AUTH_HELPDESK,
+    )
+    import_id = up_res.json()["import_id"]
+    client.post(f"/api/v1/reconciliation/statements/{import_id}/confirm", headers=AUTH_HELPDESK)
+    txns = client.get(
+        f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
+    ).json()
+
+    # Try to approve with an amount differing from the allocated 637000 paise
+    app_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txns[0]['id']}/approve",
+        json={"proposed_allocations": [{"invoice_id": str(inv.id), "allocated_paise": 500000}]},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert app_res.status_code in (400, 422), app_res.text
+
+
+def test_reconciliation_allocation_database_trigger_enforces_integrity() -> None:
+    """Verifies that database-level triggers prevent cross-society and cross-flat reconciliation allocations."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine("sqlite:///:memory:", poolclass=StaticPool)
+    test_dir = os.path.dirname(__file__)
+    api_dir = os.path.abspath(os.path.join(test_dir, ".."))
+    alembic_ini_path = os.path.join(api_dir, "alembic.ini")
+
+    alembic_cfg = Config(alembic_ini_path)
+    alembic_cfg.set_main_option("script_location", os.path.join(api_dir, "migrations"))
+
+    with engine.connect() as connection:
+        alembic_cfg.attributes["connection"] = connection
+        command.upgrade(alembic_cfg, "head")
+
+        SessionLocal = sessionmaker(bind=connection)
+        session = SessionLocal()
+
+        soc_a = uuid.uuid4()
+        tower_a = uuid.uuid4()
+        flat_a = uuid.uuid4()
+        flat_b = uuid.uuid4()
+        user_id = uuid.uuid4()
+
+        soc = Society(id=soc_a, name="Trigger Test Soc", status=SocietyStatus.ACTIVE)
+        session.add(soc)
+        tow = Tower(id=tower_a, society_id=soc_a, tower_number="T1", name="Tower 1")
+        session.add(tow)
+        fa = Flat(id=flat_a, society_id=soc_a, tower_id=tower_a, flat_number="101", area_sqft=1000)
+        fb = Flat(id=flat_b, society_id=soc_a, tower_id=tower_a, flat_number="102", area_sqft=1000)
+        session.add_all([fa, fb])
+        usr = User(
+            id=user_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"trig-{uuid.uuid4().hex[:6]}@example.com",
+            phone="+919876543210",
+        )
+        session.add(usr)
+        session.flush()
+
+        stmt_imp = BankStatementImport(
+            id=uuid.uuid4(),
+            society_id=soc_a,
+            file_name="trig.csv",
+            file_checksum=uuid.uuid4().hex,
+            uploaded_by=user_id,
+            status=StatementImportStatus.COMPLETED,
+        )
+        session.add(stmt_imp)
+        session.flush()
+
+        txn = BankTransaction(
+            id=uuid.uuid4(),
+            society_id=soc_a,
+            import_id=stmt_imp.id,
+            source_row_number=1,
+            transaction_date=datetime.now(UTC),
+            description="TRIG TEST",
+            normalized_description="TRIG TEST",
+            transaction_type=TransactionType.CREDIT,
+            credit_paise=500000,
+            allocated_paise=0,
+            transaction_fingerprint=uuid.uuid4().hex,
+            reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+        )
+        session.add(txn)
+
+        inv_a = Invoice(
+            id=uuid.uuid4(),
+            society_id=soc_a,
+            flat_id=flat_a,
+            billing_period="2026-11",
+            invoice_number=f"INV-TR-{uuid.uuid4().hex[:6].upper()}",
+            area_sqft_snapshot=1000,
+            rate_paise_per_sqft_snapshot=500,
+            subtotal_paise=500000,
+            total_paise=500000,
+            due_date=datetime.now(UTC),
+            status=InvoiceStatus.PAID,
+        )
+        session.add(inv_a)
+
+        pay_b = Payment(
+            id=uuid.uuid4(),
+            society_id=soc_a,
+            flat_id=flat_b,
+            amount_paise=500000,
+            currency="INR",
+            provider="BANK_TRANSFER",
+            provider_reference=f"PAY-TR-B-{uuid.uuid4().hex[:8].upper()}",
+            status=PaymentStatus.SUCCESS,
+            initiated_by=user_id,
+        )
+        session.add(pay_b)
+        session.commit()
+
+        # Attempt direct insert linking Flat A's invoice and Flat B's payment
+        cross_flat_rejected = False
+        try:
+            bad_alloc = ReconciliationAllocation(
+                id=uuid.uuid4(),
+                society_id=soc_a,
+                transaction_id=txn.id,
+                invoice_id=inv_a.id,
+                payment_id=pay_b.id,
+                allocated_paise=500000,
+            )
+            session.add(bad_alloc)
+            session.commit()
+        except Exception:
+            session.rollback()
+            cross_flat_rejected = True
+
+        assert cross_flat_rejected, (
+            "Database trigger must reject cross-flat reconciliation allocations!"
+        )
 
 
 def test_split_allocation_across_multiple_invoices(client: TestClient, db_session: Session) -> None:

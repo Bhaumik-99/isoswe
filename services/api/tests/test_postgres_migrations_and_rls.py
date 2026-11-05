@@ -767,6 +767,124 @@ def test_postgres_cross_flat_allocation_rejected_by_trigger(postgres_test_db: En
         assert cross_flat_rejected, "Database trigger must reject cross-flat payment allocation"
 
 
+def test_postgres_reconciliation_allocation_tenant_and_cross_flat_integrity(
+    postgres_test_db: Engine,
+) -> None:
+    """Verifies that composite FKs and triggers prevent cross-society and cross-flat reconciliation allocations in PostgreSQL."""
+    engine = postgres_test_db
+    soc_a = uuid.uuid4()
+    soc_b = uuid.uuid4()
+    tow_a = uuid.uuid4()
+    flat_a1 = uuid.uuid4()
+    flat_a2 = uuid.uuid4()
+    user_a = uuid.uuid4()
+    import_id = uuid.uuid4()
+    txn_id = uuid.uuid4()
+    inv_id = uuid.uuid4()
+    pay_id = uuid.uuid4()
+    alloc_id = uuid.uuid4()
+
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:sa, 'Soc A', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW()), "
+                "       (:sb, 'Soc B', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"sa": soc_a, "sb": soc_b},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:t, :sa, 'T01', 'Tower 1', NOW());"
+            ),
+            {"t": tow_a, "sa": soc_a},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:fa1, :sa, :t, '101', 1000, 'OCCUPIED', NOW(), NOW()), "
+                "       (:fa2, :sa, :t, '102', 1000, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"fa1": flat_a1, "fa2": flat_a2, "sa": soc_a, "t": tow_a},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO users (id, supabase_uid, email, phone, full_name, status, created_at, updated_at) "
+                "VALUES (:u, gen_random_uuid(), 'user_a@example.com', '+919999999901', 'User A', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"u": user_a},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO bank_statement_imports (id, society_id, file_name, file_checksum, status, uploaded_by, created_at, updated_at) "
+                "VALUES (:imp, :sa, 'recon.csv', 'hash123', 'COMPLETED', :u, NOW(), NOW());"
+            ),
+            {"imp": import_id, "sa": soc_a, "u": user_a},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO bank_transactions (id, society_id, import_id, source_row_number, transaction_date, description, normalized_description, transaction_type, debit_paise, credit_paise, allocated_paise, reconciliation_status, transaction_fingerprint, is_duplicate, created_at, updated_at) "
+                "VALUES (:txn, :sa, :imp, 1, NOW(), 'UPI PAYMENT', 'UPI PAYMENT', 'CREDIT', 0, 500000, 0, 'UNMATCHED', 'fp123', false, NOW(), NOW());"
+            ),
+            {"txn": txn_id, "sa": soc_a, "imp": import_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:inv, :sa, :fa1, '2026-11', 'INV-RECON-001', 1000, 500, 500000, 500000, NOW(), 'PAID', NOW(), NOW());"
+            ),
+            {"inv": inv_id, "sa": soc_a, "fa1": flat_a1},
+        )
+        # Payment for Flat A2 (DIFFERENT flat than invoice)
+        conn.execute(
+            text(
+                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
+                "VALUES (:pay, :sa, :fa2, 500000, 'INR', 'BANK_TRANSFER', 'PAY-RECON-001', 'SUCCESS', :u, NOW(), NOW());"
+            ),
+            {"pay": pay_id, "sa": soc_a, "fa2": flat_a2, "u": user_a},
+        )
+        conn.commit()
+
+        # 1. Attempt cross-flat reconciliation allocation (Invoice Flat 1, Payment Flat 2)
+        cross_flat_rejected = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO reconciliation_allocations (id, society_id, transaction_id, invoice_id, payment_id, allocated_paise, created_at) "
+                    "VALUES (:a, :sa, :txn, :inv, :pay, 500000, NOW());"
+                ),
+                {"a": alloc_id, "sa": soc_a, "txn": txn_id, "inv": inv_id, "pay": pay_id},
+            )
+            conn.commit()
+        except Exception as exc:
+            cross_flat_rejected = True
+            assert "cross-flat" in str(exc).lower()
+
+        assert cross_flat_rejected, (
+            "Database trigger must reject cross-flat reconciliation allocation"
+        )
+
+        # 2. Attempt cross-society reconciliation allocation (Society B claiming Society A's invoice)
+        cross_soc_rejected = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO reconciliation_allocations (id, society_id, transaction_id, invoice_id, payment_id, allocated_paise, created_at) "
+                    "VALUES (:a, :sb, :txn, :inv, :pay, 500000, NOW());"
+                ),
+                {"a": uuid.uuid4(), "sb": soc_b, "txn": txn_id, "inv": inv_id, "pay": pay_id},
+            )
+            conn.commit()
+        except Exception:
+            cross_soc_rejected = True
+
+        assert cross_soc_rejected, (
+            "Composite FK must reject cross-society reconciliation allocation"
+        )
+
+
 def test_postgres_flat_deletion_restricted_when_invoices_exist(postgres_test_db: Engine) -> None:
     """P1: ON DELETE RESTRICT prevents flat deletion when invoices exist in PostgreSQL."""
     engine = postgres_test_db

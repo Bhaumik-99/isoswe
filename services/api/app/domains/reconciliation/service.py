@@ -20,6 +20,7 @@ import io
 import json
 import uuid
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -30,6 +31,7 @@ from app.domains.billing.models import (
     InvoiceStatus,
     LedgerEntryType,
     Payment,
+    PaymentAllocation,
     PaymentStatus,
 )
 from app.domains.billing.repository import BillingRepository
@@ -827,43 +829,129 @@ class ReconciliationService:
             )
             existing_payment: Payment | None = None
             if selected_match and selected_match.existing_payment_id:
-                existing_payment = self.billing_repo.get_payment_by_id(
+                existing_payment = self.billing_repo.get_payment_for_update(
                     selected_match.existing_payment_id, society_id=txn.society_id
                 )
+                if not existing_payment:
+                    raise NotFoundError(
+                        f"Matched payment {selected_match.existing_payment_id} not found in society {txn.society_id}."
+                    )
 
             settled_records: list[ReconciliationAllocation] = []
+            settlement_metadata: dict[str, Any] = {}
 
-            if existing_payment and existing_payment.status == PaymentStatus.SUCCESS:
+            if existing_payment:
+                if existing_payment.status != PaymentStatus.SUCCESS:
+                    raise ValidationError(
+                        f"Cannot reconcile against payment {existing_payment.id} with status {existing_payment.status}. Payment must be SUCCESS."
+                    )
+                if existing_payment.society_id != txn.society_id:
+                    raise ValidationError(
+                        f"Cross-society reconciliation rejected: payment {existing_payment.id} belongs to society {existing_payment.society_id}, not {txn.society_id}."
+                    )
+
                 # -----------------------------------------------------------------
                 # Scenario A: Reconciling an EXISTING payment record (Zero Double-Count)
                 # -----------------------------------------------------------------
-                # Payment was already settled through payment provider.
+                # Payment was already settled through payment provider and posted to ledger.
                 # Do NOT create another Payment or PaymentAllocation. Link existing.
+                # Do NOT create an ADJUSTMENT ledger entry (payment is already recorded on ledger).
+                # Record bank matching as reconciliation metadata.
+                if not existing_payment.allocations:
+                    raise ValidationError(
+                        f"Existing payment {existing_payment.id} has no payment allocations to reconcile."
+                    )
+
+                allocations_by_inv: dict[UUID, PaymentAllocation] = {
+                    pa.invoice_id: pa for pa in existing_payment.allocations
+                }
+
+                # If caller did not provide proposed allocations, default to all allocations of the existing payment
+                if not proposed_allocations:
+                    proposed_allocations = [
+                        ProposedAllocationItem(
+                            invoice_id=pa.invoice_id, allocated_paise=pa.allocated_paise
+                        )
+                        for pa in existing_payment.allocations
+                    ]
+
+                total_alloc_paise = sum(p.allocated_paise for p in proposed_allocations)
+                if total_alloc_paise > available_credit:
+                    raise ValidationError(
+                        f"Requested allocation (₹{total_alloc_paise / 100:,.2f}) exceeds available bank credit (₹{available_credit / 100:,.2f})."
+                    )
+
+                existing_alloc_total = sum(
+                    pa.allocated_paise for pa in existing_payment.allocations
+                )
+                if total_alloc_paise != existing_alloc_total:
+                    raise ValidationError(
+                        f"Total allocation amount (₹{total_alloc_paise / 100:,.2f}) does not match existing payment allocated total (₹{existing_alloc_total / 100:,.2f})."
+                    )
+
+                # Lock and validate each proposed invoice
                 for p in proposed_allocations:
+                    inv = self.billing_repo.get_invoice_for_update(
+                        p.invoice_id, society_id=txn.society_id
+                    )
+                    if not inv:
+                        raise NotFoundError(
+                            f"Invoice {p.invoice_id} not found in society {txn.society_id}."
+                        )
+
+                    # Validate invoice against existing payment's society and flat
+                    if inv.society_id != existing_payment.society_id:
+                        raise ValidationError(
+                            f"Cross-society reconciliation rejected: invoice {inv.invoice_number} belongs to society {inv.society_id}, but payment belongs to {existing_payment.society_id}."
+                        )
+                    if inv.flat_id != existing_payment.flat_id:
+                        raise ValidationError(
+                            f"Cross-flat reconciliation rejected: invoice {inv.invoice_number} belongs to flat {inv.flat_id}, but payment belongs to flat {existing_payment.flat_id}."
+                        )
+
+                    # Validate against actual existing payment allocations
+                    if p.invoice_id not in allocations_by_inv:
+                        raise ValidationError(
+                            f"Invoice {inv.invoice_number} is not an allocated invoice for existing payment {existing_payment.id}."
+                        )
+                    matched_pa = allocations_by_inv[p.invoice_id]
+                    if p.allocated_paise != matched_pa.allocated_paise:
+                        raise ValidationError(
+                            f"Proposed allocation of ₹{p.allocated_paise / 100:,.2f} does not match existing payment allocation of ₹{matched_pa.allocated_paise / 100:,.2f} on invoice {inv.invoice_number}."
+                        )
+
+                    # Associate reconciliation allocation with the ACTUAL existing payment allocation
                     recon_alloc = self.repo.create_reconciliation_allocation(
                         society_id=txn.society_id,
                         transaction_id=txn.id,
                         invoice_id=p.invoice_id,
                         payment_id=existing_payment.id,
-                        payment_allocation_id=existing_payment.allocations[0].id
-                        if existing_payment.allocations
-                        else None,
+                        payment_allocation_id=matched_pa.id,
                         allocated_paise=p.allocated_paise,
                     )
                     settled_records.append(recon_alloc)
 
-                self.billing_repo.append_ledger_entry(
-                    society_id=txn.society_id,
-                    flat_id=existing_payment.flat_id,
-                    invoice_id=proposed_allocations[0].invoice_id,
-                    payment_id=existing_payment.id,
-                    entry_type=LedgerEntryType.ADJUSTMENT,
-                    amount_paise=total_alloc_paise,
-                    reference_id=str(txn.id),
-                    description=f"Bank statement reconciled against existing payment {existing_payment.provider_reference}",
-                )
+                settlement_metadata = {
+                    "reconciliation_type": "EXISTING_PAYMENT_MATCH",
+                    "matched_payment_id": str(existing_payment.id),
+                    "provider": existing_payment.provider,
+                    "provider_reference": existing_payment.provider_reference,
+                    "payment_amount_paise": existing_payment.amount_paise,
+                    "flat_id": str(existing_payment.flat_id),
+                    "allocations": [
+                        {
+                            "invoice_id": str(p.invoice_id),
+                            "payment_allocation_id": str(allocations_by_inv[p.invoice_id].id),
+                            "allocated_paise": p.allocated_paise,
+                        }
+                        for p in proposed_allocations
+                    ],
+                }
 
             else:
+                settlement_metadata = {
+                    "reconciliation_type": "DIRECT_BANK_TRANSFER",
+                }
                 # -----------------------------------------------------------------
                 # Scenario B: Direct Bank Transfer Settlement (Create Payment + Ledger)
                 # -----------------------------------------------------------------
@@ -973,6 +1061,7 @@ class ReconciliationService:
                 action="APPROVED_AND_POSTED",
                 notes=notes,
                 proposed_allocations=[p.model_dump(mode="json") for p in proposed_allocations],
+                metadata=settlement_metadata,
             )
 
             # Audit event
@@ -987,6 +1076,13 @@ class ReconciliationService:
                     "allocated_paise": total_alloc_paise,
                     "remaining_unallocated_paise": txn.credit_paise - txn.allocated_paise,
                     "invoices": [str(p.invoice_id) for p in proposed_allocations],
+                    "reconciliation_type": settlement_metadata.get(
+                        "reconciliation_type", "UNKNOWN"
+                    ),
+                    "matched_payment_id": str(existing_payment.id) if existing_payment else None,
+                    "provider_reference": existing_payment.provider_reference
+                    if existing_payment
+                    else None,
                 },
             )
             self.db.add(audit)
@@ -1000,6 +1096,10 @@ class ReconciliationService:
                     "transaction_id": str(txn.id),
                     "society_id": str(txn.society_id),
                     "allocated_paise": total_alloc_paise,
+                    "reconciliation_type": settlement_metadata.get(
+                        "reconciliation_type", "UNKNOWN"
+                    ),
+                    "matched_payment_id": str(existing_payment.id) if existing_payment else None,
                 },
                 status=OutboxStatus.PENDING,
             )
