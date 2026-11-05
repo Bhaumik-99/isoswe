@@ -41,6 +41,8 @@ from app.domains.reconciliation.schemas import (
     BankTransactionResponse,
     ManualReviewQueueItem,
     MarkUnidentifiedRequest,
+    QueueSummaryResponse,
+    ReconciliationMatchResponse,
     ReconciliationSummaryResponse,
     RejectReconciliationRequest,
     StatementUploadPreviewResponse,
@@ -154,6 +156,20 @@ def confirm_statement_import(
 
 
 @router.post(
+    "/statements/{import_id}/process",
+    response_model=BankStatementImportResponse,
+    summary="Process and match statement (alias for /confirm)",
+)
+def process_statement_import(
+    import_id: UUID,
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> BankStatementImportResponse:
+    service = ReconciliationService(db)
+    return service.confirm_import(claims=claims, import_id=import_id)
+
+
+@router.post(
     "/statements/{import_id}/cancel",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Cancel a statement import before confirmation",
@@ -244,6 +260,67 @@ def get_manual_review_queue(
         queue_category=category,
         skip=skip,
         limit=limit,
+    )
+
+
+@router.get(
+    "/queue/summary",
+    response_model=QueueSummaryResponse,
+    summary="Get summary counts of items in the review queue",
+)
+def get_queue_summary(
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> QueueSummaryResponse:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    summary = service.get_summary(claims=claims, society_id=target_society_id)
+    return QueueSummaryResponse(
+        society_id=target_society_id,
+        total_queue_items=summary.unmatched_count
+        + summary.suggested_count
+        + summary.pending_approval_count,
+        high_confidence=summary.suggested_count,
+        resident_clues=summary.suggested_count,
+        unmatched=summary.unmatched_count,
+        suspense=summary.unidentified_count,
+    )
+
+
+@router.get(
+    "/transactions/{transaction_id}/matches",
+    response_model=list[ReconciliationMatchResponse],
+    summary="List proposed candidate matches for a transaction",
+)
+def get_transaction_matches(
+    transaction_id: UUID,
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> list[ReconciliationMatchResponse]:
+    service = ReconciliationService(db)
+    txn = service.get_transaction(claims=claims, transaction_id=transaction_id)
+    return txn.matches
+
+
+@router.post(
+    "/transactions/{transaction_id}/match",
+    response_model=BankTransactionResponse,
+    summary="Suggest match for transaction (alias for /suggest)",
+)
+def match_transaction(
+    transaction_id: UUID,
+    payload: SuggestMatchRequest,
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> BankTransactionResponse:
+    service = ReconciliationService(db)
+    return service.suggest_manual_match(
+        claims=claims,
+        transaction_id=transaction_id,
+        flat_id=payload.flat_id,
+        invoice_id=payload.invoice_id,
+        notes=payload.notes,
     )
 
 
@@ -366,6 +443,67 @@ def get_reconciliation_summary(
     target_society_id = _resolve_society_id(claims, society_id)
     service = ReconciliationService(db)
     return service.get_summary(claims=claims, society_id=target_society_id)
+
+
+@router.get(
+    "/reports/summary",
+    response_model=ReconciliationSummaryResponse,
+    summary="Get society-level reconciliation KPI summary (alias for /summary)",
+)
+def get_reports_summary(
+    society_id: UUID | None = Query(None),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> ReconciliationSummaryResponse:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    return service.get_summary(claims=claims, society_id=target_society_id)
+
+
+@router.get(
+    "/reports/unmatched",
+    response_model=list[BankTransactionResponse],
+    summary="List all unmatched bank credit transactions for society",
+)
+def get_unmatched_report(
+    society_id: UUID | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> list[BankTransactionResponse]:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    return service.list_transactions(
+        claims=claims,
+        society_id=target_society_id,
+        status=TransactionReconciliationStatus.UNMATCHED,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/reports/reconciled",
+    response_model=list[BankTransactionResponse],
+    summary="List all reconciled and posted transactions for society",
+)
+def get_reconciled_report(
+    society_id: UUID | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    db: Session = Depends(get_db),
+) -> list[BankTransactionResponse]:
+    target_society_id = _resolve_society_id(claims, society_id)
+    service = ReconciliationService(db)
+    return service.list_transactions(
+        claims=claims,
+        society_id=target_society_id,
+        status=TransactionReconciliationStatus.POSTED,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.get(

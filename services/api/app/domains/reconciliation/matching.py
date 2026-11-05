@@ -343,3 +343,7 @@ class MatchingEngine:
                 )
 
         return candidates
+
+
+# Alias for architectural documentation
+DeterministicMatchingEngine = MatchingEngine

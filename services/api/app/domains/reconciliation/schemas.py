@@ -165,6 +165,15 @@ class MarkUnidentifiedRequest(BaseModel):
     notes: str = Field(min_length=3, description="Notes on why funds cannot be identified")
 
 
+class QueueSummaryResponse(BaseModel):
+    society_id: UUID
+    total_queue_items: int
+    high_confidence: int
+    resident_clues: int
+    unmatched: int
+    suspense: int
+
+
 class ReconciliationSummaryResponse(BaseModel):
     society_id: UUID
     total_credit_paise: int

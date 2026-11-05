@@ -939,3 +939,171 @@ def test_reconciliation_society_data_isolation(client: TestClient, db_session: S
         headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
     )
     assert app_res.status_code in (403, 404)
+
+
+def test_reconciliation_additional_endpoints_and_aliases(
+    client: TestClient,
+    db_session: Session,
+):
+    """Verifies extended reporting, queue summary, match exploration, and operation aliases."""
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat_id = uuid.UUID(FLAT_1203_ID)
+
+    # Ensure an unpaid invoice exists
+    inv = (
+        db_session.query(Invoice)
+        .filter(
+            Invoice.society_id == soc_id,
+            Invoice.flat_id == flat_id,
+            Invoice.status == InvoiceStatus.UNPAID,
+        )
+        .first()
+    )
+    if not inv:
+        inv = Invoice(
+            society_id=soc_id,
+            flat_id=flat_id,
+            billing_period="2026-11",
+            invoice_number=f"INV-ALIAS-{uuid.uuid4().hex[:6].upper()}",
+            area_sqft_snapshot=1150,
+            rate_paise_per_sqft_snapshot=650,
+            subtotal_paise=747500,
+            total_paise=747500,
+            due_date=datetime.now(UTC) + timedelta(days=5),
+            status=InvoiceStatus.UNPAID,
+        )
+        db_session.add(inv)
+        db_session.commit()
+        db_session.refresh(inv)
+
+    # 1. Test queue summary endpoint
+    res_q_sum = client.get("/api/v1/reconciliation/queue/summary", headers=AUTH_HELPDESK)
+    assert res_q_sum.status_code == 200
+    q_data = res_q_sum.json()
+    assert "total_queue_items" in q_data
+    assert "unmatched" in q_data
+
+    # 2. Test reports summary endpoint
+    res_rep_sum = client.get("/api/v1/reconciliation/reports/summary", headers=AUTH_HELPDESK)
+    assert res_rep_sum.status_code == 200
+    rep_data = res_rep_sum.json()
+    assert "total_credit_paise" in rep_data
+    assert "reconciliation_percentage" in rep_data
+
+    # 3. Test reports unmatched & reconciled endpoints
+    res_unmatched = client.get("/api/v1/reconciliation/reports/unmatched", headers=AUTH_HELPDESK)
+    assert res_unmatched.status_code == 200
+    assert isinstance(res_unmatched.json(), list)
+
+    res_reconciled = client.get("/api/v1/reconciliation/reports/reconciled", headers=AUTH_HELPDESK)
+    assert res_reconciled.status_code == 200
+    assert isinstance(res_reconciled.json(), list)
+
+    # 4. Upload a statement to test /process and /matches
+    csv_content = (
+        "Date,Narration,Chq/Ref No,Value Dt,Withdrawal Amt,Deposit Amt,Closing Balance\n"
+        "05/11/2026,NEFT T07-1203 NEERAJ MAINT,HDFCN2600112233,05/11/2026,0.00,7475.00,107475.00\n"
+    )
+    up_res = client.post(
+        "/api/v1/reconciliation/statements",
+        files={"file": ("process_test.csv", csv_content.encode("utf-8"), "text/csv")},
+        headers=AUTH_HELPDESK,
+    )
+    assert up_res.status_code == 201
+    import_id = up_res.json()["import_id"]
+
+    # Test /statements/{id}/process (alias for /confirm)
+    proc_res = client.post(
+        f"/api/v1/reconciliation/statements/{import_id}/process",
+        headers=AUTH_HELPDESK,
+    )
+    assert proc_res.status_code == 200
+    assert proc_res.json()["status"] == "COMPLETED"
+
+    # Get transaction from this import
+    txns_res = client.get(
+        f"/api/v1/reconciliation/transactions?import_id={import_id}",
+        headers=AUTH_HELPDESK,
+    )
+    assert txns_res.status_code == 200
+    txn_list = txns_res.json()
+    assert len(txn_list) == 1
+    txn_id = txn_list[0]["id"]
+
+    # Test /transactions/{id}/matches
+    matches_res = client.get(
+        f"/api/v1/reconciliation/transactions/{txn_id}/matches",
+        headers=AUTH_HELPDESK,
+    )
+    assert matches_res.status_code == 200
+    matches = matches_res.json()
+    assert isinstance(matches, list)
+
+    # Test /transactions/{id}/match (alias for /suggest)
+    match_post_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_id}/match",
+        json={"flat_id": FLAT_1203_ID, "invoice_id": str(inv.id), "notes": "Alias match test"},
+        headers=AUTH_HELPDESK,
+    )
+    assert match_post_res.status_code == 200
+    assert match_post_res.json()["reconciliation_status"] in ("SUGGESTED", "PENDING_APPROVAL")
+
+
+def test_reconciliation_worker_and_error_handling(
+    db_session: Session,
+):
+    """Verifies reconciliation worker execution, lease idempotency, and error classification."""
+    from app.domains.reconciliation.exceptions import (
+        PermanentReconciliationWorkerError,
+        RetryableReconciliationWorkerError,
+    )
+    from app.messaging.envelope import EventEnvelope, EventMetadata
+    from app.workers.reconciliation_worker import (
+        is_retryable_reconciliation_error,
+        reconciliation_handler,
+    )
+
+    soc_id = uuid.UUID(SOCIETY_ID)
+
+    # 1. Error classification check
+    assert (
+        is_retryable_reconciliation_error(RetryableReconciliationWorkerError("DB lock timeout"))
+        is True
+    )
+    assert is_retryable_reconciliation_error(TimeoutError("Connection timed out")) is True
+    assert (
+        is_retryable_reconciliation_error(PermanentReconciliationWorkerError("Poison message"))
+        is False
+    )
+    assert is_retryable_reconciliation_error(ValueError("Invalid syntax")) is False
+
+    # 2. Worker execution for statement processing
+    imp = BankStatementImport(
+        society_id=soc_id,
+        file_name="worker_test.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=db_session.query(User).first().id,
+        status=StatementImportStatus.READY_FOR_IMPORT,
+    )
+    db_session.add(imp)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="reconciliation.process_bank_statement",
+        aggregate_type="BankStatementImport",
+        aggregate_id=str(imp.id),
+        payload={"society_id": str(soc_id)},
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+    )
+
+    reconciliation_handler.process(envelope, db_session)
+
+    # Verify statement marked COMPLETED
+    db_session.refresh(imp)
+    assert imp.status == StatementImportStatus.COMPLETED
+
+    # 3. Idempotent skip: repeated invocation does not crash or re-process
+    reconciliation_handler.process(envelope, db_session)
+    db_session.refresh(imp)
+    assert imp.status == StatementImportStatus.COMPLETED

@@ -324,3 +324,4 @@ All endpoints require JWT bearer authentication and role `HELPDESK` (enforced vi
 | `/api/v1/reconciliation/transactions/{id}/mark-unidentified` | `POST` | Move mystery credit to suspense account |
 | `/api/v1/reconciliation/summary` | `GET` | Retrieve society-wide reconciliation KPIs and ratios |
 | `/api/v1/reconciliation/reports/export` | `GET` | Download sanitized CSV reconciliation report |
+

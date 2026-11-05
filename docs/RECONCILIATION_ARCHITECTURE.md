@@ -11,3 +11,4 @@ See the comprehensive architecture specification in [services/api/docs/RECONCILI
 - **Integer Paise Representation**: All calculations use `Decimal` string arithmetic converted to integer paise (`BigInteger`). Zero floating-point math.
 - **Mandatory Idempotency**: Financial settlement requires `Idempotency-Key` header with 24-hour response caching.
 - **Multi-Flat Split Invariant**: Corporate/split bank transfers across multiple flats generate dedicated `Payment` records per flat to maintain cross-flat billing invariants.
+
