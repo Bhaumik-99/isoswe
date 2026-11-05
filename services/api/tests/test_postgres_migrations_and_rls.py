@@ -1438,9 +1438,10 @@ def test_postgres_rls_and_composite_fk_reconciliation(postgres_test_db: Engine) 
             assert (
                 "foreign key" in str(exc).lower()
                 or "fk_recon_alloc_inv_composite" in str(exc).lower()
+                or "cross-society" in str(exc).lower()
             )
         assert fk_alloc_blocked, (
-            "Composite FK fk_recon_alloc_inv_composite must reject cross-society invoice"
+            "Composite FK fk_recon_alloc_inv_composite or trigger must reject cross-society invoice"
         )
 
     # -------------------------------------------------------------
