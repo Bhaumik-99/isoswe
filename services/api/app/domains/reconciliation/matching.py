@@ -13,8 +13,16 @@ CONFIDENCE TIERS:
 - HIGH: 90 - 100
 - MEDIUM: 70 - 89
 - LOW: < 70 (Requires manual review before approval)
+
+TOWER-FLAT COMPOSITE MATCHING:
+- Flat numbers are unique within a tower, but NOT across towers (UniqueConstraint on tower_id+flat_number).
+- A narration clue such as "T07-1203" is resolved to the exact tower-flat pair.
+- A bare flat number (e.g. "1203") resolves unambiguously only when exactly one flat across
+  all towers has that number; otherwise it is treated as ambiguous (LOW confidence).
+- A flat-only match is NEVER promoted to a confident tower match.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -32,6 +40,32 @@ from app.domains.reconciliation.models import (
     MatchingLevel,
 )
 from app.domains.reconciliation.normalizer import extract_unit_clues
+
+
+def _parse_tower_flat_clue(clue: str) -> tuple[str | None, str | None]:
+    """Parse a unit clue into an optional tower prefix and flat number.
+
+    Handles formats produced by ``extract_unit_clues`` Pattern A:
+    - "T07-1203"  → ("T07", "1203")
+    - "T7-1203"   → ("T7", "1203")
+    - "T12-0408"  → ("T12", "0408")
+    - "B-408"     → ("B", "408")
+
+    For bare flat-number clues (Pattern B/C) the tower is None:
+    - "1203"      → (None, "1203")
+    - "0408"      → (None, "0408")
+    - "FLAT101"   → (None, "FLAT101")
+
+    Returns (tower_upper, flat_upper) or (None, flat_upper).
+    Both components are uppercased and stripped.
+    """
+    stripped = clue.strip().upper()
+    # Match <letters+optional-digits>-<digits> e.g. T07-1203 or B-408
+    m = re.match(r"^([A-Z]+\d*)-(\d+)$", stripped)
+    if m:
+        return m.group(1), m.group(2)
+    # Bare numeric / alphanumeric flat clue
+    return None, stripped if stripped else None
 
 
 @dataclass
@@ -76,18 +110,42 @@ class MatchingEngine:
         # Build lookup maps for rapid deterministic evaluation
         flat_by_id = {f.id: f for f in flats}
 
-        # Also map tower-flat combinations (e.g. "T07-1203" or "1203")
-        flat_search_index: dict[str, Flat] = {}
+        # Two-level flat lookup for correct tower-flat resolution.
+        #
+        # ``tower_flat_index[(tower_upper, flat_upper)]`` → Flat
+        #   Keyed on the EXACT tower_number+flat_number pair.  Used when the
+        #   narration contains a tower-qualified clue such as "T07-1203".
+        #
+        # ``flat_only_index[flat_upper]`` → list[Flat]
+        #   Flat-number-only lookup.  A single entry means unambiguous; multiple
+        #   entries (same flat number in different towers) is ambiguous and must
+        #   NOT be promoted to a confident match.
+        tower_flat_index: dict[tuple[str, str], Flat] = {}
+        flat_only_index: dict[str, list[Flat]] = {}
+
         for f in flats:
-            norm_num = f.flat_number.upper().strip()
-            flat_search_index[norm_num] = f
-            # Remove hyphens or spaces (e.g., "T071203")
-            compact = norm_num.replace("-", "").replace(" ", "")
-            flat_search_index[compact] = f
-            # Extract just numeric part if it has 3-4 digits (e.g., "1203")
-            num_match = "".join(filter(str.isdigit, norm_num))
-            if len(num_match) >= 3:
-                flat_search_index[num_match] = f
+            flat_num = f.flat_number.upper().strip()
+            numeric_only = "".join(filter(str.isdigit, flat_num))
+
+            # Build flat-only index (may have collisions across towers — intentional)
+            flat_only_index.setdefault(flat_num, []).append(f)
+            if numeric_only and numeric_only != flat_num:
+                flat_only_index.setdefault(numeric_only, []).append(f)
+
+            # Build tower-flat composite index
+            tower = getattr(f, "tower", None)
+            if tower is not None:
+                tnum = tower.tower_number.upper().strip()
+                # Store under exact tower_number e.g. ("T07", "1203")
+                tower_flat_index[(tnum, flat_num)] = f
+                if numeric_only and numeric_only != flat_num:
+                    tower_flat_index[(tnum, numeric_only)] = f
+                # Also store without leading zero in tower number e.g. ("T7", "1203")
+                tnum_compact = re.sub(r"^([A-Z]+)0+(\d)", r"\1\2", tnum)
+                if tnum_compact != tnum:
+                    tower_flat_index[(tnum_compact, flat_num)] = f
+                    if numeric_only and numeric_only != flat_num:
+                        tower_flat_index[(tnum_compact, numeric_only)] = f
 
         # Map active resident memberships per flat
         resident_by_flat: dict[UUID, UUID] = {}
@@ -203,12 +261,27 @@ class MatchingEngine:
         detected_flats: set[UUID] = set()
 
         for clue in unit_clues:
-            norm_clue = clue.upper().strip()
-            if norm_clue in flat_search_index:
-                detected_flats.add(flat_search_index[norm_clue].id)
-            compact_clue = norm_clue.replace("-", "").replace(" ", "")
-            if compact_clue in flat_search_index:
-                detected_flats.add(flat_search_index[compact_clue].id)
+            tower_prefix, flat_part = _parse_tower_flat_clue(clue)
+
+            if tower_prefix is not None and flat_part is not None:
+                # Tower-qualified clue: resolve via composite index (exact match)
+                matched_flat = tower_flat_index.get((tower_prefix, flat_part))
+                if matched_flat is not None:
+                    detected_flats.add(matched_flat.id)
+                    continue  # Exact tower-flat hit; skip ambiguous flat-only lookup for this clue
+                # Also try numeric-only flat part against same tower
+                flat_numeric = "".join(filter(str.isdigit, flat_part))
+                if flat_numeric and flat_numeric != flat_part:
+                    matched_flat = tower_flat_index.get((tower_prefix, flat_numeric))
+                    if matched_flat is not None:
+                        detected_flats.add(matched_flat.id)
+                        continue
+            else:
+                # Bare flat-number clue: unambiguous only if exactly one flat has this number
+                candidates_for_flat = flat_only_index.get(flat_part or "", [])
+                if len(candidates_for_flat) == 1:
+                    detected_flats.add(candidates_for_flat[0].id)
+                # len == 0: no match; len > 1: ambiguous — do NOT add, requires tower context
 
         # Also search resident names in description
         norm_desc = transaction.normalized_description

@@ -754,7 +754,19 @@ class ReconciliationService:
             if txn.transaction_type != TransactionType.CREDIT:
                 raise ValidationError("Only credit transactions can be approved and posted.")
 
-            # STEP 2.5: Server-side Dual Approval (Maker-Checker) Enforcement
+            # STEP 2.5: Require PENDING_APPROVAL before financial settlement.
+            # Transactions must pass through the submit-for-approval workflow before
+            # any financial settlement (Payment, Ledger, ReconciliationAllocation) is created.
+            # This is a mandatory gate — no server-side bypass is permitted.
+            if txn.reconciliation_status != TransactionReconciliationStatus.PENDING_APPROVAL:
+                raise ValidationError(
+                    f"Cannot approve transaction in status '{txn.reconciliation_status.value}'. "
+                    "Transaction must be in PENDING_APPROVAL status before financial settlement. "
+                    "Submit proposed allocations for independent review first via "
+                    "/submit-for-approval, then an independent authorized reviewer must approve."
+                )
+
+            # STEP 2.6: Server-side Dual Approval (Maker-Checker) Enforcement
             if txn.reconciliation_status == TransactionReconciliationStatus.PENDING_APPROVAL:
                 latest_submit = (
                     self.db.query(ReconciliationReview)

@@ -503,12 +503,22 @@ def test_direct_bank_transfer_approval_and_atomic_ledger_settlement(
     assert target_item is not None
     txn_id = target_item["transaction"]["id"]
 
-    # 4. Approve and allocate funds with Idempotency-Key
+    # 4a. Maker (Helpdesk 1) submits proposed allocation for independent approval
+    allocation_payload = [{"invoice_id": str(invoice.id), "allocated_paise": 747500}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_id}/submit-for-approval",
+        json={"proposed_allocations": allocation_payload, "notes": "Maker submits for review"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+    assert submit_res.json()["reconciliation_status"] == "PENDING_APPROVAL"
+
+    # 4b. Independent Checker (Helpdesk 2) approves with matching allocations
     idemp_key = str(uuid.uuid4())
     approve_res = client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 747500}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp_key},
+        json={"proposed_allocations": allocation_payload},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp_key},
     )
     assert approve_res.status_code == 200, approve_res.text
     txn_data = approve_res.json()
@@ -567,11 +577,11 @@ def test_direct_bank_transfer_approval_and_atomic_ledger_settlement(
     assert recon_alloc is not None
     assert recon_alloc.allocated_paise == 747500
 
-    # 6. Idempotency replay check: Replaying the exact same request returns identical response
+    # 6. Idempotency replay check: Replaying the exact same request by the same checker returns identical response
     replay_res = client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 747500}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp_key},
+        json={"proposed_allocations": allocation_payload},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp_key},
     )
     assert replay_res.status_code == 200
     assert replay_res.json()["id"] == txn_id
@@ -657,12 +667,23 @@ def test_reconcile_existing_payment_provider_record_without_double_count(
     assert match["existing_payment_id"] == str(existing_payment.id)
     assert match["matching_level"] == "LEVEL_1_UTR"
 
-    # 4. Approve reconciliation
+    # 4. Submit for approval (maker), then approve with independent checker
+    existing_payment_alloc = [{"invoice_id": str(invoice.id), "allocated_paise": 637000}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn['id']}/submit-for-approval",
+        json={
+            "proposed_allocations": existing_payment_alloc,
+            "notes": "Swati payment confirmation",
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
     idemp = str(uuid.uuid4())
     app_res = client.post(
         f"/api/v1/reconciliation/transactions/{txn['id']}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 637000}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp},
+        json={"proposed_allocations": existing_payment_alloc},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp},
     )
     assert app_res.status_code == 200
 
@@ -785,17 +806,26 @@ def test_reconcile_existing_payment_multiple_allocations_correct_links(
     )
     txn = txns_res.json()[0]
 
-    # 4. Approve reconciliation with proposed allocations for both invoices
+    # 4. Submit for approval (maker), then independent checker approves both invoice allocations
+    multi_alloc_payload = [
+        {"invoice_id": str(inv_1.id), "allocated_paise": 300000},
+        {"invoice_id": str(inv_2.id), "allocated_paise": 337000},
+    ]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn['id']}/submit-for-approval",
+        json={
+            "proposed_allocations": multi_alloc_payload,
+            "notes": "Multi-invoice existing payment",
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
     idemp = str(uuid.uuid4())
     app_res = client.post(
         f"/api/v1/reconciliation/transactions/{txn['id']}/approve",
-        json={
-            "proposed_allocations": [
-                {"invoice_id": str(inv_1.id), "allocated_paise": 300000},
-                {"invoice_id": str(inv_2.id), "allocated_paise": 337000},
-            ]
-        },
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp},
+        json={"proposed_allocations": multi_alloc_payload},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp},
     )
     assert app_res.status_code == 200, app_res.text
 
@@ -885,11 +915,21 @@ def test_reconcile_existing_payment_rejects_cross_flat_invoice(
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()
 
+    # Submit for approval first (cross-flat invoice passes submit validation since invoice is in same society)
+    # Then independent checker attempts approval — financial validation rejects the cross-flat allocation
+    cross_flat_alloc = [{"invoice_id": str(inv_b.id), "allocated_paise": 637000}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txns[0]['id']}/submit-for-approval",
+        json={"proposed_allocations": cross_flat_alloc, "notes": "Cross-flat allocation attempt"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
     # Try to approve by allocating to Invoice B (Flat B) against Flat A's payment
     app_res = client.post(
         f"/api/v1/reconciliation/transactions/{txns[0]['id']}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(inv_b.id), "allocated_paise": 637000}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+        json={"proposed_allocations": cross_flat_alloc},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
     )
     assert app_res.status_code in (400, 422), app_res.text
     assert "Cross-flat reconciliation rejected" in app_res.text
@@ -951,11 +991,20 @@ def test_reconcile_existing_payment_rejects_mismatched_amount(
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()
 
+    # Submit for approval first with the correct invoice but mismatched amount proposal
+    mismatch_alloc = [{"invoice_id": str(inv.id), "allocated_paise": 500000}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txns[0]['id']}/submit-for-approval",
+        json={"proposed_allocations": mismatch_alloc, "notes": "Mismatched amount proposal"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
     # Try to approve with an amount differing from the allocated 637000 paise
     app_res = client.post(
         f"/api/v1/reconciliation/transactions/{txns[0]['id']}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(inv.id), "allocated_paise": 500000}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+        json={"proposed_allocations": mismatch_alloc},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
     )
     assert app_res.status_code in (400, 422), app_res.text
 
@@ -1139,11 +1188,20 @@ def test_split_allocation_across_multiple_invoices(client: TestClient, db_sessio
         {"invoice_id": str(inv_b.id), "allocated_paise": 637000},
     ]
 
+    # Maker submits for approval first
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_id}/submit-for-approval",
+        json={"proposed_allocations": split_allocations, "notes": "Split payment across two units"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
+    # Independent checker approves matching allocations
     idemp = str(uuid.uuid4())
     res = client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
         json={"proposed_allocations": split_allocations},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp},
     )
     assert res.status_code == 200
     res_data = res.json()
@@ -1193,22 +1251,33 @@ def test_over_allocation_prevented(client: TestClient, db_session: Session) -> N
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()[0]["id"]
 
-    # 1. Attempting to allocate ₹8,000 to an invoice with only ₹5,000 outstanding -> REJECTED
+    # 1. Maker submits proposed over-invoice allocation (sum ≤ bank credit, so submit succeeds)
+    submit_over_invoice = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_id}/submit-for-approval",
+        json={
+            "proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 800000}],
+            "notes": "Over-invoice test",
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_over_invoice.status_code == 200, submit_over_invoice.text
+
+    # Independent checker attempts to approve — rejected because 800000 > 500000 outstanding
     res1 = client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
         json={"proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 800000}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
     )
     assert res1.status_code == 400
     assert "exceeds outstanding balance" in res1.json()["error"]["message"].lower()
 
-    # 2. Attempting to allocate ₹12,000 from a ₹10,000 credit -> REJECTED
+    # 2. Attempting to submit allocation exceeding bank credit → rejected at submit step
     res2 = client.post(
-        f"/api/v1/reconciliation/transactions/{txn_id}/approve",
+        f"/api/v1/reconciliation/transactions/{txn_id}/submit-for-approval",
         json={
             "proposed_allocations": [{"invoice_id": str(invoice.id), "allocated_paise": 1200000}]
         },
-        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+        headers=AUTH_HELPDESK,
     )
     assert res2.status_code == 400
     assert "exceeds available bank credit" in res2.json()["error"]["message"].lower()
@@ -1302,7 +1371,9 @@ def test_reconciliation_manual_match_suggest(client: TestClient) -> None:
     assert any(m["matching_level"] == "MANUAL" and m["is_selected"] for m in txn_data["matches"])
 
 
-def test_reconciliation_idempotency_payload_mismatch_raises_conflict(client: TestClient) -> None:
+def test_reconciliation_idempotency_payload_mismatch_raises_conflict(
+    client: TestClient, db_session: Session
+) -> None:
     """Reusing the same idempotency key with different payload must raise 409 Conflict."""
     csv_data = b"Date,Description,Reference,Credit\n05/11/2026,IDEMP TEST,IDEMP-REF,3000.00\n"
     up = client.post(
@@ -1316,25 +1387,59 @@ def test_reconciliation_idempotency_payload_mismatch_raises_conflict(client: Tes
         f"/api/v1/reconciliation/transactions?import_id={import_id}", headers=AUTH_HELPDESK
     ).json()[0]["id"]
 
+    # Submit for approval first (non-existent invoice UUID passes submit's minimal validation
+    # since submit only checks society membership, not financial existence)
+    # We use a real invoice UUID here that is guaranteed to not exist to simulate the error
+    fake_invoice_id_a = str(uuid.uuid4())
+    fake_invoice_id_b = str(uuid.uuid4())
+
+    # Create a minimal real invoice so submit-for-approval passes its validation
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat_id = uuid.UUID(FLAT_1203_ID)
+    idemp_inv = Invoice(
+        society_id=soc_id,
+        flat_id=flat_id,
+        billing_period="2026-12",
+        invoice_number=f"INV-IDEMP-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1150,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=300000,
+        total_paise=300000,
+        due_date=datetime.now(UTC) + timedelta(days=5),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(idemp_inv)
+    db_session.commit()
+
+    # Maker submits a valid proposal to reach PENDING_APPROVAL
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_id}/submit-for-approval",
+        json={
+            "proposed_allocations": [{"invoice_id": str(idemp_inv.id), "allocated_paise": 300000}]
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+
     idemp_key = str(uuid.uuid4())
 
-    # First call with payload A
+    # First call with payload A by checker (Helpdesk 2) — fails because allocations mismatch submitted proposal
     client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
         json={
-            "proposed_allocations": [{"invoice_id": str(uuid.uuid4()), "allocated_paise": 100000}]
+            "proposed_allocations": [{"invoice_id": fake_invoice_id_a, "allocated_paise": 100000}]
         },
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp_key},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp_key},
     )
-    # Fails validation because invoice doesn't exist, but idempotency record is completed/failed
+    # Fails validation (allocations don't match submitted proposal), but idempotency record is FAILED
 
     # Second call with same idempotency key but differing payload -> 409 Conflict
     res2 = client.post(
         f"/api/v1/reconciliation/transactions/{txn_id}/approve",
         json={
-            "proposed_allocations": [{"invoice_id": str(uuid.uuid4()), "allocated_paise": 200000}]
+            "proposed_allocations": [{"invoice_id": fake_invoice_id_b, "allocated_paise": 200000}]
         },
-        headers={**AUTH_HELPDESK, "Idempotency-Key": idemp_key},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": idemp_key},
     )
     assert res2.status_code == 409
     assert (
@@ -1774,7 +1879,7 @@ def test_multi_society_helpdesk_approval_succeeds(client: TestClient, db_session
     """Proves that a helpdesk user authorized for multiple societies can approve transactions belonging to their second society."""
     soc_b = uuid.UUID("99999999-9999-9999-9999-999999999999")
 
-    # Ensure user_helpdesk has HELPDESK role in soc_b as well as soc_a
+    # Ensure user_helpdesk and user_helpdesk_2 have HELPDESK role in soc_b as well as soc_a
     helpdesk_user = db_session.query(User).filter(User.email == "helpdesk@example.com").first()
     assert helpdesk_user is not None
     existing_role_b = (
@@ -1788,7 +1893,24 @@ def test_multi_society_helpdesk_approval_succeeds(client: TestClient, db_session
     )
     if not existing_role_b:
         db_session.add(UserRole(user_id=helpdesk_user.id, society_id=soc_b, role=RoleType.HELPDESK))
-        db_session.commit()
+
+    helpdesk_user_2 = db_session.query(User).filter(User.email == "helpdesk2@example.com").first()
+    assert helpdesk_user_2 is not None
+    existing_role_b2 = (
+        db_session.query(UserRole)
+        .filter(
+            UserRole.user_id == helpdesk_user_2.id,
+            UserRole.society_id == soc_b,
+            UserRole.role == RoleType.HELPDESK,
+        )
+        .first()
+    )
+    if not existing_role_b2:
+        db_session.add(
+            UserRole(user_id=helpdesk_user_2.id, society_id=soc_b, role=RoleType.HELPDESK)
+        )
+
+    db_session.commit()
 
     # Create an invoice in society B
     flat_b = db_session.query(Flat).filter(Flat.society_id == soc_b).first()
@@ -1835,11 +1957,21 @@ def test_multi_society_helpdesk_approval_succeeds(client: TestClient, db_session
     db_session.add(txn_b)
     db_session.commit()
 
-    # Approve transaction in Society B using AUTH_HELPDESK whose claims.society_ids[0] might be Society A
+    # Submit proposal for transaction in Society B using AUTH_HELPDESK
+    alloc_b = [{"invoice_id": str(inv_b.id), "allocated_paise": 500000}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_b.id}/submit-for-approval",
+        json={"proposed_allocations": alloc_b, "notes": "Society B proposal"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200, submit_res.text
+    assert submit_res.json()["reconciliation_status"] == "PENDING_APPROVAL"
+
+    # Approve transaction in Society B using AUTH_HELPDESK_2 whose claims.society_ids[0] might be Society A
     res = client.post(
         f"/api/v1/reconciliation/transactions/{txn_b.id}/approve",
-        json={"proposed_allocations": [{"invoice_id": str(inv_b.id), "allocated_paise": 500000}]},
-        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+        json={"proposed_allocations": alloc_b},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
     )
     assert res.status_code == 200, res.text
     data = res.json()
@@ -1940,3 +2072,215 @@ def test_dual_approval_maker_checker_rules(client: TestClient, db_session: Sessi
     )
     assert valid_appr.status_code == 200
     assert valid_appr.json()["reconciliation_status"] == "POSTED"
+
+
+def test_approve_requires_pending_approval_status(client: TestClient, db_session: Session) -> None:
+    """P0 Security Enforcement: Calling /approve on UNMATCHED or SUGGESTED transactions
+    must fail with 400. Financial settlement strictly requires PENDING_APPROVAL."""
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat = db_session.query(Flat).filter(Flat.society_id == soc_id).first()
+    assert flat is not None
+    user = db_session.query(User).first()
+    assert user is not None
+
+    inv = Invoice(
+        society_id=soc_id,
+        flat_id=flat.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-P0-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=500000,
+        total_paise=500000,
+        due_date=datetime.now(UTC) + timedelta(days=5),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(inv)
+
+    imp = BankStatementImport(
+        society_id=soc_id,
+        file_name="p0_test.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=user.id,
+        status=StatementImportStatus.COMPLETED,
+    )
+    db_session.add(imp)
+    db_session.flush()
+
+    txn = BankTransaction(
+        import_id=imp.id,
+        society_id=soc_id,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=500000,
+        description="P0 DIRECT APPROVAL BYPASS ATTEMPT",
+        normalized_description="P0 DIRECT APPROVAL BYPASS ATTEMPT",
+        transaction_fingerprint=f"fp_p0_{uuid.uuid4().hex}",
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn)
+    db_session.commit()
+
+    alloc_payload = [{"invoice_id": str(inv.id), "allocated_paise": 500000}]
+
+    # 1. Attempt /approve on UNMATCHED transaction -> 400 Bad Request
+    res_unmatched = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/approve",
+        json={"proposed_allocations": alloc_payload},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert res_unmatched.status_code == 400
+    assert "Cannot approve transaction in status 'UNMATCHED'" in res_unmatched.text
+    assert "PENDING_APPROVAL" in res_unmatched.text
+
+    # 2. Transition transaction to SUGGESTED
+    txn.reconciliation_status = TransactionReconciliationStatus.SUGGESTED
+    db_session.commit()
+
+    # Attempt /approve on SUGGESTED transaction -> 400 Bad Request
+    res_suggested = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/approve",
+        json={"proposed_allocations": alloc_payload},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert res_suggested.status_code == 400
+    assert "Cannot approve transaction in status 'SUGGESTED'" in res_suggested.text
+    assert "PENDING_APPROVAL" in res_suggested.text
+
+
+def test_tower_flat_composite_matching_engine_distinguishes_towers(
+    db_session: Session,
+) -> None:
+    """P1 Correctness Enforcement: When identical flat numbers exist in different towers
+    (e.g., T07-505 and T12-505), a narration with 'T07-505' must resolve to T07-505,
+    and a bare '505' must NOT resolve to either tower ambiguously."""
+    from app.domains.identity.models import Tower
+    from app.domains.reconciliation.matching import MatchingEngine
+
+    soc_id = uuid.UUID(SOCIETY_ID)
+
+    # Fetch existing towers T07 and T12
+    tower_7 = (
+        db_session.query(Tower)
+        .filter(Tower.society_id == soc_id, Tower.tower_number == "T07")
+        .first()
+    )
+    tower_12 = (
+        db_session.query(Tower)
+        .filter(Tower.society_id == soc_id, Tower.tower_number == "T12")
+        .first()
+    )
+    assert tower_7 is not None and tower_12 is not None
+
+    flat_t07_505 = Flat(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        tower_id=tower_7.id,
+        flat_number="505",
+        area_sqft=1000,
+    )
+    flat_t12_505 = Flat(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        tower_id=tower_12.id,
+        flat_number="505",
+        area_sqft=1000,
+    )
+    db_session.add_all([flat_t07_505, flat_t12_505])
+    db_session.flush()
+
+    # Create invoices for both flats with different amounts
+    inv_t07 = Invoice(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat_t07_505.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-T07-505-{uuid.uuid4().hex[:4].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=650000,
+        total_paise=650000,
+        due_date=datetime.now(UTC) + timedelta(days=5),
+        status=InvoiceStatus.UNPAID,
+    )
+    inv_t12 = Invoice(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat_t12_505.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-T12-505-{uuid.uuid4().hex[:4].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=650000,
+        total_paise=650000,
+        due_date=datetime.now(UTC) + timedelta(days=5),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add_all([inv_t07, inv_t12])
+    db_session.commit()
+
+    # Ensure relationship loaded on flats
+    db_session.refresh(flat_t07_505)
+    db_session.refresh(flat_t12_505)
+
+    engine = MatchingEngine(soc_id)
+
+    # 1. Narration explicitly specifies "T07-505"
+    txn_t07 = BankTransaction(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        import_id=uuid.uuid4(),
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=650000,
+        description="NEFT T07-505 MAINTENANCE CHG",
+        normalized_description="NEFT T07 505 MAINTENANCE CHG",
+        transaction_fingerprint=f"fp_m1_{uuid.uuid4().hex}",
+    )
+
+    matches_t07 = engine.evaluate_transaction(
+        transaction=txn_t07,
+        invoices=[inv_t07, inv_t12],
+        payments=[],
+        flats=[flat_t07_505, flat_t12_505],
+        memberships=[],
+        users={},
+    )
+    assert len(matches_t07) >= 1
+    top_match = matches_t07[0]
+    # Must match flat in Tower T07, NOT Tower T12
+    assert top_match.flat_id == flat_t07_505.id
+    assert top_match.invoice_id == inv_t07.id
+    assert "narration_unit_clue" in top_match.evidence
+
+    # 2. Narration has bare "505" with multiple matching flats across towers
+    # Bare clue resolution should NOT resolve to either flat since it's ambiguous
+    txn_bare = BankTransaction(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        import_id=uuid.uuid4(),
+        source_row_number=2,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=650000,
+        description="NEFT FLAT 505 MAINTENANCE CHG",
+        normalized_description="NEFT FLAT 505 MAINTENANCE CHG",
+        transaction_fingerprint=f"fp_m2_{uuid.uuid4().hex}",
+    )
+
+    matches_bare = engine.evaluate_transaction(
+        transaction=txn_bare,
+        invoices=[inv_t07, inv_t12],
+        payments=[],
+        flats=[flat_t07_505, flat_t12_505],
+        memberships=[],
+        users={},
+    )
+    # Neither should have narration_unit_clue bonus because bare 505 is ambiguous across towers
+    for m in matches_bare:
+        assert "narration_unit_clue" not in m.evidence
