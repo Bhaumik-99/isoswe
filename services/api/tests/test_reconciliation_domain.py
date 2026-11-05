@@ -53,10 +53,12 @@ from app.domains.billing.models import (
 from app.domains.identity.models import (
     Flat,
     FlatMembership,
+    RoleType,
     Society,
     SocietyStatus,
     Tower,
     User,
+    UserRole,
 )
 from app.domains.reconciliation.matching import MatchingEngine
 from app.domains.reconciliation.models import (
@@ -84,6 +86,7 @@ FLAT_0408_ID = "33333333-3333-3333-3333-333333330408"
 FLAT_1601_ID = "33333333-3333-3333-3333-333333331601"
 
 AUTH_HELPDESK = {"Authorization": "Bearer dev-token-helpdesk"}
+AUTH_HELPDESK_2 = {"Authorization": "Bearer dev-token-helpdesk-2"}
 AUTH_NEERAJ = {"Authorization": "Bearer dev-token-neeraj"}
 
 
@@ -1765,3 +1768,175 @@ def test_concurrency_safe_import_confirmation_guards(client: TestClient) -> None
     )
     assert confirm_2.status_code == 400
     assert "Only READY_FOR_IMPORT statements can be confirmed" in confirm_2.text
+
+
+def test_multi_society_helpdesk_approval_succeeds(client: TestClient, db_session: Session) -> None:
+    """Proves that a helpdesk user authorized for multiple societies can approve transactions belonging to their second society."""
+    soc_b = uuid.UUID("99999999-9999-9999-9999-999999999999")
+
+    # Ensure user_helpdesk has HELPDESK role in soc_b as well as soc_a
+    helpdesk_user = db_session.query(User).filter(User.email == "helpdesk@example.com").first()
+    assert helpdesk_user is not None
+    existing_role_b = (
+        db_session.query(UserRole)
+        .filter(
+            UserRole.user_id == helpdesk_user.id,
+            UserRole.society_id == soc_b,
+            UserRole.role == RoleType.HELPDESK,
+        )
+        .first()
+    )
+    if not existing_role_b:
+        db_session.add(UserRole(user_id=helpdesk_user.id, society_id=soc_b, role=RoleType.HELPDESK))
+        db_session.commit()
+
+    # Create an invoice in society B
+    flat_b = db_session.query(Flat).filter(Flat.society_id == soc_b).first()
+    assert flat_b is not None
+    inv_b = Invoice(
+        society_id=soc_b,
+        flat_id=flat_b.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-SOCB-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=500000,
+        total_paise=500000,
+        due_date=datetime.now(UTC) + timedelta(days=10),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(inv_b)
+    db_session.commit()
+
+    # Create statement import and transaction in society B
+    imp_b = BankStatementImport(
+        society_id=soc_b,
+        file_name="soc_b_statement.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=helpdesk_user.id,
+        status=StatementImportStatus.COMPLETED,
+    )
+    db_session.add(imp_b)
+    db_session.commit()
+
+    txn_b = BankTransaction(
+        import_id=imp_b.id,
+        society_id=soc_b,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=500000,
+        description="NEFT CREDIT SOC B",
+        normalized_description="NEFT CREDIT SOC B",
+        transaction_fingerprint=f"fp_socb_{uuid.uuid4().hex}",
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn_b)
+    db_session.commit()
+
+    # Approve transaction in Society B using AUTH_HELPDESK whose claims.society_ids[0] might be Society A
+    res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn_b.id}/approve",
+        json={"proposed_allocations": [{"invoice_id": str(inv_b.id), "allocated_paise": 500000}]},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["reconciliation_status"] == "POSTED"
+    assert data["society_id"] == str(soc_b)
+
+
+def test_dual_approval_maker_checker_rules(client: TestClient, db_session: Session) -> None:
+    """Enforces server-side maker-checker controls:
+    1. Maker cannot approve their own submission (requires independent checker).
+    2. Checker must approve matching allocations or reject/resubmit.
+    3. Independent checker with matching allocations succeeds.
+    """
+    soc_id = uuid.UUID(SOCIETY_ID)
+    flat = db_session.query(Flat).filter(Flat.society_id == soc_id).first()
+    assert flat is not None
+    user_helpdesk = db_session.query(User).filter(User.email == "helpdesk@example.com").first()
+    assert user_helpdesk is not None
+
+    inv = Invoice(
+        society_id=soc_id,
+        flat_id=flat.id,
+        billing_period="2026-11",
+        invoice_number=f"INV-DUAL-{uuid.uuid4().hex[:6].upper()}",
+        area_sqft_snapshot=1000,
+        rate_paise_per_sqft_snapshot=650,
+        subtotal_paise=700000,
+        total_paise=700000,
+        due_date=datetime.now(UTC) + timedelta(days=10),
+        status=InvoiceStatus.UNPAID,
+    )
+    db_session.add(inv)
+    db_session.commit()
+
+    imp = BankStatementImport(
+        society_id=soc_id,
+        file_name="dual_appr.csv",
+        file_checksum=f"chk_{uuid.uuid4().hex[:12]}",
+        uploaded_by=user_helpdesk.id,
+        status=StatementImportStatus.COMPLETED,
+    )
+    db_session.add(imp)
+    db_session.commit()
+
+    txn = BankTransaction(
+        import_id=imp.id,
+        society_id=soc_id,
+        source_row_number=1,
+        transaction_date=datetime.now(UTC),
+        transaction_type=TransactionType.CREDIT,
+        debit_paise=0,
+        credit_paise=700000,
+        description="NEFT DUAL APPROVAL TEST",
+        normalized_description="NEFT DUAL APPROVAL TEST",
+        transaction_fingerprint=f"fp_dual_{uuid.uuid4().hex}",
+        reconciliation_status=TransactionReconciliationStatus.UNMATCHED,
+    )
+    db_session.add(txn)
+    db_session.commit()
+
+    # Step 1: Helpdesk User 1 (Maker) submits proposed allocation for approval
+    proposal = [{"invoice_id": str(inv.id), "allocated_paise": 700000}]
+    submit_res = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/submit-for-approval",
+        json={"proposed_allocations": proposal, "notes": "Proposed by Rajesh for review"},
+        headers=AUTH_HELPDESK,
+    )
+    assert submit_res.status_code == 200
+    assert submit_res.json()["reconciliation_status"] == "PENDING_APPROVAL"
+
+    # Step 2: Maker (User 1) attempts to approve their own proposal -> Rejected (Maker-Checker violation)
+    same_user_appr = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/approve",
+        json={"proposed_allocations": proposal},
+        headers={**AUTH_HELPDESK, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert same_user_appr.status_code == 400
+    assert (
+        "maker-checker" in same_user_appr.text.lower()
+        or "dual approval" in same_user_appr.text.lower()
+    )
+
+    # Step 3: Independent Checker (User 2) attempts to approve with DIFFERENT allocations -> Rejected (Integrity violation)
+    mismatched_alloc = [{"invoice_id": str(inv.id), "allocated_paise": 500000}]
+    mismatch_appr = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/approve",
+        json={"proposed_allocations": mismatched_alloc},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert mismatch_appr.status_code == 400
+    assert "must match the submitted proposal" in mismatch_appr.text
+
+    # Step 4: Independent Checker (User 2) approves with matching proposal allocations -> Success!
+    valid_appr = client.post(
+        f"/api/v1/reconciliation/transactions/{txn.id}/approve",
+        json={"proposed_allocations": proposal},
+        headers={**AUTH_HELPDESK_2, "Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert valid_appr.status_code == 200
+    assert valid_appr.json()["reconciliation_status"] == "POSTED"

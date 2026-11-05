@@ -4,12 +4,9 @@ title = "Gitleaks Configuration"
 useDefault = true
 
 [allowlist]
-description = "Global allowlist for synthetic test fixtures and header mock keys"
-paths = [
-    '''apps/web/src/services/.*test\.(ts|js)''',
-    '''services/api/tests/.*''',
-]
+description = "Narrowly scoped false-positive exceptions for synthetic test fixtures and header mock keys"
 regexes = [
+    '''dev-token-[a-z0-9-]+''',
     '''test-idempotency-key''',
     '''Idempotency-Key''',
 ]

@@ -43,6 +43,13 @@ MOCK_USERS: dict[str, dict[str, str]] = {
         "name": "Rajesh Shinde",
         "role": "HELPDESK",
     },
+    "dev-token-helpdesk-2": {
+        "email": "helpdesk2@example.com",
+        "phone": "+91-98000-00005",
+        "sub": "00000000-0000-0000-0000-000000000005",
+        "name": "Priya Patel",
+        "role": "HELPDESK",
+    },
 }
 
 

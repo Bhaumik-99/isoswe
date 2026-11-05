@@ -125,17 +125,18 @@ class ReconciliationRepository:
         return self.db.scalar(stmt)
 
     def get_transaction_for_update(
-        self, transaction_id: UUID, society_id: UUID
+        self, transaction_id: UUID, society_id: UUID | None = None
     ) -> BankTransaction | None:
         """Locks bank transaction row using SELECT FOR UPDATE to prevent race conditions during approval."""
         stmt = (
             select(BankTransaction)
             .where(
                 BankTransaction.id == transaction_id,
-                BankTransaction.society_id == society_id,
             )
             .with_for_update()
         )
+        if society_id:
+            stmt = stmt.where(BankTransaction.society_id == society_id)
         return self.db.scalar(stmt)
 
     def list_transactions(

@@ -44,6 +44,7 @@ from app.domains.reconciliation.models import (
     MatchingLevel,
     ReconciliationAllocation,
     ReconciliationMatch,
+    ReconciliationReview,
     StatementImportStatus,
     TransactionReconciliationStatus,
     TransactionType,
@@ -656,6 +657,11 @@ class ReconciliationService:
         if txn.transaction_type != TransactionType.CREDIT:
             raise ValidationError("Only incoming credit transactions can be allocated to invoices.")
 
+        if not proposed_allocations:
+            raise ValidationError(
+                "At least one proposed invoice allocation is required to submit for approval."
+            )
+
         # Invariant: Sum of proposed allocations cannot exceed available credit
         total_proposed = sum(p.allocated_paise for p in proposed_allocations)
         available_credit = txn.credit_paise - txn.allocated_paise
@@ -739,16 +745,57 @@ class ReconciliationService:
             raise ConflictError("A reconciliation approval with this key is currently in progress.")
 
         try:
-            # STEP 2: Lock transaction row with SELECT FOR UPDATE
-            txn = self.repo.get_transaction_for_update(
-                transaction_id, society_id=claims.society_ids[0]
-            )
+            # STEP 2: Lock transaction row with SELECT FOR UPDATE (resolving transaction's actual society)
+            txn = self.repo.get_transaction_for_update(transaction_id)
             if not txn:
                 raise NotFoundError(f"Transaction {transaction_id} not found")
             self._verify_society_access(claims, txn.society_id)
 
             if txn.transaction_type != TransactionType.CREDIT:
                 raise ValidationError("Only credit transactions can be approved and posted.")
+
+            # STEP 2.5: Server-side Dual Approval (Maker-Checker) Enforcement
+            if txn.reconciliation_status == TransactionReconciliationStatus.PENDING_APPROVAL:
+                latest_submit = (
+                    self.db.query(ReconciliationReview)
+                    .filter(
+                        ReconciliationReview.transaction_id == txn.id,
+                        ReconciliationReview.action == "SUBMITTED_FOR_APPROVAL",
+                    )
+                    .order_by(ReconciliationReview.created_at.desc())
+                    .first()
+                )
+                if latest_submit:
+                    # Rule 1: Segregation of duties (Approver cannot be the maker/submitter)
+                    if latest_submit.reviewer_id == claims.user_id:
+                        raise ValidationError(
+                            "Dual approval policy violation: Approver cannot be the same user who submitted the proposal for approval (maker-checker segregation of duties). An independent authorized reviewer must approve."
+                        )
+
+                    # Adopt submitted allocations if omitted in approval request
+                    if not proposed_allocations and latest_submit.proposed_allocations:
+                        proposed_allocations = [
+                            ProposedAllocationItem(
+                                invoice_id=UUID(str(item["invoice_id"])),
+                                allocated_paise=int(item["allocated_paise"]),
+                            )
+                            for item in latest_submit.proposed_allocations
+                        ]
+
+                    # Rule 2: Proposal integrity (Approved allocations must match submitted proposal allocations)
+                    if latest_submit.proposed_allocations:
+                        submitted_allocs = sorted(
+                            (str(item["invoice_id"]), int(item["allocated_paise"]))
+                            for item in latest_submit.proposed_allocations
+                        )
+                        current_allocs = sorted(
+                            (str(p.invoice_id), int(p.allocated_paise))
+                            for p in proposed_allocations
+                        )
+                        if submitted_allocs != current_allocs:
+                            raise ValidationError(
+                                "Dual approval policy violation: Approved allocations must match the submitted proposal allocations. If allocation modifications are necessary, reject the submission or submit an updated proposal."
+                            )
 
             available_credit = txn.credit_paise - txn.allocated_paise
             total_alloc_paise = sum(p.allocated_paise for p in proposed_allocations)

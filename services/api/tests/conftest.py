@@ -159,7 +159,15 @@ def db_session() -> Generator[Session, None, None]:
         full_name="Rajesh Shinde",
         status=UserStatus.ACTIVE,
     )
-    session.add_all([user_neeraj, user_swati, user_aamir, user_helpdesk])
+    user_helpdesk_2 = User(
+        id=uuid.UUID("44444444-4444-4444-4444-444444440005"),
+        supabase_uid=uuid.UUID("00000000-0000-0000-0000-000000000005"),
+        phone="+91-98000-00005",
+        email="helpdesk2@example.com",
+        full_name="Priya Patel",
+        status=UserStatus.ACTIVE,
+    )
+    session.add_all([user_neeraj, user_swati, user_aamir, user_helpdesk, user_helpdesk_2])
 
     # Roles
     session.add_all(
@@ -168,6 +176,7 @@ def db_session() -> Generator[Session, None, None]:
             UserRole(user_id=user_swati.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_aamir.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.HELPDESK),
+            UserRole(user_id=user_helpdesk_2.id, society_id=society_id, role=RoleType.HELPDESK),
         ]
     )
 
