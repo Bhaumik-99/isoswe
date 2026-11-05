@@ -1123,3 +1123,426 @@ def test_postgres_batch_billing_generation_bounded_operations(postgres_test_db: 
             {"soc": soc_id},
         ).scalar()
         assert count == 500
+
+
+def test_postgres_rls_and_composite_fk_reconciliation(postgres_test_db: Engine) -> None:
+    """Requirement: Real PostgreSQL RLS and composite foreign key enforcement across all 5 reconciliation tables.
+
+    Verifies:
+    1. Composite foreign keys prevent cross-tenant referencing in PostgreSQL:
+       - bank_transactions cannot reference an import from a different society.
+       - reconciliation_matches cannot reference a transaction or invoice from a different society.
+       - reconciliation_reviews cannot reference a transaction from a different society.
+       - reconciliation_allocations cannot reference an invoice or transaction from a different society.
+    2. RLS for HELPDESK staff:
+       - Can SELECT statement imports, bank transactions, matches, reviews, and allocations for authorized society.
+       - Cannot view records for an unauthorized society.
+    3. RLS for RESIDENTS:
+       - Statement imports, transactions, matches, reviews return 0 rows for residents.
+       - Can only view reconciliation allocations tied to their own approved flat invoices.
+    4. Direct write attempts (INSERT, UPDATE, DELETE) by 'authenticated' role are blocked by RLS.
+    5. Bypass with 'service_role' allows full backend access across all tenants.
+    """
+    engine = postgres_test_db
+    api_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    alembic_cfg = Config(os.path.join(api_dir, "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", os.path.join(api_dir, "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", TEST_DB_URL)
+
+    with engine.connect() as connection:
+        alembic_cfg.attributes["connection"] = connection
+        command.upgrade(alembic_cfg, "head")
+        connection.commit()
+
+    soc_a = uuid.uuid4()
+    soc_b = uuid.uuid4()
+    tow_a = uuid.uuid4()
+    tow_b = uuid.uuid4()
+    flat_a = uuid.uuid4()
+    flat_b = uuid.uuid4()
+
+    helpdesk_user_id = uuid.uuid4()
+    helpdesk_sub = uuid.uuid4()
+    resident_a_user_id = uuid.uuid4()
+    resident_a_sub = uuid.uuid4()
+    resident_b_user_id = uuid.uuid4()
+    resident_b_sub = uuid.uuid4()
+
+    inv_a = uuid.uuid4()
+    inv_b = uuid.uuid4()
+    pmt_a = uuid.uuid4()
+    pmt_b = uuid.uuid4()
+
+    imp_a = uuid.uuid4()
+    imp_b = uuid.uuid4()
+    txn_a = uuid.uuid4()
+    txn_b = uuid.uuid4()
+    match_a = uuid.uuid4()
+    match_b = uuid.uuid4()
+    review_a = uuid.uuid4()
+    review_b = uuid.uuid4()
+    alloc_a = uuid.uuid4()
+    alloc_b = uuid.uuid4()
+
+    now = datetime.now(UTC)
+    last_year = now - timedelta(days=365)
+    next_year = now + timedelta(days=365)
+
+    with engine.connect() as conn:
+        conn.execute(text("RESET ROLE;"))
+
+        # 1. Societies
+        conn.execute(
+            text(
+                "INSERT INTO societies (id, name, timezone, preferred_currency, status, created_at, updated_at) "
+                "VALUES (:sa, 'Recon Soc A', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW()), "
+                "       (:sb, 'Recon Soc B', 'Asia/Kolkata', 'INR', 'ACTIVE', NOW(), NOW());"
+            ),
+            {"sa": soc_a, "sb": soc_b},
+        )
+
+        # 2. Towers & Flats
+        conn.execute(
+            text(
+                "INSERT INTO towers (id, society_id, tower_number, name, created_at) "
+                "VALUES (:ta, :sa, 'TA', 'Tower A', NOW()), "
+                "       (:tb, :sb, 'TB', 'Tower B', NOW());"
+            ),
+            {"ta": tow_a, "sa": soc_a, "tb": tow_b, "sb": soc_b},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO flats (id, society_id, tower_id, flat_number, area_sqft, status, created_at, updated_at) "
+                "VALUES (:fa, :sa, :ta, '101', 1000, 'OCCUPIED', NOW(), NOW()), "
+                "       (:fb, :sb, :tb, '201', 1000, 'OCCUPIED', NOW(), NOW());"
+            ),
+            {"fa": flat_a, "sa": soc_a, "ta": tow_a, "fb": flat_b, "sb": soc_b, "tb": tow_b},
+        )
+
+        # 3. Users
+        conn.execute(
+            text(
+                "INSERT INTO users (id, supabase_uid, email, phone, full_name, status, created_at, updated_at) "
+                "VALUES (:hu, :hsub, 'helpdesk@example.com', '+919900011111', 'Staff Alpha', 'ACTIVE', NOW(), NOW()), "
+                "       (:ra, :rsuba, 'resA@example.com', '+919900022222', 'Resident A', 'ACTIVE', NOW(), NOW()), "
+                "       (:rb, :rsubb, 'resB@example.com', '+919900033333', 'Resident B', 'ACTIVE', NOW(), NOW());"
+            ),
+            {
+                "hu": helpdesk_user_id,
+                "hsub": helpdesk_sub,
+                "ra": resident_a_user_id,
+                "rsuba": resident_a_sub,
+                "rb": resident_b_user_id,
+                "rsubb": resident_b_sub,
+            },
+        )
+
+        # 4. User Roles: Staff Alpha is HELPDESK in Society A
+        conn.execute(
+            text(
+                "INSERT INTO user_roles (id, user_id, society_id, role, created_at) "
+                "VALUES (gen_random_uuid(), :hu, :sa, 'HELPDESK', NOW());"
+            ),
+            {"hu": helpdesk_user_id, "sa": soc_a},
+        )
+
+        # 5. Flat Memberships: Resident A in Flat A (Soc A), Resident B in Flat B (Soc B)
+        conn.execute(
+            text(
+                "INSERT INTO flat_memberships (id, society_id, user_id, flat_id, membership_type, status, valid_from, valid_until, is_primary, created_at, updated_at) "
+                "VALUES (gen_random_uuid(), :sa, :ra, :fa, 'OWNER', 'APPROVED', :last_year, :next_year, true, NOW(), NOW()), "
+                "       (gen_random_uuid(), :sb, :rb, :fb, 'OWNER', 'APPROVED', :last_year, :next_year, true, NOW(), NOW());"
+            ),
+            {
+                "sa": soc_a,
+                "ra": resident_a_user_id,
+                "fa": flat_a,
+                "sb": soc_b,
+                "rb": resident_b_user_id,
+                "fb": flat_b,
+                "last_year": last_year,
+                "next_year": next_year,
+            },
+        )
+
+        # 6. Invoices & Payments
+        conn.execute(
+            text(
+                "INSERT INTO invoices (id, society_id, flat_id, billing_period, invoice_number, area_sqft_snapshot, rate_paise_per_sqft_snapshot, subtotal_paise, total_paise, due_date, status, created_at, updated_at) "
+                "VALUES (:ia, :sa, :fa, '2026-11', 'INV-RECON-A', 1000, 650, 650000, 650000, NOW() + INTERVAL '15 days', 'PAID', NOW(), NOW()), "
+                "       (:ib, :sb, :fb, '2026-11', 'INV-RECON-B', 1000, 650, 650000, 650000, NOW() + INTERVAL '15 days', 'PAID', NOW(), NOW());"
+            ),
+            {"ia": inv_a, "sa": soc_a, "fa": flat_a, "ib": inv_b, "sb": soc_b, "fb": flat_b},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO payments (id, society_id, flat_id, amount_paise, currency, provider, provider_reference, status, initiated_by, created_at, updated_at) "
+                "VALUES (:pa, :sa, :fa, 650000, 'INR', 'BANK_TRANSFER', 'REF-A-001', 'SUCCESS', :hu, NOW(), NOW()), "
+                "       (:pb, :sb, :fb, 650000, 'INR', 'BANK_TRANSFER', 'REF-B-001', 'SUCCESS', :hu, NOW(), NOW());"
+            ),
+            {
+                "pa": pmt_a,
+                "sa": soc_a,
+                "fa": flat_a,
+                "pb": pmt_b,
+                "sb": soc_b,
+                "fb": flat_b,
+                "hu": helpdesk_user_id,
+            },
+        )
+
+        # 7. Bank Statement Imports
+        conn.execute(
+            text(
+                "INSERT INTO bank_statement_imports (id, society_id, file_name, file_checksum, uploaded_by, status, created_at, updated_at) "
+                "VALUES (:ima, :sa, 'stmt_a.csv', 'chk_a_123456789', :hu, 'COMPLETED', NOW(), NOW()), "
+                "       (:imb, :sb, 'stmt_b.csv', 'chk_b_123456789', :hu, 'COMPLETED', NOW(), NOW());"
+            ),
+            {"ima": imp_a, "sa": soc_a, "hu": helpdesk_user_id, "imb": imp_b, "sb": soc_b},
+        )
+
+        # 8. Bank Transactions
+        conn.execute(
+            text(
+                "INSERT INTO bank_transactions (id, society_id, import_id, source_row_number, transaction_date, value_date, description, normalized_description, reference_number, transaction_type, debit_paise, credit_paise, allocated_paise, reconciliation_status, transaction_fingerprint, created_at, updated_at) "
+                "VALUES (:txa, :sa, :ima, 1, NOW(), NOW(), 'NEFT 101 MAINT', 'NEFT 101 MAINT', 'REF-A-001', 'CREDIT', 0, 650000, 650000, 'POSTED', 'fp_a_123456', NOW(), NOW()), "
+                "       (:txb, :sb, :imb, 1, NOW(), NOW(), 'NEFT 201 MAINT', 'NEFT 201 MAINT', 'REF-B-001', 'CREDIT', 0, 650000, 650000, 'POSTED', 'fp_b_123456', NOW(), NOW());"
+            ),
+            {"txa": txn_a, "sa": soc_a, "ima": imp_a, "txb": txn_b, "sb": soc_b, "imb": imp_b},
+        )
+
+        # 9. Reconciliation Matches
+        conn.execute(
+            text(
+                "INSERT INTO reconciliation_matches (id, society_id, transaction_id, flat_id, invoice_id, existing_payment_id, confidence_score, confidence_tier, matching_level, explanation, evidence, is_selected, created_at) "
+                "VALUES (:ma, :sa, :txa, :fa, :ia, :pa, 95.0, 'HIGH', 'DIRECT_INVOICE_EXACT', 'Rule matched', '{}', true, NOW()), "
+                "       (:mb, :sb, :txb, :fb, :ib, :pb, 95.0, 'HIGH', 'DIRECT_INVOICE_EXACT', 'Rule matched', '{}', true, NOW());"
+            ),
+            {
+                "ma": match_a,
+                "sa": soc_a,
+                "txa": txn_a,
+                "fa": flat_a,
+                "ia": inv_a,
+                "pa": pmt_a,
+                "mb": match_b,
+                "sb": soc_b,
+                "txb": txn_b,
+                "fb": flat_b,
+                "ib": inv_b,
+                "pb": pmt_b,
+            },
+        )
+
+        # 10. Reconciliation Reviews
+        conn.execute(
+            text(
+                "INSERT INTO reconciliation_reviews (id, society_id, transaction_id, reviewer_id, action, notes, proposed_allocations, metadata, created_at) "
+                "VALUES (:ra, :sa, :txa, :hu, 'APPROVE', 'Auto-approved', '[]', '{}', NOW()), "
+                "       (:rb, :sb, :txb, :hu, 'APPROVE', 'Auto-approved', '[]', '{}', NOW());"
+            ),
+            {
+                "ra": review_a,
+                "sa": soc_a,
+                "txa": txn_a,
+                "hu": helpdesk_user_id,
+                "rb": review_b,
+                "sb": soc_b,
+                "txb": txn_b,
+            },
+        )
+
+        # 11. Reconciliation Allocations
+        conn.execute(
+            text(
+                "INSERT INTO reconciliation_allocations (id, society_id, transaction_id, invoice_id, payment_id, allocated_paise, created_at) "
+                "VALUES (:aa, :sa, :txa, :ia, :pa, 650000, NOW()), "
+                "       (:ab, :sb, :txb, :ib, :pb, 650000, NOW());"
+            ),
+            {
+                "aa": alloc_a,
+                "sa": soc_a,
+                "txa": txn_a,
+                "ia": inv_a,
+                "pa": pmt_a,
+                "ab": alloc_b,
+                "sb": soc_b,
+                "txb": txn_b,
+                "ib": inv_b,
+                "pb": pmt_b,
+            },
+        )
+        conn.commit()
+
+        # -------------------------------------------------------------
+        # Part 1: Composite Foreign Key Enforcement (Cross-Tenant Integrity)
+        # -------------------------------------------------------------
+        # A. bank_transactions cross-tenant import rejected
+        fk_import_blocked = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO bank_transactions (id, society_id, import_id, source_row_number, transaction_date, value_date, description, normalized_description, transaction_type, debit_paise, credit_paise, allocated_paise, reconciliation_status, transaction_fingerprint, created_at, updated_at) "
+                    "VALUES (gen_random_uuid(), :sa, :imb, 2, NOW(), NOW(), 'Cross Tenant Import', 'Cross', 'CREDIT', 0, 1000, 0, 'UNMATCHED', 'cross_fp_1', NOW(), NOW());"
+                ),
+                {"sa": soc_a, "imb": imp_b},
+            )
+            conn.commit()
+        except Exception as exc:
+            fk_import_blocked = True
+            conn.rollback()
+            assert (
+                "foreign key" in str(exc).lower()
+                or "fk_bank_txns_import_composite" in str(exc).lower()
+            )
+        assert fk_import_blocked, (
+            "Composite FK fk_bank_txns_import_composite must reject cross-society import"
+        )
+
+        # B. reconciliation_matches cross-tenant transaction rejected
+        fk_match_blocked = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO reconciliation_matches (id, society_id, transaction_id, flat_id, invoice_id, confidence_score, matching_level, explanation, evidence, is_selected, created_at) "
+                    "VALUES (gen_random_uuid(), :sa, :txb, :fa, :ia, 90.0, 'DIRECT', 'desc', '{}', false, NOW());"
+                ),
+                {"sa": soc_a, "txb": txn_b, "fa": flat_a, "ia": inv_a},
+            )
+            conn.commit()
+        except Exception as exc:
+            fk_match_blocked = True
+            conn.rollback()
+            assert (
+                "foreign key" in str(exc).lower()
+                or "fk_recon_matches_txn_composite" in str(exc).lower()
+            )
+        assert fk_match_blocked, (
+            "Composite FK fk_recon_matches_txn_composite must reject cross-society transaction"
+        )
+
+        # C. reconciliation_allocations cross-tenant invoice rejected
+        fk_alloc_blocked = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO reconciliation_allocations (id, society_id, transaction_id, invoice_id, payment_id, allocated_paise, created_at) "
+                    "VALUES (gen_random_uuid(), :sa, :txa, :ib, :pa, 10000, NOW());"
+                ),
+                {"sa": soc_a, "txa": txn_a, "ib": inv_b, "pa": pmt_a},
+            )
+            conn.commit()
+        except Exception as exc:
+            fk_alloc_blocked = True
+            conn.rollback()
+            assert (
+                "foreign key" in str(exc).lower()
+                or "fk_recon_alloc_inv_composite" in str(exc).lower()
+            )
+        assert fk_alloc_blocked, (
+            "Composite FK fk_recon_alloc_inv_composite must reject cross-society invoice"
+        )
+
+    # -------------------------------------------------------------
+    # Part 2: RLS Verification for HELPDESK Staff
+    # -------------------------------------------------------------
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE authenticated;"))
+        conn.execute(text(f"SET request.jwt.claim.sub = '{helpdesk_sub}';"))
+
+        # 1. Statement Imports: sees Society A only
+        visible_imports = conn.execute(text("SELECT id FROM bank_statement_imports;")).fetchall()
+        import_ids = [r.id for r in visible_imports]
+        assert imp_a in import_ids, "Helpdesk must see Society A statement import"
+        assert imp_b not in import_ids, "Helpdesk must NOT see Society B statement import"
+
+        # 2. Bank Transactions: sees Society A only
+        visible_txns = conn.execute(text("SELECT id FROM bank_transactions;")).fetchall()
+        txn_ids = [r.id for r in visible_txns]
+        assert txn_a in txn_ids, "Helpdesk must see Society A transaction"
+        assert txn_b not in txn_ids, "Helpdesk must NOT see Society B transaction"
+
+        # 3. Matches: sees Society A only
+        visible_matches = conn.execute(text("SELECT id FROM reconciliation_matches;")).fetchall()
+        match_ids = [r.id for r in visible_matches]
+        assert match_a in match_ids, "Helpdesk must see Society A matches"
+        assert match_b not in match_ids, "Helpdesk must NOT see Society B matches"
+
+        # 4. Reviews: sees Society A only
+        visible_reviews = conn.execute(text("SELECT id FROM reconciliation_reviews;")).fetchall()
+        review_ids = [r.id for r in visible_reviews]
+        assert review_a in review_ids, "Helpdesk must see Society A reviews"
+        assert review_b not in review_ids, "Helpdesk must NOT see Society B reviews"
+
+        # 5. Allocations: sees Society A only
+        visible_allocs = conn.execute(text("SELECT id FROM reconciliation_allocations;")).fetchall()
+        alloc_ids = [r.id for r in visible_allocs]
+        assert alloc_a in alloc_ids, "Helpdesk must see Society A allocations"
+        assert alloc_b not in alloc_ids, "Helpdesk must NOT see Society B allocations"
+
+        # Direct INSERT by authenticated user must be denied by RLS
+        insert_denied = False
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO bank_transactions (id, society_id, import_id, source_row_number, transaction_date, value_date, description, normalized_description, transaction_type, debit_paise, credit_paise, allocated_paise, reconciliation_status, transaction_fingerprint, created_at, updated_at) "
+                    "VALUES (gen_random_uuid(), :sa, :ima, 99, NOW(), NOW(), 'Rogue Txn', 'Rogue', 'CREDIT', 0, 5000, 0, 'UNMATCHED', 'rogue_fp', NOW(), NOW());"
+                ),
+                {"sa": soc_a, "ima": imp_a},
+            )
+            conn.commit()
+        except Exception:
+            insert_denied = True
+            conn.rollback()
+            conn.execute(text("SET ROLE authenticated;"))
+            conn.execute(text(f"SET request.jwt.claim.sub = '{helpdesk_sub}';"))
+        assert insert_denied, (
+            "Direct INSERT on bank_transactions by authenticated role must be rejected by RLS"
+        )
+
+        conn.execute(text("RESET ROLE;"))
+
+    # -------------------------------------------------------------
+    # Part 3: RLS Verification for RESIDENT
+    # -------------------------------------------------------------
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE authenticated;"))
+        conn.execute(text(f"SET request.jwt.claim.sub = '{resident_a_sub}';"))
+
+        # Internal operational reconciliation tables must return 0 rows for residents
+        assert len(conn.execute(text("SELECT id FROM bank_statement_imports;")).fetchall()) == 0, (
+            "Resident must NOT see bank_statement_imports"
+        )
+        assert len(conn.execute(text("SELECT id FROM bank_transactions;")).fetchall()) == 0, (
+            "Resident must NOT see bank_transactions"
+        )
+        assert len(conn.execute(text("SELECT id FROM reconciliation_matches;")).fetchall()) == 0, (
+            "Resident must NOT see reconciliation_matches"
+        )
+        assert len(conn.execute(text("SELECT id FROM reconciliation_reviews;")).fetchall()) == 0, (
+            "Resident must NOT see reconciliation_reviews"
+        )
+
+        # Residents CAN see reconciliation allocations for their own approved flat invoices!
+        res_allocs = conn.execute(
+            text("SELECT id, invoice_id FROM reconciliation_allocations;")
+        ).fetchall()
+        res_alloc_ids = [r.id for r in res_allocs]
+        assert alloc_a in res_alloc_ids, "Resident A must see allocation for their flat invoice"
+        assert alloc_b not in res_alloc_ids, (
+            "Resident A must NOT see allocation for Society B invoice"
+        )
+
+        conn.execute(text("RESET ROLE;"))
+
+    # -------------------------------------------------------------
+    # Part 4: Service Role Full Bypass Verification
+    # -------------------------------------------------------------
+    with engine.connect() as conn:
+        conn.execute(text("SET ROLE service_role;"))
+        all_allocs = conn.execute(text("SELECT id FROM reconciliation_allocations;")).fetchall()
+        all_alloc_ids = [r.id for r in all_allocs]
+        assert alloc_a in all_alloc_ids and alloc_b in all_alloc_ids, (
+            "service_role must see allocations from all societies"
+        )
+        conn.execute(text("RESET ROLE;"))

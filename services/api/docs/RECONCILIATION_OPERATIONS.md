@@ -139,8 +139,20 @@ flowchart LR
 ## 6. Security & Formula Injection Defense
 
 1. **Spreadsheet Formula Injection Defense**: When generating CSV exports (`/api/v1/reconciliation/reports/export`), values starting with `=`, `+`, `-`, or `@` are automatically prepended with a single quote (`'`). This prevents malicious spreadsheet command execution in Microsoft Excel or Google Sheets.
-2. **Row-Level Security (RLS)**: PostgreSQL tables `bank_statement_imports`, `bank_transactions`, `reconciliation_matches`, `reconciliation_allocations`, and `reconciliation_reviews` enforce tenant isolation by `society_id`.
-3. **Role Authorization**: All reconciliation mutations require role `HELPDESK`. Direct financial mutations by `RESIDENT` role tokens are strictly rejected with `HTTP 403 Forbidden`.
+2. **Row-Level Security (RLS)**: PostgreSQL tables `bank_statement_imports`, `bank_transactions`, `reconciliation_matches`, `reconciliation_allocations`, and `reconciliation_reviews` enforce tenant isolation by `society_id` with forced RLS (`FORCE ROW LEVEL SECURITY`). Bypass policies exist strictly for `service_role` and `postgres`. Authenticated SELECT policies restrict helpdesk staff to their authorized societies and residents strictly to their own flat invoice allocations. Direct writes by authenticated users are blocked at the database level.
+3. **Database-Level Composite Foreign Keys & Tenant Isolation**: Migration `009` enforces multi-tenant integrity across all five reconciliation tables:
+   - `bank_transactions(society_id, import_id) -> bank_statement_imports(society_id, id)`
+   - `bank_transactions(society_id, duplicate_of_id) -> bank_transactions(society_id, id)`
+   - `reconciliation_matches(society_id, transaction_id) -> bank_transactions(society_id, id)`
+   - `reconciliation_matches(society_id, flat_id) -> flats(society_id, id)`
+   - `reconciliation_matches(society_id, invoice_id) -> invoices(society_id, id)`
+   - `reconciliation_matches(society_id, existing_payment_id) -> payments(society_id, id)`
+   - `reconciliation_reviews(society_id, transaction_id) -> bank_transactions(society_id, id)`
+   - `reconciliation_allocations(society_id, transaction_id) -> bank_transactions(society_id, id)`
+   - `reconciliation_allocations(society_id, invoice_id) -> invoices(society_id, id)`
+   - `reconciliation_allocations(society_id, payment_id) -> payments(society_id, id)`
+   Database triggers further guarantee that reconciliation allocations and matches reject any cross-tenant or cross-flat link.
+4. **Role Authorization**: All reconciliation mutations require role `HELPDESK`. Direct financial mutations by `RESIDENT` role tokens are strictly rejected with `HTTP 403 Forbidden`.
 
 ---
 
