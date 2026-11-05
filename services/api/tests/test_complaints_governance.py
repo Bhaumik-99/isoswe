@@ -79,6 +79,18 @@ def test_one_action_category_correction(client: TestClient, db_session: Session)
     assert complaint.original_category == ComplaintCategory.PLUMBING
     assert complaint.category_corrected_at is not None
 
+    # 3. Verify aliased fields compatibility: 'new_category' and 'reason'
+    res_alias = client.patch(
+        f"/api/v1/complaints/{complaint.id}/category",
+        json={
+            "new_category": "SECURITY",
+            "reason": "Gate intercom security issue",
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert res_alias.status_code == 200
+    assert res_alias.json()["category"] == "SECURITY"
+
 
 def test_duplicate_linking_without_auto_closing(client: TestClient, db_session: Session) -> None:
     """Duplicate complaints can be linked while keeping both tickets open with independent SLAs."""
@@ -165,6 +177,18 @@ def test_duplicate_linking_without_auto_closing(client: TestClient, db_session: 
     assert res_unlink.status_code == 200
     assert res_unlink.json()["duplicate_of_id"] is None
 
+    # 6. Verify aliased payload compatibility: 'primary_complaint_id' and 'reason'
+    res_alias_link = client.post(
+        f"/api/v1/complaints/{cmp_duplicate.id}/link-duplicate",
+        json={
+            "primary_complaint_id": str(cmp_primary.id),
+            "reason": "Aliased duplicate link contract test",
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert res_alias_link.status_code == 200
+    assert res_alias_link.json()["duplicate_of_id"] == str(cmp_primary.id)
+
 
 def test_persistent_safety_alerts_lifecycle(client: TestClient, db_session: Session) -> None:
     """Critical safety complaints generate persistent SafetyAlert records in the emergency queue."""
@@ -188,9 +212,15 @@ def test_persistent_safety_alerts_lifecycle(client: TestClient, db_session: Sess
     assert cmp_data["priority"] == "CRITICAL"
     assert cmp_data["safety_escalated"] is True
 
-    # 1. Verify safety alert appears in Helpdesk emergency queue
-    res_alerts = client.get("/api/v1/complaints/safety-alerts", headers=AUTH_HELPDESK)
+    # 1. Verify safety alert appears in Helpdesk emergency queue (supporting both unacknowledged_only and unread_only)
+    res_alerts = client.get(
+        "/api/v1/complaints/safety-alerts?unacknowledged_only=true", headers=AUTH_HELPDESK
+    )
     assert res_alerts.status_code == 200
+    res_alerts_unread = client.get(
+        "/api/v1/complaints/safety-alerts?unread_only=true", headers=AUTH_HELPDESK
+    )
+    assert res_alerts_unread.status_code == 200
     alerts = res_alerts.json()
     matching_alert = next((a for a in alerts if a["complaint_id"] == cmp_data["id"]), None)
     assert matching_alert is not None

@@ -190,11 +190,13 @@ def list_safety_alerts(
     claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
     society_id: UUID | None = Query(None),
     unacknowledged_only: bool = Query(True),
+    unread_only: bool | None = Query(None),
     db: Session = Depends(get_db),
 ) -> list[SafetyAlertResponse]:
     service = ComplaintService(db)
+    filter_unack = unread_only if unread_only is not None else unacknowledged_only
     return service.list_safety_alerts(
-        claims, society_id=society_id, unacknowledged_only=unacknowledged_only
+        claims, society_id=society_id, unacknowledged_only=filter_unack
     )
 
 

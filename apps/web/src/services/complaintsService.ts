@@ -217,8 +217,8 @@ export const complaintsService = {
     return apiClient.request<Complaint>(`/api/v1/complaints/${complaintId}/category`, {
       method: 'PATCH',
       body: JSON.stringify({
-        new_category: newCategory,
-        reason,
+        category: newCategory,
+        notes: reason,
       }),
     });
   },
@@ -231,8 +231,8 @@ export const complaintsService = {
     return apiClient.request<Complaint>(`/api/v1/complaints/${complaintId}/link-duplicate`, {
       method: 'POST',
       body: JSON.stringify({
-        primary_complaint_id: primaryComplaintId,
-        reason,
+        duplicate_of_id: primaryComplaintId,
+        notes: reason,
       }),
     });
   },
@@ -247,9 +247,9 @@ export const complaintsService = {
     return apiClient.request<Complaint[]>(`/api/v1/complaints/${complaintId}/linked-duplicates`);
   },
 
-  async getSafetyAlerts(unreadOnly = true): Promise<SafetyAlert[]> {
+  async getSafetyAlerts(unacknowledgedOnly = true): Promise<SafetyAlert[]> {
     return apiClient.request<SafetyAlert[]>(
-      `/api/v1/complaints/safety-alerts?unread_only=${unreadOnly}`
+      `/api/v1/complaints/safety-alerts?unacknowledged_only=${unacknowledgedOnly}`
     );
   },
 

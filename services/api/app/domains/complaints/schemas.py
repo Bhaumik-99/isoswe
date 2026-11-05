@@ -9,9 +9,10 @@ Strict typed contracts for:
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domains.complaints.models import (
     AttachmentStatus,
@@ -57,6 +58,18 @@ class UpdateComplaintCategoryRequest(BaseModel):
         default=None, max_length=500, description="Audit note explaining the category correction"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _harmonize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Harmonize 'new_category' to 'category'
+            if "category" not in data and "new_category" in data:
+                data["category"] = data["new_category"]
+            # Harmonize 'reason' to 'notes'
+            if "notes" not in data and "reason" in data:
+                data["notes"] = data["reason"]
+        return data
+
 
 class LinkDuplicateComplaintRequest(BaseModel):
     duplicate_of_id: UUID = Field(..., description="Target primary complaint ID")
@@ -65,6 +78,18 @@ class LinkDuplicateComplaintRequest(BaseModel):
         max_length=500,
         description="Optional note explaining the duplicate relationship",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _harmonize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Harmonize 'primary_complaint_id' to 'duplicate_of_id'
+            if "duplicate_of_id" not in data and "primary_complaint_id" in data:
+                data["duplicate_of_id"] = data["primary_complaint_id"]
+            # Harmonize 'reason' to 'notes'
+            if "notes" not in data and "reason" in data:
+                data["notes"] = data["reason"]
+        return data
 
 
 class AcknowledgeSafetyAlertRequest(BaseModel):

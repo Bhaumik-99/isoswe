@@ -124,5 +124,38 @@ describe('complaintsService', () => {
     );
     expect(result.status).toBe('UPLOADED');
   });
+
+  it('corrects complaint category with category and notes payload', async () => {
+    const mockComplaint = { id: 'c1', category: 'ELECTRICAL', original_category: 'PLUMBING' };
+    const requestSpy = vi.spyOn(apiClient, 'request').mockResolvedValue(mockComplaint as any);
+
+    const result = await complaintsService.correctCategory('c1', 'ELECTRICAL', 'Reclassified');
+    expect(requestSpy).toHaveBeenCalledWith('/api/v1/complaints/c1/category', {
+      method: 'PATCH',
+      body: JSON.stringify({ category: 'ELECTRICAL', notes: 'Reclassified' }),
+    });
+    expect(result.category).toBe('ELECTRICAL');
+  });
+
+  it('links duplicate complaint with duplicate_of_id and notes payload', async () => {
+    const mockComplaint = { id: 'c2', duplicate_of_id: 'c1' };
+    const requestSpy = vi.spyOn(apiClient, 'request').mockResolvedValue(mockComplaint as any);
+
+    const result = await complaintsService.linkDuplicate('c2', 'c1', 'Same pipe leak');
+    expect(requestSpy).toHaveBeenCalledWith('/api/v1/complaints/c2/link-duplicate', {
+      method: 'POST',
+      body: JSON.stringify({ duplicate_of_id: 'c1', notes: 'Same pipe leak' }),
+    });
+    expect(result.duplicate_of_id).toBe('c1');
+  });
+
+  it('fetches safety alerts using unacknowledged_only query param', async () => {
+    const mockAlerts = [{ id: 'a1', is_acknowledged: false }];
+    const requestSpy = vi.spyOn(apiClient, 'request').mockResolvedValue(mockAlerts as any);
+
+    const result = await complaintsService.getSafetyAlerts(true);
+    expect(requestSpy).toHaveBeenCalledWith('/api/v1/complaints/safety-alerts?unacknowledged_only=true');
+    expect(result).toHaveLength(1);
+  });
 });
 
