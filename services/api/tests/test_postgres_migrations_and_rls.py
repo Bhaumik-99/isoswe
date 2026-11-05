@@ -1190,6 +1190,7 @@ def test_postgres_rls_and_composite_fk_reconciliation(postgres_test_db: Engine) 
 
     with engine.connect() as conn:
         conn.execute(text("RESET ROLE;"))
+        conn.execute(text("GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;"))
 
         # 1. Societies
         conn.execute(

@@ -193,6 +193,7 @@ def upgrade() -> None:
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+                    GRANT SELECT ON user_roles TO authenticated;
                     GRANT SELECT ON bank_statement_imports TO authenticated;
                     GRANT SELECT ON bank_transactions TO authenticated;
                     GRANT SELECT ON reconciliation_matches TO authenticated;
@@ -200,6 +201,7 @@ def upgrade() -> None:
                     GRANT SELECT ON reconciliation_allocations TO authenticated;
                 END IF;
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+                    GRANT ALL ON user_roles TO service_role;
                     GRANT ALL ON bank_statement_imports TO service_role;
                     GRANT ALL ON bank_transactions TO service_role;
                     GRANT ALL ON reconciliation_matches TO service_role;
@@ -207,6 +209,40 @@ def upgrade() -> None:
                     GRANT ALL ON reconciliation_allocations TO service_role;
                 END IF;
             END $$;
+            """
+        )
+
+        # Allow authenticated users to view their own assigned roles
+        op.execute(
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'user_roles' AND policyname = 'user_roles_authenticated_select') THEN
+                    CREATE POLICY user_roles_authenticated_select ON user_roles
+                    FOR SELECT TO authenticated
+                    USING (
+                        user_id IN (SELECT id FROM users WHERE supabase_uid = auth.uid())
+                    );
+                END IF;
+            END $$;
+            """
+        )
+
+        # Security-definer helper function to securely check helpdesk role without subquery RLS recursion
+        op.execute(
+            """
+            CREATE OR REPLACE FUNCTION is_helpdesk_for_society(target_soc_id UUID)
+            RETURNS BOOLEAN AS $$
+            BEGIN
+                RETURN EXISTS (
+                    SELECT 1 FROM user_roles ur
+                    JOIN users u ON u.id = ur.user_id
+                    WHERE ur.society_id = target_soc_id
+                    AND ur.role = 'HELPDESK'
+                    AND u.supabase_uid = auth.uid()
+                );
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
             """
         )
 
@@ -250,12 +286,7 @@ def upgrade() -> None:
                         CREATE POLICY {tbl}_helpdesk_select ON {tbl}
                         FOR SELECT TO authenticated
                         USING (
-                            society_id IN (
-                                SELECT ur.society_id FROM user_roles ur
-                                JOIN users u ON u.id = ur.user_id
-                                WHERE u.supabase_uid = auth.uid()
-                                AND ur.role = 'HELPDESK'
-                            )
+                            is_helpdesk_for_society(society_id)
                         );
                     END IF;
                 END $$;
@@ -474,6 +505,9 @@ def downgrade() -> None:
             op.execute(f"DROP POLICY IF EXISTS {tbl}_service_role_all ON {tbl};")
             op.execute(f"ALTER TABLE {tbl} NO FORCE ROW LEVEL SECURITY;")
             op.execute(f"ALTER TABLE {tbl} DISABLE ROW LEVEL SECURITY;")
+
+        op.execute("DROP POLICY IF EXISTS user_roles_authenticated_select ON user_roles;")
+        op.execute("DROP FUNCTION IF EXISTS is_helpdesk_for_society(UUID);")
 
         # Drop trigger and function
         op.execute(
