@@ -110,7 +110,8 @@ function openKeyDB(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(request.error || new Error('Failed to open gate key database'));
+    request.onblocked = () => reject(new Error('IndexedDB open blocked for gate key database'));
   });
 }
 
@@ -153,30 +154,48 @@ export async function openGateDB(): Promise<IDBDatabase> {
 }
 
 /**
+ * Resets the in-memory CryptoKey cache for testing.
+ * Simulates a browser restart where in-memory state is cleared.
+ */
+export function resetEncryptionKeyMemoryCacheForTesting(): void {
+  memoryCryptoKey = null;
+}
+
+/**
  * Retrieves or initializes the non-extractable AES-GCM 256-bit encryption key.
  * Non-extractable prevents XSS scripts from reading raw key material.
+ *
+ * Fail-Closed Invariant:
+ * When persistent IndexedDB storage is being used (`hasNativeIndexedDB() === true`),
+ * the encryption key MUST be loaded from or persisted into IndexedDB.
+ * It MUST NEVER silently fall back to an in-memory key, because if records were encrypted
+ * with an ephemeral key, they would become permanently undecryptable upon browser restart.
  */
 export async function getOrCreateGateEncryptionKey(): Promise<CryptoKey> {
   if (memoryCryptoKey) {
     return memoryCryptoKey;
   }
 
-  if (hasNativeIndexedDB() && typeof crypto !== 'undefined' && crypto.subtle) {
+  if (hasNativeIndexedDB()) {
+    if (typeof crypto === 'undefined' || !crypto.subtle) {
+      throw new Error('Web Crypto API (crypto.subtle) is required for persistent gate encryption.');
+    }
+
     try {
       const keyDb = await openKeyDB();
-      const storedKey = await new Promise<CryptoKey | undefined>((resolve, reject) => {
-        const tx = keyDb.transaction(KEY_STORE_NAME, 'readonly');
-        const store = tx.objectStore(KEY_STORE_NAME);
-        const req = store.get(MASTER_KEY_ID);
-        req.onsuccess = () => {
-          keyDb.close();
-          resolve(req.result as CryptoKey | undefined);
-        };
-        req.onerror = () => {
-          keyDb.close();
-          reject(req.error);
-        };
-      });
+      let storedKey: CryptoKey | undefined;
+      try {
+        storedKey = await new Promise<CryptoKey | undefined>((resolve, reject) => {
+          const tx = keyDb.transaction(KEY_STORE_NAME, 'readonly');
+          const store = tx.objectStore(KEY_STORE_NAME);
+          const req = store.get(MASTER_KEY_ID);
+          req.onsuccess = () => resolve(req.result as CryptoKey | undefined);
+          req.onerror = () =>
+            reject(req.error || new Error('Failed to retrieve master key from IndexedDB.'));
+        });
+      } finally {
+        keyDb.close();
+      }
 
       if (storedKey) {
         memoryCryptoKey = storedKey;
@@ -191,27 +210,36 @@ export async function getOrCreateGateEncryptionKey(): Promise<CryptoKey> {
       );
 
       const saveDb = await openKeyDB();
-      await new Promise<void>((resolve, reject) => {
-        const tx = saveDb.transaction(KEY_STORE_NAME, 'readwrite');
-        const store = tx.objectStore(KEY_STORE_NAME);
-        store.put(newKey, MASTER_KEY_ID);
-        tx.oncomplete = () => {
-          saveDb.close();
-          resolve();
-        };
-        tx.onerror = () => {
-          saveDb.close();
-          reject(tx.error);
-        };
-      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = saveDb.transaction(KEY_STORE_NAME, 'readwrite');
+          const store = tx.objectStore(KEY_STORE_NAME);
+          store.put(newKey, MASTER_KEY_ID);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () =>
+            reject(tx.error || new Error('Failed to persist master key to IndexedDB.'));
+        });
+      } finally {
+        saveDb.close();
+      }
 
       memoryCryptoKey = newKey;
       return newKey;
-    } catch {
-      // Fallback if IndexedDB key storage fails
+    } catch (err) {
+      // Fail-closed invariant: When persistent IndexedDB storage is being used,
+      // do not silently fall back to an ephemeral key. Fail closed if the encryption key
+      // cannot be persisted or retrieved.
+      throw new Error(
+        `Failed to persist or retrieve gate encryption key in IndexedDB: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        { cause: err }
+      );
     }
   }
 
+  // Only reached when persistent IndexedDB is NOT available in the runtime environment
+  // (e.g. headless unit testing without simulated indexedDB)
   if (typeof crypto !== 'undefined' && crypto.subtle) {
     memoryCryptoKey = await crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },

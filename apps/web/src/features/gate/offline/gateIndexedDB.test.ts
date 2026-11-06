@@ -1,19 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   GATE_DB_VERSION,
+  MASTER_KEY_ID,
   buildCanonicalPayloadString,
   clearAllOfflineQueue,
   computePayloadHash,
   computePhotoSha256,
+  decryptSensitivePayload,
+  encryptSensitivePayload,
   enqueueOfflineVisitor,
   evaluateOfflineGuestPassPolicy,
   generateClientEventId,
+  getOrCreateGateEncryptionKey,
   getRawEncryptedRecords,
   isLegacyPlaintextRecord,
   listOfflineQueue,
   migrateLegacyPlaintextRecords,
   openGateDB,
   removeSyncedOfflineItems,
+  resetEncryptionKeyMemoryCacheForTesting,
   seedLegacyOfflineRecordForTesting,
   updateOfflineQueueStatus,
 } from './gateIndexedDB';
@@ -508,6 +513,154 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
       expect(migratedRaw.sync_status).toBe('QUEUED');
       expect(migratedRaw.client_event_id).toBe(legacyItem.client_event_id);
     } finally {
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
+  });
+
+  it('persists master encryption key in TownshipGateKeyStore and reloads exact key after simulated browser restart', async () => {
+    const keyStore = new Map<string, any>();
+    const originalIndexedDB = (globalThis as any).indexedDB;
+
+    const mockKeyDb: any = {
+      objectStoreNames: { contains: () => true },
+      createObjectStore: vi.fn(),
+      transaction: (_stores: any, _mode: string) => {
+        const tx: any = {
+          objectStore: () => ({
+            get: (key: string) => {
+              const req: any = { result: keyStore.get(key) };
+              queueMicrotask(() => req.onsuccess && req.onsuccess());
+              return req;
+            },
+            put: (val: any, key: string) => {
+              keyStore.set(key, val);
+              const req: any = { result: key };
+              queueMicrotask(() => req.onsuccess && req.onsuccess());
+              return req;
+            },
+          }),
+          oncomplete: null,
+          onerror: null,
+        };
+        queueMicrotask(() => tx.oncomplete && tx.oncomplete());
+        return tx;
+      },
+      close: vi.fn(),
+    };
+
+    (globalThis as any).indexedDB = {
+      open: (_name: string) => {
+        const req: any = { result: mockKeyDb };
+        queueMicrotask(() => req.onsuccess && req.onsuccess());
+        return req;
+      },
+    };
+
+    try {
+      // 1. Initial key creation
+      resetEncryptionKeyMemoryCacheForTesting();
+      const key1 = await getOrCreateGateEncryptionKey();
+      expect(keyStore.has(MASTER_KEY_ID)).toBe(true);
+
+      // 2. Encrypt sample sensitive data
+      const samplePayload = {
+        visitor_name: 'Persistent Test Visitor',
+        phone_number: '+919823012345',
+        vehicle_number: null,
+        photo_base64: null,
+      };
+      const encrypted = await encryptSensitivePayload(samplePayload, key1);
+
+      // 3. Simulate browser restart: memory cache wiped clean
+      resetEncryptionKeyMemoryCacheForTesting();
+
+      // 4. Reload key from persistent IndexedDB
+      const key2 = await getOrCreateGateEncryptionKey();
+      expect(key2).toBeDefined();
+
+      // 5. Decrypt using reloaded key -> proves exact persistent key was preserved across restart
+      const decrypted = await decryptSensitivePayload(encrypted.iv, encrypted.ciphertext, key2);
+      expect(decrypted.visitor_name).toBe('Persistent Test Visitor');
+      expect(decrypted.phone_number).toBe('+919823012345');
+    } finally {
+      resetEncryptionKeyMemoryCacheForTesting();
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
+  });
+
+  it('fails closed and throws when persistent IndexedDB storage is being used and key persistence fails', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+
+    // Simulate IndexedDB available, but opening key store fails (e.g. disk corruption, quota exceeded)
+    (globalThis as any).indexedDB = {
+      open: (_name: string) => {
+        const req: any = {
+          error: new Error('QuotaExceededError: storage full'),
+        };
+        queueMicrotask(() => req.onerror && req.onerror());
+        return req;
+      },
+    };
+
+    try {
+      resetEncryptionKeyMemoryCacheForTesting();
+
+      // Must fail closed: throw an error, NEVER silently fall back to an ephemeral in-memory key!
+      await expect(getOrCreateGateEncryptionKey()).rejects.toThrow(
+        /Failed to persist or retrieve gate encryption key in IndexedDB/
+      );
+    } finally {
+      resetEncryptionKeyMemoryCacheForTesting();
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
+  });
+
+  it('fails closed in enqueueOfflineVisitor when persistent encryption key store cannot be opened', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+
+    // IndexedDB exists (meaning persistent storage is active), but key DB fails to open
+    (globalThis as any).indexedDB = {
+      open: (name: string) => {
+        if (name === 'TownshipGateKeyStore') {
+          const req: any = { error: new DOMException('Access denied', 'SecurityError') };
+          queueMicrotask(() => req.onerror && req.onerror());
+          return req;
+        }
+        // gate DB
+        const req: any = { result: {} };
+        queueMicrotask(() => req.onsuccess && req.onsuccess());
+        return req;
+      },
+    };
+
+    try {
+      resetEncryptionKeyMemoryCacheForTesting();
+
+      // Enqueueing must fail closed: never encrypt with a temporary in-memory key that will vanish on restart
+      await expect(
+        enqueueOfflineVisitor({
+          gate_id: 'gate-failclosed-1',
+          visitor_name: 'Fail Closed Visitor',
+          phone_number: '9823099999',
+          purpose: 'DELIVERY',
+          destination_flat_id: 'flat-failclosed-1',
+          privacy_notice_version: 'v1.0-2026-pune',
+        })
+      ).rejects.toThrow(/Failed to persist or retrieve gate encryption key in IndexedDB/);
+    } finally {
+      resetEncryptionKeyMemoryCacheForTesting();
       if (originalIndexedDB) {
         (globalThis as any).indexedDB = originalIndexedDB;
       } else {
