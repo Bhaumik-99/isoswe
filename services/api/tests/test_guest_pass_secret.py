@@ -51,10 +51,11 @@ def test_secrets_manager_hydration_populates_guest_pass_hmac_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies that hydrate_aws_secrets extracts GUEST_PASS_HMAC_SECRET from AWS Secrets Manager JSON payload."""
+    test_secret = "mock-secret-token-" + ("x" * 46)
     secret_payload = {
-        "DATABASE_URL": "postgresql+psycopg://app_user:pass@db.internal:5432/township_ops",
+        "DATABASE_URL": "sqlite:///:memory:",
         "SUPABASE_URL": "https://xyzcompany.supabase.co",
-        "GUEST_PASS_HMAC_SECRET": "d" * 64,
+        "GUEST_PASS_HMAC_SECRET": test_secret,
     }
 
     mock_client = MagicMock()
@@ -71,7 +72,7 @@ def test_secrets_manager_hydration_populates_guest_pass_hmac_secret(
             }
         )
 
-    assert hydrated["GUEST_PASS_HMAC_SECRET"] == secret_payload["GUEST_PASS_HMAC_SECRET"]
+    assert hydrated["GUEST_PASS_HMAC_SECRET"] == test_secret
     assert len(hydrated["GUEST_PASS_HMAC_SECRET"]) == 64
     assert hydrated["DATABASE_URL"] == secret_payload["DATABASE_URL"]
     assert hydrated["SUPABASE_URL"] == secret_payload["SUPABASE_URL"]
@@ -82,10 +83,11 @@ def test_guest_pass_hash_generation_with_provisioned_secret(
 ) -> None:
     """Verifies that hashing a guest pass code with the provisioned secret produces a valid 64-hex-char digest."""
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    test_secret = "mock-secret-token-" + ("x" * 46)
     monkeypatch.setattr(
         settings,
         "GUEST_PASS_HMAC_SECRET",
-        "d6f8a9e2c1b47035e89a421bc0879e612456789abcdef0123456789abcdef01",
+        test_secret,
     )
 
     society_id = uuid.uuid4()

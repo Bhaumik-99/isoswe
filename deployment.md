@@ -137,8 +137,8 @@ aws secretsmanager put-secret-value \
   --secret-id "township-supabase-credentials-prod" \
   --region ap-south-1 \
   --secret-string "{
-    \"DATABASE_URL\": \"postgresql+psycopg://app_user:<STRONG_PASSWORD>@db.township.internal:5432/township_ops\",
-    \"SUPABASE_URL\": \"https://<project-id>.supabase.co\",
+    \"DATABASE_URL\": \"$LIVE_DATABASE_URL\",
+    \"SUPABASE_URL\": \"$LIVE_SUPABASE_URL\",
     \"GUEST_PASS_HMAC_SECRET\": \"$EXISTING_HMAC\"
   }"
 ```

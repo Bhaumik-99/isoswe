@@ -9,6 +9,10 @@ regexes = [
     '''dev-token-[a-z0-9-]+''',
     '''test-idempotency-key''',
     '''Idempotency-Key''',
+    '''mock-secret-token-[a-z0-9-]+''',
+]
+paths = [
+    '''services/api/tests/test_guest_pass_secret.py''',
 ]
 commits = [
     "474a4025ca6f6b0484e4ce69a08ecb74f957e8d5",
