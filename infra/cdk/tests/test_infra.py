@@ -131,6 +131,7 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
             "FunctionName": "township-retention-prod",
             "Runtime": "python3.11",
             "Handler": "app.handlers.lambda_retention.handler",
+            "Timeout": 300,
             "Environment": {
                 "Variables": Match.object_like(
                     {

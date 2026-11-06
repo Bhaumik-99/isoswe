@@ -312,7 +312,7 @@ class ComputeConstruct(Construct):
             handler="app.handlers.lambda_retention.handler",
             code=lambda_code,
             memory_size=512,
-            timeout=Duration.seconds(120),
+            timeout=Duration.seconds(300),
             role=retention_role,
             log_retention=log_retention,
             environment=lambda_environment,

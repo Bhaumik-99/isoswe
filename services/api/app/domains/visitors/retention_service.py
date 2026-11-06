@@ -5,6 +5,7 @@ IDOR access checks, 90-day logical cutoff enforcement, and automated cleanup.
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -47,6 +48,17 @@ class PhotoExpiredError(AppException):
         code: str = "PHOTO_EXPIRED",
     ) -> None:
         super().__init__(status_code=410, code=code, message=message)
+
+
+@dataclass
+class RetentionBatchResult:
+    """Detailed result of a single retention purge batch run."""
+
+    purged: int
+    failed: int
+    failed_ids: list[uuid.UUID]
+    remaining: int
+    batch_size: int
 
 
 class PhotoRetentionService:
@@ -217,32 +229,69 @@ class PhotoRetentionService:
             "visitor_id": str(visitor.id),
         }
 
-    def purge_expired_photos(self, batch_size: int = 100) -> int:
-        """Physical deletion worker for photos older than 90 days based on capture time.
-        Deletes S3 objects, nullifies database keys only on verified deletion, and records audit events.
-        Failed deletions preserve the keys and are left unpurged so subsequent runs retry them.
+    def count_expired_photos(self, exclude_ids: set[uuid.UUID] | None = None) -> int:
+        """Returns the total number of unpurged visitor records whose photos exceed the 90-day retention limit."""
+        now = utc_now()
+        cutoff_date = now - timedelta(days=90)
+        ref_date_expr = func.coalesce(VisitorRecord.photo_captured_at, VisitorRecord.created_at)
+
+        stmt = select(func.count(VisitorRecord.id)).where(
+            ref_date_expr < cutoff_date,
+            or_(
+                VisitorRecord.photo_s3_key.is_not(None),
+                VisitorRecord.photo_storage_key.is_not(None),
+            ),
+            VisitorRecord.photo_purged_at.is_(None),
+        )
+        if exclude_ids:
+            stmt = stmt.where(VisitorRecord.id.not_in(exclude_ids))
+
+        return int(self.db.scalar(stmt) or 0)
+
+    def purge_batch(
+        self,
+        batch_size: int = 100,
+        exclude_ids: set[uuid.UUID] | None = None,
+    ) -> RetentionBatchResult:
+        """Executes a single deterministic batch purge of expired visitor photos older than 90 days.
+
+        Orders records deterministically by capture/creation date ASC, then visitor ID ASC.
+        Preserves database keys and tracks failing IDs when S3 deletion fails.
+        Returns structured metrics including purged count, failed count, failing IDs, and remaining expired count.
         """
         now = utc_now()
         cutoff_date = now - timedelta(days=90)
         ref_date_expr = func.coalesce(VisitorRecord.photo_captured_at, VisitorRecord.created_at)
 
-        stmt = (
-            select(VisitorRecord)
-            .where(
-                ref_date_expr < cutoff_date,
-                or_(
-                    VisitorRecord.photo_s3_key.is_not(None),
-                    VisitorRecord.photo_storage_key.is_not(None),
-                ),
-                VisitorRecord.photo_purged_at.is_(None),
-            )
-            .limit(batch_size)
+        stmt = select(VisitorRecord).where(
+            ref_date_expr < cutoff_date,
+            or_(
+                VisitorRecord.photo_s3_key.is_not(None),
+                VisitorRecord.photo_storage_key.is_not(None),
+            ),
+            VisitorRecord.photo_purged_at.is_(None),
         )
+        if exclude_ids:
+            stmt = stmt.where(VisitorRecord.id.not_in(exclude_ids))
+
+        # Deterministic FIFO ordering: oldest photos first, broken deterministically by ID
+        stmt = stmt.order_by(ref_date_expr.asc(), VisitorRecord.id.asc()).limit(batch_size)
+
         expired_records = list(self.db.scalars(stmt).all())
         if not expired_records:
-            return 0
+            remaining = self.count_expired_photos(exclude_ids=exclude_ids)
+            return RetentionBatchResult(
+                purged=0,
+                failed=0,
+                failed_ids=[],
+                remaining=remaining,
+                batch_size=batch_size,
+            )
 
         purged_count = 0
+        failed_count = 0
+        failed_ids: list[uuid.UUID] = []
+
         for record in expired_records:
             key_to_delete = record.photo_key
             deletion_succeeded = True
@@ -252,7 +301,7 @@ class PhotoRetentionService:
                     deletion_succeeded = bool(res)
                 except Exception as exc:
                     logger.warning(
-                        f"[PhotoRetention] Exception during S3 deletion of {key_to_delete}: {exc}"
+                        f"[PhotoRetention] Exception during S3 deletion of {key_to_delete} for visitor {record.id}: {exc}"
                     )
                     deletion_succeeded = False
 
@@ -261,6 +310,8 @@ class PhotoRetentionService:
                 logger.warning(
                     f"[PhotoRetention] Physical deletion failed for visitor {record.id} key {key_to_delete}; preserving for retry."
                 )
+                failed_count += 1
+                failed_ids.append(record.id)
                 continue
 
             record.photo_purged_at = now
@@ -290,4 +341,27 @@ class PhotoRetentionService:
             purged_count += 1
 
         self.db.commit()
-        return purged_count
+
+        # Compute remaining expired records (excluding any failed IDs from this and prior batches)
+        current_excluded = set(exclude_ids or set()) | set(failed_ids)
+        remaining = self.count_expired_photos(exclude_ids=current_excluded)
+
+        return RetentionBatchResult(
+            purged=purged_count,
+            failed=failed_count,
+            failed_ids=failed_ids,
+            remaining=remaining,
+            batch_size=batch_size,
+        )
+
+    def purge_expired_photos(
+        self,
+        batch_size: int = 100,
+        exclude_ids: set[uuid.UUID] | None = None,
+    ) -> int:
+        """Physical deletion worker for photos older than 90 days based on capture time.
+        Deletes S3 objects, nullifies database keys only on verified deletion, and records audit events.
+        Failed deletions preserve the keys and are left unpurged so subsequent runs retry them.
+        """
+        result = self.purge_batch(batch_size=batch_size, exclude_ids=exclude_ids)
+        return result.purged
