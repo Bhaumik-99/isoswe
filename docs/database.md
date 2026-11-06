@@ -304,6 +304,17 @@ erDiagram
 - Fields: `id` (UUID PK), `society_id` (UUID FK), `user_id` (UUID FK), `email_enabled` (BOOLEAN, default True), `sms_enabled` (BOOLEAN, default True), `in_app_enabled` (BOOLEAN, default True), `billing_email` (BOOLEAN, default True), `billing_sms` (BOOLEAN, default True), `complaints_email` (BOOLEAN, default True), `complaints_sms` (BOOLEAN, default True), `visitor_sms` (BOOLEAN, default True), `created_at`, `updated_at`.
 - Unique Invariant: `uq_notification_preferences_society_user` on `(society_id, user_id)`.
 
+#### `amenities` (Phase 8 Part 1)
+- Facilities, halls, courts, gyms, and pool resources available for reservation.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `name` (VARCHAR 128), `description` (TEXT), `amenity_type` (VARCHAR 32), `location` (VARCHAR 255), `tower_id` (UUID FK nullable), `capacity` (INTEGER, > 0), `slot_duration_minutes` (INTEGER, > 0), `opening_time` (VARCHAR 8), `closing_time` (VARCHAR 8), `booking_fee_paise` (BIGINT, >= 0), `advance_booking_days` (INTEGER, >= 0), `min_advance_hours` (INTEGER, >= 0), `max_slots_per_day_per_resident` (INTEGER, >= 1), `cancellation_deadline_hours` (INTEGER, >= 0), `refund_percentage` (INTEGER, 0..100), `allowed_membership_types` (JSONB), `is_active` (BOOLEAN), `rules_and_guidelines` (TEXT), `created_at`, `updated_at`.
+- Indexes: `ix_amenities_society_active` on `(society_id, is_active)`.
+
+#### `amenity_bookings` (Phase 8 Part 1)
+- Concurrency-protected slot reservation records with financial payment tracking.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `amenity_id` (UUID FK), `user_id` (UUID FK), `flat_id` (UUID FK), `booking_date` (DATE), `start_time` (VARCHAR 8), `end_time` (VARCHAR 8), `booked_units` (INTEGER, > 0), `status` (VARCHAR 32: `CONFIRMED`, `CANCELLED`, `COMPLETED`), `booking_fee_paise` (BIGINT, >= 0), `payment_status` (VARCHAR 32: `FREE`, `PAID`, `PENDING`, `REFUNDED`, `FAILED`), `payment_reference` (VARCHAR 128 nullable), `refund_status` (VARCHAR 32: `NOT_APPLICABLE`, `PENDING_REFUND`, `REFUNDED`, `CANCELLED_NO_REFUND`), `refund_amount_paise` (BIGINT, >= 0), `cancellation_reason` (TEXT nullable), `cancelled_at` (TIMESTAMPTZ nullable), `cancelled_by_user_id` (UUID FK nullable), `notes` (TEXT nullable), `booking_metadata` (JSONB), `created_at`, `updated_at`.
+- Check Constraints: `chk_booking_units_positive`, `chk_booking_fee_non_negative`, `chk_booking_refund_non_negative`, `chk_booking_time_order`.
+- Indexes: `ix_amenity_bookings_amenity_date` on `(amenity_id, booking_date, status)`, `ix_amenity_bookings_user_date` on `(user_id, booking_date)`, `ix_amenity_bookings_society_created` on `(society_id, created_at)`, `ix_amenity_bookings_flat` on `(flat_id)`.
+
 
 
 

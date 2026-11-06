@@ -290,3 +290,34 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `PUT` | `/api/v1/notifications/me/preferences` | Resident / Staff | Update communication preferences (Email, SMS, In-App per domain) |
 | `GET` | `/api/v1/notifications/staff/overview` | Helpdesk Staff | Operational delivery telemetry, retry backoff metrics, and provider error tracking |
 
+---
+
+## 11. Phase 8 Part 1 — Amenity Booking Backend Foundation
+
+### Core Capabilities
+- **Domain Modeling**: Amenity resource management covering diverse facilities (Clubhouse, Badminton Courts, Tennis Courts, Swimming Pool, Gym, Community Hall, Guest Rooms).
+- **Slot Capacity & Concurrency Protection**: Supports single-unit facilities (court, hall) and multi-capacity shared facilities (gym, pool) with row-level locking (`with_for_update()`) to prevent race conditions and overbooking.
+- **Resident Eligibility & Tenancy Lease Enforcement**: Validates approved membership in target flat, checks that resident tenancy lease has not expired for the requested booking date, and enforces amenity-specific `allowed_membership_types` (`OWNER`, `TENANT`, `FAMILY_MEMBER`).
+- **Timing & Operating Windows**: Validates opening/closing hours, slot interval alignment, advance booking limits (`advance_booking_days`), minimum booking lead time (`min_advance_hours`), and prevents past bookings.
+- **Fair-Share Booking Quotas**: Enforces daily booking quotas per resident (`max_slots_per_day_per_resident`) to prevent resource hoarding.
+- **Strict Integer Paise Monetary Precision**: All booking fees and refund amounts stored exclusively as integer paise (`BigInteger`).
+- **Automated Cancellation & Refund Engine**: Resident cancellation checks `cancellation_deadline_hours` and computes pro-rata refunds via `refund_percentage`. Staff emergency overrides grant 100% refund with mandatory audit logging.
+- **Auditability & Transactional Outbox**: Emits structured `AuditEvent` records and asynchronous `OutboxEvent` (`amenity.booking_created`, `amenity.booking_cancelled`) for event-driven resident communication.
+
+### Amenity Booking API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/amenities` | Resident | List active amenities in township (optional `amenity_type` filter) |
+| `GET` | `/api/v1/amenities/{id}` | Resident | Retrieve amenity details, guidelines, capacity, and operating rules |
+| `GET` | `/api/v1/amenities/{id}/slots` | Resident | View slot availability, booked units, and remaining capacity for a date |
+| `POST` | `/api/v1/amenities/{id}/bookings` | Resident | Book an amenity slot with concurrency lock and instant fee calculation |
+| `GET` | `/api/v1/amenities/bookings/me` | Resident | View own bookings (upcoming, past, filtered by status) |
+| `GET` | `/api/v1/amenities/bookings/{id}` | Resident | View single booking details with strict IDOR protection |
+| `POST` | `/api/v1/amenities/bookings/{id}/cancel` | Resident | Cancel eligible booking with automated refund calculation |
+| `POST` | `/api/v1/amenities/staff` | Helpdesk Staff | Create a new amenity resource with operating rules and fee structure |
+| `PATCH` | `/api/v1/amenities/staff/{id}` | Helpdesk Staff | Update amenity properties, operating hours, and booking fees |
+| `POST` | `/api/v1/amenities/staff/{id}/status` | Helpdesk Staff | Activate or deactivate amenity |
+| `GET` | `/api/v1/amenities/staff/bookings` | Helpdesk Staff | List all community bookings with filters (`amenity_id`, `date`, `status`, `flat`) |
+| `POST` | `/api/v1/amenities/staff/bookings/{id}/cancel` | Helpdesk Staff | Administrative cancellation with mandatory audit reason and 100% refund |
+
+

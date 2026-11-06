@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.api.v1.amenities import router as amenities_router
 from app.api.v1.billing import router as billing_router
 from app.api.v1.committee import router as committee_router
 from app.api.v1.complaints import router as complaints_router
@@ -29,3 +30,4 @@ api_v1_router.include_router(registry_router)
 api_v1_router.include_router(committee_router)
 api_v1_router.include_router(gate_router)
 api_v1_router.include_router(resident_visitors_router)
+api_v1_router.include_router(amenities_router)

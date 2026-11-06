@@ -51,6 +51,16 @@ The township operations platform adheres to a strict architectural principle:
 - **Decision**: Install PostgreSQL database trigger `financial_ledger_immutable` preventing `UPDATE` and `DELETE` on `financial_ledger_entries`. Add composite unique constraint `(society_id, id)` on `flats`, and enforce composite foreign keys `(society_id, flat_id)` on `invoices`, `payments`, and `financial_ledger_entries` with `ON DELETE RESTRICT` on the ledger.
 - **Consequences**: Eliminates risks of ledger mutation or cascading deletion of historical accounting journals, and guarantees multi-tenant database integrity at the PostgreSQL engine level.
 
+### ADR 009: Event-Driven Multi-Channel Notifications & Resident Inbox
+- **Context**: Operational events across Billing, Complaints, and Gate Visitors must reliably reach residents and staff without coupling core write paths to external dispatch latency.
+- **Decision**: Persist outbox events inside domain write transactions. An outbox worker emits messages to SQS, triggering dedicated background workers that process channel preferences, manage retry backoffs with jitter, enforce emergency overrides, and populate an indexed in-app notification inbox.
+- **Consequences**: Guarantees zero dropped alerts, complete delivery telemetry, observable retries, and clean PII protection.
+
+### ADR 010: Concurrency-Safe Amenity Slot Booking & Capacity Model
+- **Context**: Multiple residents concurrently reserving scarce township amenities (badminton/tennis courts, party halls, swimming pools) can cause race conditions leading to double bookings and capacity oversubscription.
+- **Decision**: Model amenity slots as discrete time windows with configurable capacities. Booking requests acquire a row lock on the `Amenity` row (`SELECT ... FOR UPDATE`) within the database transaction, verify resident lease validity for the target booking date, and check that active bookings plus requested units do not exceed total capacity. All fees and refunds are calculated strictly in integer paise.
+- **Consequences**: Eliminates double-booking race conditions, serializes conflicting slot requests cleanly, and guarantees invariant protection across both single-capacity and shared multi-capacity facilities.
+
 ---
 
 ## 3. System Architecture Diagram

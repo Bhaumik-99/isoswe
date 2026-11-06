@@ -44,6 +44,12 @@ The demo authorization model maintains strictly two application roles: `RESIDENT
 - **Offline Sync Replay & Tamper Protection**: Offline tablet events carry a UUIDv4 `client_event_id` and canonical SHA-256 payload digest. Identical replays return idempotent `ACK`, while modified payload replays are rejected with `CONFLICT_EVENT_PAYLOAD_MODIFIED`. Offline events always enter `PENDING` approval state.
 - **90-Day Visitor Photo Retention & Log Redaction**: Visitor photos are validated via magic bytes (JPEG/PNG/WebP), stored in private S3, served via 15-minute presigned URLs scoped strictly to destination flat residents and assigned gate guards, logically expired at 90 days (`410 PHOTO_EXPIRED`), and purged by both a daily worker and S3 lifecycle policy. Structured logs mask visitor phone numbers and never log base64 or binary image payloads.
 
+### 2.5 Amenity Booking Security & Tenancy Invariants (Phase 8 Part 1)
+- **Tenancy Lease Boundary Enforcement**: Resident eligibility check strictly validates that the resident's flat tenancy lease has not expired for the requested booking date (`valid_until.date() >= booking_date`). Expired leases are rejected immediately with `400 LEASE_EXPIRED_FOR_DATE`.
+- **Membership Type Eligibility**: Amenity configurations specify `allowed_membership_types` (e.g. `OWNER`, `TENANT`, `FAMILY_MEMBER`). Unauthorized membership roles are rejected with `403 MEMBERSHIP_TYPE_NOT_ALLOWED`.
+- **IDOR Protection**: Resident booking retrieval and cancellation endpoints strictly enforce ownership (`booking.user_id == claims.user_id`) and return `404 Not Found` when a resident attempts to access or mutate another resident's booking.
+- **Staff Override & Audit Logging**: Staff cancellations require `RoleType.HELPDESK` authorization and a mandatory audit reason, triggering automated 100% refund calculations and immutable `AuditEvent` records.
+
 ### 2.2 Flat-Level Access Control for Residents
 Residents can only query flat-level resources if:
 1. They hold an approved record in `flat_memberships`.
