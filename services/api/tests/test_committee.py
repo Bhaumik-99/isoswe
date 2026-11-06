@@ -30,7 +30,9 @@ def test_committee_overview_sql_aggregates(client: TestClient) -> None:
 
     # 2. Staff / Committee member fetches overview
     # 2. Frontline helpdesk without COMMITTEE role cannot view committee dashboard -> 403 Forbidden
-    res_frontline_forbidden = client.get("/api/v1/committee/overview", headers=AUTH_FRONTLINE_HELPDESK)
+    res_frontline_forbidden = client.get(
+        "/api/v1/committee/overview", headers=AUTH_FRONTLINE_HELPDESK
+    )
     assert res_frontline_forbidden.status_code == 403
 
     # 3. Staff / Committee member fetches overview
@@ -83,7 +85,9 @@ def test_committee_monthly_reports(client: TestClient) -> None:
     res_forbidden = client.get("/api/v1/committee/reports/monthly", headers=AUTH_RESIDENT)
     assert res_forbidden.status_code == 403
 
-    res_frontline_forbidden = client.get("/api/v1/committee/reports/monthly", headers=AUTH_FRONTLINE_HELPDESK)
+    res_frontline_forbidden = client.get(
+        "/api/v1/committee/reports/monthly", headers=AUTH_FRONTLINE_HELPDESK
+    )
     assert res_frontline_forbidden.status_code == 403
 
     res = client.get("/api/v1/committee/reports/monthly", headers=AUTH_HELPDESK)
@@ -105,7 +109,9 @@ def test_committee_report_csv_export(client: TestClient) -> None:
     res_forbidden = client.get("/api/v1/committee/reports/export", headers=AUTH_RESIDENT)
     assert res_forbidden.status_code == 403
 
-    res_frontline_forbidden = client.get("/api/v1/committee/reports/export", headers=AUTH_FRONTLINE_HELPDESK)
+    res_frontline_forbidden = client.get(
+        "/api/v1/committee/reports/export", headers=AUTH_FRONTLINE_HELPDESK
+    )
     assert res_frontline_forbidden.status_code == 403
 
     res = client.get("/api/v1/committee/reports/export", headers=AUTH_HELPDESK)
