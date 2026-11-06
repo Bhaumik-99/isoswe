@@ -106,6 +106,43 @@ VITE_SUPABASE_URL=https://<project-id>.supabase.co
 VITE_SUPABASE_ANON_KEY=<SUPABASE_PUBLIC_ANON_KEY>
 ```
 
+### 3.3 AWS Secrets Manager Provisioning & Guest-Pass HMAC Secret
+
+In staging and production, secrets are managed centrally in AWS Secrets Manager under secret name `township-supabase-credentials-<env>` (e.g., `township-supabase-credentials-prod`), encrypted with the stack's Customer Managed KMS Key (CMK).
+
+#### Automated Secret Generation via AWS CDK
+The CDK `SecurityConstruct` (`infra/cdk/township_constructs/security.py`) automatically provisions the secret JSON with:
+1. `GUEST_PASS_HMAC_SECRET`: Automatically generated 64-character high-entropy cryptographic secret via `SecretStringGenerator(password_length=64)`. This strictly satisfies the platform invariant requiring `>= 32` characters in staging/production, eliminating runtime HTTP 500 errors.
+2. `DATABASE_URL` & `SUPABASE_URL`: Initialized in the JSON template for operator configuration.
+
+> [!SECURITY]
+> **Never commit `GUEST_PASS_HMAC_SECRET`, database passwords, or private keys to Git.**
+
+#### Operator Configuration & Secrets Population Command
+After CDK stack deployment, administrators populate the live connection strings using the AWS CLI. To preserve or set the 64-character `GUEST_PASS_HMAC_SECRET`:
+
+```bash
+# Retrieve existing generated secret or generate a fresh 64-character secret
+EXISTING_HMAC=$(aws secretsmanager get-secret-value \
+  --secret-id "township-supabase-credentials-prod" \
+  --region ap-south-1 \
+  --query "SecretString" --output text 2>/dev/null | jq -r '.GUEST_PASS_HMAC_SECRET // empty')
+
+if [ -z "$EXISTING_HMAC" ]; then
+  EXISTING_HMAC=$(openssl rand -hex 32)
+fi
+
+# Update Secrets Manager with live credentials while preserving GUEST_PASS_HMAC_SECRET
+aws secretsmanager put-secret-value \
+  --secret-id "township-supabase-credentials-prod" \
+  --region ap-south-1 \
+  --secret-string "{
+    \"DATABASE_URL\": \"postgresql+psycopg://app_user:<STRONG_PASSWORD>@db.township.internal:5432/township_ops\",
+    \"SUPABASE_URL\": \"https://<project-id>.supabase.co\",
+    \"GUEST_PASS_HMAC_SECRET\": \"$EXISTING_HMAC\"
+  }"
+```
+
 ---
 
 ## 4. Database Provisioning & Migrations

@@ -39,12 +39,17 @@ def test_sqs_queues_have_dedicated_dlqs_and_encryption(prod_template: Template) 
 
 
 def test_secrets_manager_supabase_credentials(prod_template: Template) -> None:
-    """Verifies AWS Secrets Manager secret is configured for Supabase credentials with KMS encryption."""
+    """Verifies AWS Secrets Manager secret is configured for Supabase credentials & Guest Pass HMAC with KMS encryption."""
     prod_template.has_resource_properties(
         "AWS::SecretsManager::Secret",
         {
             "Description": Match.string_like_regexp("Supabase"),
             "KmsKeyId": Match.any_value(),
+            "GenerateSecretString": {
+                "GenerateStringKey": "GUEST_PASS_HMAC_SECRET",
+                "PasswordLength": 64,
+                "SecretStringTemplate": Match.string_like_regexp("DATABASE_URL"),
+            },
         },
     )
 
