@@ -375,3 +375,79 @@ def test_lambda_guest_pass_secret_isolation_and_least_privilege(
     assert role_has_secret_access(retention_role_ref, db_secret_id), (
         "Retention role must have access to database secret"
     )
+
+
+def test_notification_worker_least_privilege_iam_permissions(
+    prod_template: Template,
+) -> None:
+    """Verifies that SES and SNS dispatch permissions are granted strictly to Worker Lambda
+
+    and not leaked to API, Outbox, or Retention execution roles.
+    """
+    functions = prod_template.find_resources("AWS::Lambda::Function")
+    funcs_by_name = {
+        defn["Properties"]["FunctionName"]: defn
+        for defn in functions.values()
+        if defn.get("Properties", {}).get("FunctionName")
+    }
+
+    api_fn = funcs_by_name["township-api-prod"]
+    worker_fn = funcs_by_name["township-worker-prod"]
+    outbox_fn = funcs_by_name["township-outbox-prod"]
+    retention_fn = funcs_by_name["township-retention-prod"]
+
+    api_role_ref = api_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    worker_role_ref = worker_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    outbox_role_ref = outbox_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    retention_role_ref = retention_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+
+    policies = prod_template.find_resources("AWS::IAM::Policy")
+
+    def role_has_action(role_ref: str, expected_action: str) -> bool:
+        for p in policies.values():
+            roles = [
+                r.get("Ref")
+                for r in p.get("Properties", {}).get("Roles", [])
+                if isinstance(r, dict)
+            ]
+            if role_ref in roles:
+                for statement in (
+                    p.get("Properties", {})
+                    .get("PolicyDocument", {})
+                    .get("Statement", [])
+                ):
+                    action = statement.get("Action", [])
+                    if isinstance(action, str):
+                        action = [action]
+                    if expected_action in action:
+                        return True
+        return False
+
+    # Worker role must have ses:SendEmail and sns:Publish
+    assert role_has_action(
+        worker_role_ref, "ses:SendEmail"
+    ), "Worker role must have ses:SendEmail"
+    assert role_has_action(
+        worker_role_ref, "sns:Publish"
+    ), "Worker role must have sns:Publish"
+
+    # API, Outbox, Retention roles must NOT have ses:SendEmail or sns:Publish
+    assert not role_has_action(
+        api_role_ref, "ses:SendEmail"
+    ), "API role must NOT have ses:SendEmail"
+    assert not role_has_action(
+        api_role_ref, "sns:Publish"
+    ), "API role must NOT have sns:Publish"
+    assert not role_has_action(
+        outbox_role_ref, "ses:SendEmail"
+    ), "Outbox role must NOT have ses:SendEmail"
+    assert not role_has_action(
+        outbox_role_ref, "sns:Publish"
+    ), "Outbox role must NOT have sns:Publish"
+    assert not role_has_action(
+        retention_role_ref, "ses:SendEmail"
+    ), "Retention role must NOT have ses:SendEmail"
+    assert not role_has_action(
+        retention_role_ref, "sns:Publish"
+    ), "Retention role must NOT have sns:Publish"
+

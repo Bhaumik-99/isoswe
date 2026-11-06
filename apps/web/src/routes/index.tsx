@@ -11,11 +11,13 @@ import { ResidentBilling } from '../features/resident/ResidentBilling';
 import { ResidentPayments } from '../features/resident/ResidentPayments';
 import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { ResidentVisitorsPage } from '../features/resident/ResidentVisitorsPage';
+import { ResidentNotificationsPage } from '../features/resident/notifications/ResidentNotificationsPage';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
 import { StaffReconciliation } from '../features/staff/reconciliation/StaffReconciliation';
 import { ResidentsDirectory } from '../features/staff/residents/ResidentsDirectory';
+import { StaffNotificationsPage } from '../features/staff/notifications/StaffNotificationsPage';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
 import { GateTabletPage } from '../features/gate/GateTabletPage';
 import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
@@ -88,6 +90,7 @@ export const AppRoutes: React.FC = () => {
         <Route path="billing" element={<ResidentBilling />} />
         <Route path="payments" element={<ResidentPayments />} />
         <Route path="complaints" element={<ResidentComplaints />} />
+        <Route path="notifications" element={<ResidentNotificationsPage />} />
         <Route
           path="notices"
           element={
@@ -140,6 +143,7 @@ export const AppRoutes: React.FC = () => {
           }
         />
         <Route path="residents" element={<ResidentsDirectory />} />
+        <Route path="notifications" element={<StaffNotificationsPage />} />
         <Route
           path="committee"
           element={

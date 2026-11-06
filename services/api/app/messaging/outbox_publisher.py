@@ -38,6 +38,8 @@ def resolve_queue_for_event_type(event_type: str) -> str:
         "complaint": QUEUE_NOTIFICATION_JOBS,
         "notification": QUEUE_NOTIFICATION_JOBS,
         "platform": QUEUE_NOTIFICATION_JOBS,
+        "visitor": QUEUE_NOTIFICATION_JOBS,
+        "pass": QUEUE_NOTIFICATION_JOBS,
     }
     return routing.get(prefix, QUEUE_NOTIFICATION_JOBS)
 

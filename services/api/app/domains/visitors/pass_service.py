@@ -30,7 +30,7 @@ from app.core.errors import (
     ValidationError,
 )
 from app.domains.identity.models import Flat, FlatMembership, MembershipStatus
-from app.domains.reliability.models import AuditEvent
+from app.domains.reliability.models import AuditEvent, OutboxEvent, OutboxStatus
 from app.domains.visitors.models import (
     ApprovalStatus,
     EntryStatus,
@@ -381,6 +381,25 @@ class GuestPassService:
             },
         )
         self.db.add(audit)
+
+        # Emit transactional outbox event for pass revocation notification
+        target_flat = guest_pass.destination_flat_id or guest_pass.flat_id
+        outbox = OutboxEvent(
+            id=uuid.uuid4(),
+            event_type="pass.revoked",
+            aggregate_type="guest_pass",
+            aggregate_id=str(guest_pass.id),
+            payload={
+                "society_id": str(guest_pass.society_id),
+                "flat_id": str(target_flat) if target_flat else None,
+                "pass_code_prefix": guest_pass.pass_code_prefix or "GP",
+                "revoked_by_user_id": str(resident_user_id),
+                "reason": reason,
+                "correlation_id": correlation_id or str(uuid.uuid4()),
+            },
+            status=OutboxStatus.PENDING,
+        )
+        self.db.add(outbox)
         self.db.commit()
 
         return {

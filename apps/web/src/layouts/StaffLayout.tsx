@@ -11,9 +11,11 @@ import {
   LogOut,
   Menu,
   X,
+  Bell,
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
+import { NotificationBell } from '../features/notifications/NotificationBell';
 
 export const StaffLayout: React.FC = () => {
   const { user, roles, permissions, logout } = useAuth();
@@ -46,6 +48,7 @@ export const StaffLayout: React.FC = () => {
       ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }]
       : []),
     { name: 'Residents Directory', path: '/staff/residents', icon: Users },
+    { name: 'Notification Deliveries', path: '/staff/notifications', icon: Bell },
   ];
 
   const primaryRole = roles[0] || 'STAFF';
@@ -81,6 +84,8 @@ export const StaffLayout: React.FC = () => {
             <Badge variant="info" className="uppercase font-mono text-[11px] bg-slate-800 text-indigo-300 border-slate-700">
               Role: {primaryRole}
             </Badge>
+
+            <NotificationBell dark notificationsUrl="/staff/notifications" />
 
             <div className="flex items-center gap-3 pl-3 border-l border-slate-700">
               <div className="hidden sm:block text-right">

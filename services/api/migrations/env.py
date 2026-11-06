@@ -16,8 +16,10 @@ sys.path.insert(0, ".")
 import app.domains.billing.models  # noqa: F401
 import app.domains.complaints.models  # noqa: F401
 import app.domains.identity.models  # noqa: F401
+import app.domains.notifications.models  # noqa: F401
 import app.domains.reconciliation.models  # noqa: F401
 import app.domains.reliability.models  # noqa: F401
+import app.domains.visitors.models  # noqa: F401
 from app.core.config import settings
 from app.core.database import Base
 

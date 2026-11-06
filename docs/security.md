@@ -83,3 +83,22 @@ All queries strictly enforce tenant boundaries through `society_id` scopes. Even
 | **Information Disclosure**| Cross-society data leakage or stack trace exposure | Standardized error format hiding raw exceptions; strict database tenant scoping on every endpoint |
 | **Denial of Service** | Connection pool exhaustion from Lambda functions | Supabase PgBouncer transaction pooler (`prepare_threshold: None`); AWS WAF rate-limiting; SQS DLQ redrive policies |
 | **Elevation of Privilege**| Unauthorized role or action escalation | Reusable `require_roles` dependencies enforcing granular RBAC barriers before handler execution |
+
+---
+
+## 5. Phase 7 — Notification & Resident Communication Security
+
+### 5.1 Communication Channel PII Sanitization
+- **Strict Masking Rules**: All log outputs and audit traces mask resident email addresses and phone numbers via `mask_email()` (`n***i@example.com`) and `mask_phone()` (`+91-XXXXX-XX210`). Full emails and phone numbers are never logged in plaintext.
+- **Payload Privacy**: SQS message payloads carry only non-sensitive entity identifiers (`invoice_id`, `flat_id`, `complaint_id`). Recipient emails and phone numbers are resolved inside the worker from the authoritative PostgreSQL database.
+
+### 5.2 Mandatory Emergency Safety Bypass
+- **Non-Suppressible Emergency Invariant**: Ordinary notifications respect user channel opt-outs (`billing_email`, `complaints_sms`, etc.). However, critical safety alerts (`complaint.safety_escalated`, `URGENT` priority) strictly bypass all channel preferences and force delivery across all configured communication channels to both residents and helpdesk staff.
+
+### 5.3 Internal Helpdesk Privacy Separation
+- Internal technician and helpdesk notes (`notes` column in `complaints`) are strictly omitted from resident notifications. Resident notifications carry only public comments or sanitized system status descriptions.
+
+### 5.4 Least-Privilege IAM & Infrastructure Isolation
+- **Worker-Only SES and SNS Access**: The AWS CDK stack grants `ses:SendEmail`, `ses:SendRawEmail`, and `sns:Publish` strictly to the `worker_role`. The API, Outbox, and Retention Lambda functions are not granted notification dispatch permissions.
+- **Fail-Closed Mock Provider**: In non-production and testing environments, mock providers fail closed by returning `SUPPRESSED` with `MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED`, ensuring tests never generate false positives claiming successful delivery.
+

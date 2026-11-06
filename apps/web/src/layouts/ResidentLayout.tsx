@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
+import { NotificationBell } from '../features/notifications/NotificationBell';
 
 export const ResidentLayout: React.FC = () => {
   const { user, memberships, selectedFlat, setSelectedFlat, logout } = useAuth();
@@ -33,6 +34,7 @@ export const ResidentLayout: React.FC = () => {
     { name: 'Maintenance Invoices', path: '/resident/billing', icon: Receipt },
     { name: 'Payment Receipts', path: '/resident/payments', icon: CreditCard },
     { name: 'Helpdesk & Requests', path: '/resident/complaints', icon: LifeBuoy },
+    { name: 'Notifications', path: '/resident/notifications', icon: Bell },
     { name: 'Township Notices', path: '/resident/notices', icon: Bell },
   ];
 
@@ -102,6 +104,9 @@ export const ResidentLayout: React.FC = () => {
                 )}
               </div>
             )}
+
+            {/* Notification Bell */}
+            <NotificationBell notificationsUrl="/resident/notifications" />
 
             {/* User Profile & Logout */}
             <div className="flex items-center gap-3 pl-3 border-l border-slate-200">

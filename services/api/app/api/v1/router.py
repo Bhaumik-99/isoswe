@@ -10,6 +10,7 @@ from app.api.v1.finance import router as finance_router
 from app.api.v1.flats import router as flats_router
 from app.api.v1.gate import router as gate_router
 from app.api.v1.me import router as me_router
+from app.api.v1.notifications import router as notifications_router
 from app.api.v1.reconciliation import router as reconciliation_router
 from app.api.v1.registry import router as registry_router
 from app.api.v1.resident_visitors import router as resident_visitors_router
@@ -22,6 +23,7 @@ api_v1_router.include_router(events_router)
 api_v1_router.include_router(finance_router)
 api_v1_router.include_router(billing_router)
 api_v1_router.include_router(complaints_router)
+api_v1_router.include_router(notifications_router)
 api_v1_router.include_router(reconciliation_router)
 api_v1_router.include_router(registry_router)
 api_v1_router.include_router(committee_router)

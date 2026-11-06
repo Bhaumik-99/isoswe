@@ -44,12 +44,17 @@ class LambdaLocalBundler:
         self.source_path = source_path
 
     def try_bundle(self, output_dir: str, *args, **kwargs) -> bool:
-        skip_docker = os.environ.get("CDK_SKIP_DOCKER_BUNDLING", "false").lower() in (
+        require_docker = os.environ.get("REQUIRE_DOCKER", "false").strip().lower() in (
             "true",
             "1",
             "yes",
         )
-        if skip_docker or "pytest" in sys.modules:
+        skip_docker = os.environ.get("CDK_SKIP_DOCKER_BUNDLING", "true").strip().lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if (skip_docker or "pytest" in sys.modules) and not require_docker:
             excluded = {
                 ".venv",
                 ".pytest_cache",
@@ -235,6 +240,14 @@ class ComputeConstruct(Construct):
         kms_key.grant_encrypt_decrypt(worker_role)
         if documents_bucket:
             documents_bucket.grant_read_write(worker_role)
+
+        # Grant transactional email (SES) and SMS (SNS) dispatch permissions strictly to Worker Lambda
+        worker_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["ses:SendEmail", "ses:SendRawEmail", "sns:Publish"],
+                resources=["*"],
+            )
+        )
 
         self.worker_lambda = _lambda.Function(
             self,

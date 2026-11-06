@@ -17,7 +17,7 @@ from app.core.errors import (
     ValidationError,
 )
 from app.domains.identity.models import Flat, FlatMembership, MembershipStatus
-from app.domains.reliability.models import AuditEvent
+from app.domains.reliability.models import AuditEvent, OutboxEvent, OutboxStatus
 from app.domains.visitors.models import (
     ApprovalStatus,
     EntryStatus,
@@ -260,6 +260,30 @@ class VisitorService:
         )
         self.db.add(audit)
         self.db.flush()
+
+        # Emit transactional outbox event for resident notification
+        if visitor.approval_status == ApprovalStatus.PENDING:
+            gate = self.get_gate_by_id(gate_id)
+            gate_name = gate.display_name if gate else "Main Gate"
+            outbox = OutboxEvent(
+                id=uuid.uuid4(),
+                event_type="visitor.approval_requested",
+                aggregate_type="visitor",
+                aggregate_id=str(visitor.id),
+                payload={
+                    "society_id": str(society_id),
+                    "destination_flat_id": str(destination_flat_id),
+                    "visitor_name": visitor.visitor_name,
+                    "purpose": visitor.purpose.value,
+                    "gate_id": str(gate_id),
+                    "gate_name": gate_name,
+                    "correlation_id": correlation_id or str(uuid.uuid4()),
+                },
+                status=OutboxStatus.PENDING,
+            )
+            self.db.add(outbox)
+            self.db.flush()
+
         return visitor
 
     def handle_resident_action(
@@ -362,6 +386,27 @@ class VisitorService:
         )
         self.db.add(audit)
         self.db.flush()
+
+        # Emit transactional outbox event for resident action
+        outbox_event_type = "visitor.approved" if norm_action == "APPROVE" else "visitor.rejected"
+        outbox = OutboxEvent(
+            id=uuid.uuid4(),
+            event_type=outbox_event_type,
+            aggregate_type="visitor",
+            aggregate_id=str(visitor.id),
+            payload={
+                "society_id": str(visitor.society_id),
+                "destination_flat_id": str(visitor.destination_flat_id),
+                "visitor_name": visitor.visitor_name,
+                "resident_user_id": str(resident_user_id),
+                "reason": reason,
+                "correlation_id": correlation_id or str(uuid.uuid4()),
+            },
+            status=OutboxStatus.PENDING,
+        )
+        self.db.add(outbox)
+        self.db.flush()
+
         return visitor
 
     def check_in_visitor(
@@ -428,6 +473,28 @@ class VisitorService:
         )
         self.db.add(audit)
         self.db.flush()
+
+        # Emit transactional outbox event for visitor check-in
+        gate = self.get_gate_by_id(gate_id)
+        gate_name = gate.display_name if gate else "Main Gate"
+        outbox = OutboxEvent(
+            id=uuid.uuid4(),
+            event_type="visitor.checked_in",
+            aggregate_type="visitor",
+            aggregate_id=str(visitor.id),
+            payload={
+                "society_id": str(visitor.society_id),
+                "destination_flat_id": str(visitor.destination_flat_id),
+                "visitor_name": visitor.visitor_name,
+                "gate_id": str(gate_id),
+                "gate_name": gate_name,
+                "correlation_id": correlation_id or str(uuid.uuid4()),
+            },
+            status=OutboxStatus.PENDING,
+        )
+        self.db.add(outbox)
+        self.db.flush()
+
         return visitor
 
     def check_out_visitor(

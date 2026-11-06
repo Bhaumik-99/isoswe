@@ -255,3 +255,38 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `POST` | `/api/v1/reconciliation/transactions/{id}/mark-unidentified`| Helpdesk | Move unidentified mystery credit to suspense account |
 | `GET` | `/api/v1/reconciliation/summary` | Helpdesk | Retrieve society-wide reconciliation KPIs and ratios |
 | `GET` | `/api/v1/reconciliation/reports/export` | Helpdesk | Download formula-sanitized CSV reconciliation report |
+
+---
+
+## 9. Phase 6 — Perimeter Gate, Visitor Management & Offline Synchronization
+
+### Core Capabilities
+- **Decoupled Approval and Entry State Machines**: Separate tracking of visitor authorization (`PENDING` -> `APPROVED` | `REJECTED` | `AUTO_APPROVED`) and physical perimeter movement (`EXPECTED` -> `CHECKED_IN` -> `CHECKED_OUT`).
+- **Encrypted Offline-First Gate Operations**: Full perimeter checkpoint functionality preserved when connectivity is lost using IndexedDB AES-GCM encrypted persistence with SHA-256 payload integrity validation.
+- **Fail-Closed Offline Invariants**: Offline walk-in entries always remain in `PENDING` approval; guest pass verification fails closed while offline to prevent replay of revoked or exhausted passes.
+- **Mandatory 90-Day Visitor Photo Retention & Automated Purge**: Hard 90-day logical cutoff in queries, scheduled Lambda purge deleting expired S3 photos and scrubbing database keys, and S3 lifecycle rule defense-in-depth.
+
+---
+
+## 10. Phase 7 — Event-Driven Notifications & Resident Communication
+
+### Core Capabilities
+- **Multi-Channel Dispatch Engine**: Dispatches observable, retryable notifications across In-App, Email (AWS SES / Mock), and SMS (AWS SNS / Mock).
+- **Asynchronous Transactional Outbox Worker**: Decoupled from core business transactions. Domain events persist atomically in `outbox_events` and route via SQS `notification-jobs` queue to background Lambda workers.
+- **17 Mapped Domain Events**: Complete lifecycle event coverage across Billing (`invoice_generated`, `payment_succeeded`, `payment_failed`, `invoice_paid`, `run_completed`), Complaints (`created`, `assigned`, `status_changed`, `resolved`, `safety_escalated`), and Gate Visitors (`approval_requested`, `approved`, `rejected`, `checked_in`, `overstay_alert`, `pass.revoked`).
+- **Idempotency & State Machine Tracking**: Durable delivery tracking (`PENDING`, `PROCESSING`, `SENT`, `DELIVERED`, `RETRYING`, `FAILED`, `SUPPRESSED`) with exponential backoff and jitter for transient errors.
+- **Mandatory Emergency Safety Bypass**: Critical safety alerts (`complaint.safety_escalated`, `URGENT` priority) bypass user opt-out preferences and guarantee delivery across all active channels to residents and helpdesk staff.
+- **Privacy & PII Protection**: Automatic email and phone number masking in logs (`mask_email()`, `mask_phone()`), strict IDOR isolation per user, and exclusion of private helpdesk internal notes from resident notifications.
+- **Mock Provider Fail-Closed Invariant**: Mock email and SMS providers record dispatches in memory for testing but return `SUPPRESSED` with `MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED`, never falsely claiming external delivery.
+
+### Notifications API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/notifications/me` | Resident / Staff | Paginated in-app notification inbox (newest-first, unread filter) |
+| `GET` | `/api/v1/notifications/me/unread-count` | Resident / Staff | Live unread counter for notification bell badge |
+| `PATCH` | `/api/v1/notifications/me/{id}/read` | Resident / Staff | Mark specific notification as read (with IDOR ownership protection) |
+| `PATCH` | `/api/v1/notifications/me/read-all` | Resident / Staff | Mark all user notifications as read in current society |
+| `GET` | `/api/v1/notifications/me/preferences` | Resident / Staff | Retrieve user communication channel preferences |
+| `PUT` | `/api/v1/notifications/me/preferences` | Resident / Staff | Update communication preferences (Email, SMS, In-App per domain) |
+| `GET` | `/api/v1/notifications/staff/overview` | Helpdesk Staff | Operational delivery telemetry, retry backoff metrics, and provider error tracking |
+

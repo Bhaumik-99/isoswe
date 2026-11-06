@@ -282,6 +282,29 @@ erDiagram
 #### `offline_sync_events`
 - Idempotent synchronization registry tracking tablet `client_event_id` UUIDs and canonical SHA-256 `payload_hash` values to deduplicate retries (`ACK`) and detect modified payload replays (`CONFLICT`).
 
+---
+
+### 4.6 Notification Domain & Resident Communication (Phase 7)
+
+#### `notifications`
+- Durable in-app notification inbox entities for residents and staff.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `recipient_user_id` (UUID FK), `event_type` (VARCHAR 64), `title` (VARCHAR 255), `body` (TEXT), `channel` (IN_APP), `priority` (LOW, NORMAL, HIGH, URGENT), `read_at` (TIMESTAMPTZ, nullable), `aggregate_type` (VARCHAR 64, nullable), `aggregate_id` (VARCHAR 128, nullable), `action_url` (VARCHAR 255, nullable), `event_metadata` (JSONB), `created_at`, `updated_at`.
+- Indexes: `ix_notifications_user_read` (`recipient_user_id`, `read_at`), `ix_notifications_user_created` (`recipient_user_id`, `created_at`), `ix_notifications_society_created` (`society_id`, `created_at`), `ix_notifications_aggregate` (`aggregate_type`, `aggregate_id`).
+
+#### `notification_deliveries`
+- Multi-channel delivery tracking state machine for In-App, Email, and SMS dispatches.
+- Fields: `id` (UUID PK), `notification_id` (UUID FK, nullable), `society_id` (UUID FK), `recipient_user_id` (UUID FK), `channel` (VARCHAR 32), `provider` (VARCHAR 64), `status` (PENDING, PROCESSING, SENT, DELIVERED, RETRYING, FAILED, SUPPRESSED), `idempotency_key` (VARCHAR 255 UNIQUE), `provider_message_id` (VARCHAR 255, nullable), `attempt_count` (INTEGER, default 0), `max_attempts` (INTEGER, default 3), `next_attempt_at` (TIMESTAMPTZ, nullable), `last_error_code` (VARCHAR 64, nullable), `last_error_message` (TEXT, nullable), `sent_at` (TIMESTAMPTZ, nullable), `delivered_at` (TIMESTAMPTZ, nullable), `created_at`, `updated_at`.
+
+#### `notification_delivery_attempts`
+- Auditable history of individual delivery attempts with provider references and error codes.
+- Fields: `id` (UUID PK), `delivery_id` (UUID FK), `attempt_number` (INTEGER), `provider` (VARCHAR 64), `status` (VARCHAR 32), `provider_reference` (VARCHAR 255, nullable), `error_code` (VARCHAR 64, nullable), `error_details` (TEXT, nullable), `attempted_at` (TIMESTAMPTZ).
+
+#### `notification_preferences`
+- User-configured communication preferences across channels and domain categories.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `user_id` (UUID FK), `email_enabled` (BOOLEAN, default True), `sms_enabled` (BOOLEAN, default True), `in_app_enabled` (BOOLEAN, default True), `billing_email` (BOOLEAN, default True), `billing_sms` (BOOLEAN, default True), `complaints_email` (BOOLEAN, default True), `complaints_sms` (BOOLEAN, default True), `visitor_sms` (BOOLEAN, default True), `created_at`, `updated_at`.
+- Unique Invariant: `uq_notification_preferences_society_user` on `(society_id, user_id)`.
+
+
 
 
 ---

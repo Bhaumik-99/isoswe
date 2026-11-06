@@ -186,4 +186,30 @@ All five core asynchronous flows run over dedicated Amazon SQS queues with paire
   2. Daily batch worker (`purge_expired_photos`) deletes expired S3 objects and scrubs `photo_s3_key` in PostgreSQL.
   3. AWS CDK S3 lifecycle rule (`VisitorPhotos90DayRetention`) enforces a hard 90-day storage expiration on `visitor-photos/`.
 
+---
+
+## 7. Phase 7 — Event-Driven Notifications & Resident Communication
+
+### 7.1 Asynchronous Transactional Architecture
+- **Atomic Event Generation**: Core business operations in Billing, Complaints, and Gate emit domain events directly into the `outbox_events` table within the primary database transaction. No external HTTP or API calls are ever made synchronously inside business workflows.
+- **SQS Fan-Out & Dedicated Worker**: The scheduled Outbox publisher publishes pending outbox events into the SQS `notification-jobs` queue with deduplication and correlation IDs.
+- **Dedicated Notification Worker (`app/workers/notification_worker.py`)**: Asynchronously consumes events from SQS and invokes `NotificationService.process_domain_event()`.
+
+### 7.2 Multi-Channel Delivery State Machine
+Every dispatch attempt across In-App, Email, and SMS is modeled with strict state transitions:
+`PENDING` -> `PROCESSING` -> `SENT` | `DELIVERED` | `RETRYING` | `FAILED` | `SUPPRESSED`
+- **In-App Delivery**: Persisted immediately to `notifications` and associated with a `DELIVERED` delivery record.
+- **Email & SMS Delivery**: Evaluated against user channel preferences and dispatched through the provider abstraction layer.
+- **Transient vs Permanent Failure Handling**:
+  - Transient errors (e.g. AWS SES/SNS throttling, temporary connection drops) transition to `RETRYING`, increment `attempt_count`, and schedule exponential backoff: `backoff_seconds = (2 ^ attempt_count) * 10 + jitter(1..5)`.
+  - Permanent errors (e.g. invalid recipient address, account suspended) transition immediately to `FAILED` without retrying.
+
+### 7.3 Security, Privacy & Compliance Invariants
+1. **PII Masking**: Email addresses and phone numbers are strictly sanitized in application logs and trace metadata (`mask_email()`, `mask_phone()`).
+2. **Mock Provider Fail-Closed**: In test and unconfigured environments, `MockEmailProvider` and `MockSMSProvider` record dispatch attempts in memory for verification but return `SUPPRESSED` with `MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED`, never falsely claiming external delivery.
+3. **Mandatory Emergency Override**: Critical safety escalations (`complaint.safety_escalated`, `URGENT` priority) bypass user opt-out preferences and guarantee delivery across all active channels to both residents and helpdesk staff.
+4. **Internal Helpdesk Isolation**: Private internal helpdesk notes are strictly excluded from resident notification bodies.
+5. **Least-Privilege IAM**: SES and SNS publishing permissions (`ses:SendEmail`, `ses:SendRawEmail`, `sns:Publish`) are granted exclusively to the background worker Lambda execution role. API, Outbox, and Retention Lambda roles have zero notification provider access.
+
+
 
