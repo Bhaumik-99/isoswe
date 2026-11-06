@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Database,
   X,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { OfflineVisitorQueueItem } from '../../../types';
 import { useLanguage } from '../../../i18n/LanguageContext';
+import { useGateMigrationStatus, retryGateMigration } from '../offline/gateIndexedDB';
 
 interface OfflineQueueDrawerProps {
   isOpen: boolean;
@@ -34,6 +35,19 @@ export const OfflineQueueDrawer: React.FC<OfflineQueueDrawerProps> = ({
   onClearSynced,
 }) => {
   const { t } = useLanguage();
+  const migrationStatus = useGateMigrationStatus();
+  const [isRetryingMigration, setIsRetryingMigration] = useState(false);
+
+  const handleRetryMigration = async () => {
+    setIsRetryingMigration(true);
+    try {
+      await retryGateMigration();
+    } catch {
+      // Handled via migration status hook
+    } finally {
+      setIsRetryingMigration(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -66,6 +80,35 @@ export const OfflineQueueDrawer: React.FC<OfflineQueueDrawerProps> = ({
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        {/* Operational Migration Warning */}
+        {migrationStatus.status === 'FAILED' && (
+          <div className="px-6 py-3 bg-rose-950/80 border-b border-rose-500/50 text-rose-200 text-xs flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-4 w-4 text-rose-400 flex-shrink-0 mt-0.5 animate-pulse" />
+              <div>
+                <p className="font-bold text-rose-100">Encryption Migration Incomplete</p>
+                <p className="text-rose-300 text-[11px] mt-0.5">
+                  {migrationStatus.unmigratedCount > 0
+                    ? `${migrationStatus.unmigratedCount} unencrypted record(s) pending encryption.`
+                    : 'Offline queue encryption migration failed.'}{' '}
+                  {migrationStatus.error}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleRetryMigration}
+              disabled={isRetryingMigration}
+              className="px-2.5 py-1 bg-rose-900 hover:bg-rose-800 text-white rounded text-xs font-semibold flex items-center gap-1 flex-shrink-0 border border-rose-500 disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-3 w-3 ${isRetryingMigration ? 'animate-spin' : ''}`}
+              />
+              <span>Retry</span>
+            </button>
+          </div>
+        )}
 
         {/* Security Rule Banner */}
         <div className="px-6 py-3 bg-indigo-950/40 border-b border-indigo-500/30 text-indigo-200 text-xs flex items-center gap-2">

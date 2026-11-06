@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import {
   OfflineSyncStatus,
   OfflineVisitorQueueItem,
@@ -40,6 +41,70 @@ export interface EncryptedOfflineVisitorQueueItem {
   server_visitor_id: string | null;
   iv: string; // Base64 encoded 12-byte initialization vector
   ciphertext: string; // Base64 encoded AES-GCM ciphertext + auth tag
+}
+
+export interface GateMigrationStatus {
+  status: 'IDLE' | 'MIGRATING' | 'COMPLETED' | 'FAILED';
+  unmigratedCount: number;
+  migratedCount: number;
+  error: string | null;
+  lastAttemptAt: string | null;
+}
+
+let currentMigrationStatus: GateMigrationStatus = {
+  status: 'IDLE',
+  unmigratedCount: 0,
+  migratedCount: 0,
+  error: null,
+  lastAttemptAt: null,
+};
+
+type MigrationStatusListener = (status: GateMigrationStatus) => void;
+const migrationListeners = new Set<MigrationStatusListener>();
+
+export function getGateMigrationStatus(): GateMigrationStatus {
+  return { ...currentMigrationStatus };
+}
+
+export function subscribeGateMigrationStatus(listener: MigrationStatusListener): () => void {
+  migrationListeners.add(listener);
+  listener({ ...currentMigrationStatus });
+  return () => {
+    migrationListeners.delete(listener);
+  };
+}
+
+export function updateMigrationStatus(updates: Partial<GateMigrationStatus>): void {
+  currentMigrationStatus = {
+    ...currentMigrationStatus,
+    ...updates,
+  };
+  const snapshot = { ...currentMigrationStatus };
+  for (const listener of migrationListeners) {
+    try {
+      listener(snapshot);
+    } catch (e) {
+      console.error('Error in migration listener:', e);
+    }
+  }
+}
+
+export function useGateMigrationStatus(): GateMigrationStatus {
+  const [status, setStatus] = useState<GateMigrationStatus>(getGateMigrationStatus());
+  useEffect(() => {
+    return subscribeGateMigrationStatus(setStatus);
+  }, []);
+  return status;
+}
+
+export function resetMigrationStatusForTesting(): void {
+  currentMigrationStatus = {
+    status: 'IDLE',
+    unmigratedCount: 0,
+    migratedCount: 0,
+    error: null,
+    lastAttemptAt: null,
+  };
 }
 
 // Module-level in-memory cache for the non-extractable key
@@ -142,7 +207,10 @@ export async function openGateDB(): Promise<IDBDatabase> {
   if (!migrationLock) {
     migrationLock = migrateLegacyPlaintextRecords(db)
       .catch((err) => {
-        console.error('Migration failed during openGateDB:', err);
+        console.warn(
+          '[GateDB] Background migration of legacy records failed; status set to FAILED:',
+          err
+        );
         return { migratedCount: 0, verifiedCount: 0 };
       })
       .finally(() => {
@@ -151,6 +219,23 @@ export async function openGateDB(): Promise<IDBDatabase> {
   }
   await migrationLock;
   return db;
+}
+
+/**
+ * Safely retries migration of legacy plaintext records.
+ * Uses mutex lock to prevent concurrent races.
+ */
+export async function retryGateMigration(): Promise<{
+  migratedCount: number;
+  verifiedCount: number;
+}> {
+  if (migrationLock) {
+    return await migrationLock;
+  }
+  migrationLock = migrateLegacyPlaintextRecords().finally(() => {
+    migrationLock = null;
+  });
+  return await migrationLock;
 }
 
 /**
@@ -498,67 +583,158 @@ export async function migrateSingleRecord(
 }
 
 /**
- * Scans offline queue for any legacy plaintext records, encrypts them,
- * verifies successful encryption, and updates storage without dropping or clearing the queue.
+ * Returns the count of legacy plaintext records across in-memory and native IndexedDB stores.
  */
-export async function migrateLegacyPlaintextRecords(
-  dbInstance?: IDBDatabase
-): Promise<{ migratedCount: number; verifiedCount: number }> {
-  const key = await getOrCreateGateEncryptionKey();
-  let migratedCount = 0;
-  let verifiedCount = 0;
-
-  // 1. Migrate in-memory records (for tests and memory fallback)
-  for (const [id, record] of Array.from(memoryStore.entries())) {
+export async function countLegacyPlaintextRecords(dbInstance?: IDBDatabase): Promise<number> {
+  let count = 0;
+  for (const record of memoryStore.values()) {
     if (isLegacyPlaintextRecord(record)) {
-      const migrated = await migrateSingleRecord(record, key);
-      memoryStore.set(id, migrated);
-      migratedCount++;
-      verifiedCount++;
+      count++;
     }
   }
 
-  // 2. Migrate native IndexedDB records if present
   if (hasNativeIndexedDB()) {
     const shouldClose = !dbInstance;
-    const db = dbInstance || (await openRawGateDB());
+    let db: IDBDatabase | null = null;
     try {
+      db = dbInstance || (await openRawGateDB());
       const allRecords = await new Promise<any[]>((resolve, reject) => {
-        const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readonly');
+        const tx = db!.transaction(OFFLINE_QUEUE_STORE, 'readonly');
         const store = tx.objectStore(OFFLINE_QUEUE_STORE);
         const req = store.getAll();
         req.onsuccess = () => resolve((req.result || []) as any[]);
         req.onerror = () => reject(req.error);
       });
-
-      const legacyRecords = allRecords.filter(isLegacyPlaintextRecord);
-      if (legacyRecords.length > 0) {
-        const migratedList: EncryptedOfflineVisitorQueueItem[] = [];
-        for (const legacy of legacyRecords) {
-          const migrated = await migrateSingleRecord(legacy, key);
-          migratedList.push(migrated);
-          migratedCount++;
-          verifiedCount++;
-        }
-
-        await new Promise<void>((resolve, reject) => {
-          const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
-          const store = tx.objectStore(OFFLINE_QUEUE_STORE);
-          for (const item of migratedList) {
-            store.put(item);
-          }
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error);
-        });
-      }
+      count += allRecords.filter(isLegacyPlaintextRecord).length;
+    } catch {
+      // If store cannot be opened, count remains what was found in memory
     } finally {
-      if (shouldClose) {
+      if (shouldClose && db) {
         db.close();
       }
     }
   }
 
-  return { migratedCount, verifiedCount };
+  return count;
+}
+
+/**
+ * Scans offline queue for any legacy plaintext records, encrypts them,
+ * verifies successful encryption, and updates storage without dropping or clearing the queue.
+ *
+ * Invariants:
+ * 1. Surfaces migration state explicitly via getGateMigrationStatus() and subscribeGateMigrationStatus().
+ * 2. If migration fails (e.g. key store failure, storage error), records failure status with details and rethrows.
+ * 3. Never writes unencrypted plaintext records.
+ */
+export async function migrateLegacyPlaintextRecords(
+  dbInstance?: IDBDatabase
+): Promise<{ migratedCount: number; verifiedCount: number }> {
+  let initialUnmigrated = 0;
+  try {
+    initialUnmigrated = await countLegacyPlaintextRecords(dbInstance);
+  } catch {
+    initialUnmigrated = 1;
+  }
+
+  if (initialUnmigrated === 0) {
+    updateMigrationStatus({
+      status: 'COMPLETED',
+      unmigratedCount: 0,
+      error: null,
+    });
+    return { migratedCount: 0, verifiedCount: 0 };
+  }
+
+  updateMigrationStatus({
+    status: 'MIGRATING',
+    unmigratedCount: initialUnmigrated,
+    error: null,
+    lastAttemptAt: new Date().toISOString(),
+  });
+
+  let migratedCount = 0;
+  let verifiedCount = 0;
+
+  try {
+    const key = await getOrCreateGateEncryptionKey();
+
+    // 1. Migrate in-memory records (for tests and memory fallback)
+    for (const [id, record] of Array.from(memoryStore.entries())) {
+      if (isLegacyPlaintextRecord(record)) {
+        const migrated = await migrateSingleRecord(record, key);
+        memoryStore.set(id, migrated);
+        migratedCount++;
+        verifiedCount++;
+      }
+    }
+
+    // 2. Migrate native IndexedDB records if present
+    if (hasNativeIndexedDB()) {
+      const shouldClose = !dbInstance;
+      let db: IDBDatabase | null = null;
+      try {
+        db = dbInstance || (await openRawGateDB());
+        const allRecords = await new Promise<any[]>((resolve, reject) => {
+          const tx = db!.transaction(OFFLINE_QUEUE_STORE, 'readonly');
+          const store = tx.objectStore(OFFLINE_QUEUE_STORE);
+          const req = store.getAll();
+          req.onsuccess = () => resolve((req.result || []) as any[]);
+          req.onerror = () => reject(req.error);
+        });
+
+        const legacyRecords = allRecords.filter(isLegacyPlaintextRecord);
+        if (legacyRecords.length > 0) {
+          const migratedList: EncryptedOfflineVisitorQueueItem[] = [];
+          for (const legacy of legacyRecords) {
+            const migrated = await migrateSingleRecord(legacy, key);
+            migratedList.push(migrated);
+            migratedCount++;
+            verifiedCount++;
+          }
+
+          await new Promise<void>((resolve, reject) => {
+            const tx = db!.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+            const store = tx.objectStore(OFFLINE_QUEUE_STORE);
+            for (const item of migratedList) {
+              store.put(item);
+            }
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          });
+        }
+      } finally {
+        if (shouldClose && db) {
+          db.close();
+        }
+      }
+    }
+
+    updateMigrationStatus({
+      status: 'COMPLETED',
+      unmigratedCount: 0,
+      migratedCount,
+      error: null,
+      lastAttemptAt: new Date().toISOString(),
+    });
+
+    return { migratedCount, verifiedCount };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error('[GateMigration] Legacy plaintext record migration failed:', err);
+
+    const remainingUnmigrated = await countLegacyPlaintextRecords(dbInstance).catch(
+      () => initialUnmigrated
+    );
+    updateMigrationStatus({
+      status: 'FAILED',
+      unmigratedCount: remainingUnmigrated,
+      error: errMsg,
+      lastAttemptAt: new Date().toISOString(),
+    });
+
+    throw err;
+  }
 }
 
 /**
@@ -585,7 +761,42 @@ export async function seedLegacyOfflineRecordForTesting(record: any): Promise<vo
   }
 }
 
+/**
+ * Security Invariant Guard:
+ * Prevents new or updated unencrypted plaintext records from being written into storage.
+ * Enforces presence of ciphertext and IV, and strips any leaked plaintext fields.
+ */
+export function validateEncryptedRecordInvariant(item: any): void {
+  if (!item || typeof item !== 'object') {
+    throw new Error('Security Invariant Violation: Record payload is null or undefined.');
+  }
+  if (
+    typeof item.ciphertext !== 'string' ||
+    !item.ciphertext.trim() ||
+    typeof item.iv !== 'string' ||
+    !item.iv.trim()
+  ) {
+    throw new Error(
+      'Security Invariant Violation: Plaintext visitor record rejected. Offline records MUST be encrypted with AES-GCM before writing to storage.'
+    );
+  }
+  // Scrub any plaintext sensitive keys that may have been erroneously attached to the root item
+  const sensitiveFields = [
+    'visitor_name',
+    'phone_number',
+    'vehicle_number',
+    'photo_base64',
+    'flat_label',
+  ];
+  for (const field of sensitiveFields) {
+    if (field in item && item[field] !== undefined) {
+      delete item[field];
+    }
+  }
+}
+
 async function putEncryptedItem(item: EncryptedOfflineVisitorQueueItem): Promise<void> {
+  validateEncryptedRecordInvariant(item);
   memoryStore.set(item.client_event_id, item);
 
   if (!hasNativeIndexedDB()) {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ShieldCheck,
   Wifi,
@@ -8,6 +8,8 @@ import {
   Database,
   LogOut,
   ArrowLeft,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { GateInfo } from '../../../types';
 import {
@@ -15,6 +17,11 @@ import {
   SupportedLanguage,
   useLanguage,
 } from '../../../i18n/LanguageContext';
+import {
+  useGateMigrationStatus,
+  retryGateMigration,
+  GateMigrationStatus,
+} from '../offline/gateIndexedDB';
 
 interface GateHeaderBannerProps {
   guardName: string;
@@ -27,6 +34,8 @@ interface GateHeaderBannerProps {
   onOpenOfflineDrawer: () => void;
   onBackToStaff: () => void;
   onLogout: () => void;
+  migrationStatus?: GateMigrationStatus;
+  onRetryMigration?: () => void;
 }
 
 export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
@@ -40,8 +49,28 @@ export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
   onOpenOfflineDrawer,
   onBackToStaff,
   onLogout,
+  migrationStatus: propMigrationStatus,
+  onRetryMigration,
 }) => {
   const { language, setLanguage, t } = useLanguage();
+  const liveMigrationStatus = useGateMigrationStatus();
+  const effectiveMigration = propMigrationStatus || liveMigrationStatus;
+  const [isRetryingMigration, setIsRetryingMigration] = useState(false);
+
+  const handleRetryMigration = async () => {
+    if (onRetryMigration) {
+      onRetryMigration();
+      return;
+    }
+    setIsRetryingMigration(true);
+    try {
+      await retryGateMigration();
+    } catch {
+      // Status updated in hook
+    } finally {
+      setIsRetryingMigration(false);
+    }
+  };
 
   return (
     <header className="bg-slate-950 border-b border-slate-800 text-white sticky top-0 z-30 shadow-lg">
@@ -181,6 +210,44 @@ export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Operational Warning Banner when Migration Fails */}
+      {effectiveMigration.status === 'FAILED' && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="bg-rose-950 border-t border-rose-500/50 text-rose-100 px-4 py-2.5 text-xs flex flex-wrap items-center justify-between gap-3 shadow-inner"
+        >
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="h-4 w-4 text-rose-400 flex-shrink-0 animate-pulse" />
+            <div>
+              <span className="font-bold uppercase tracking-wider text-rose-300 mr-2">
+                Operational Warning:
+              </span>
+              <span>
+                Offline database encryption migration incomplete
+                {effectiveMigration.unmigratedCount > 0
+                  ? ` (${effectiveMigration.unmigratedCount} unencrypted record${
+                      effectiveMigration.unmigratedCount === 1 ? '' : 's'
+                    } pending)`
+                  : ''}
+                . {effectiveMigration.error || 'Please retry migration.'}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleRetryMigration}
+            disabled={isRetryingMigration}
+            className="px-3 py-1 bg-rose-900 hover:bg-rose-800 text-rose-100 rounded-lg text-xs font-bold border border-rose-500 flex items-center gap-1.5 flex-shrink-0 disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${isRetryingMigration ? 'animate-spin' : ''}`}
+            />
+            <span>Retry Migration</span>
+          </button>
+        </div>
+      )}
     </header>
   );
 };

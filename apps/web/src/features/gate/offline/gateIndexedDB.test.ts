@@ -6,11 +6,13 @@ import {
   clearAllOfflineQueue,
   computePayloadHash,
   computePhotoSha256,
+  countLegacyPlaintextRecords,
   decryptSensitivePayload,
   encryptSensitivePayload,
   enqueueOfflineVisitor,
   evaluateOfflineGuestPassPolicy,
   generateClientEventId,
+  getGateMigrationStatus,
   getOrCreateGateEncryptionKey,
   getRawEncryptedRecords,
   isLegacyPlaintextRecord,
@@ -19,8 +21,11 @@ import {
   openGateDB,
   removeSyncedOfflineItems,
   resetEncryptionKeyMemoryCacheForTesting,
+  resetMigrationStatusForTesting,
+  retryGateMigration,
   seedLegacyOfflineRecordForTesting,
   updateOfflineQueueStatus,
+  validateEncryptedRecordInvariant,
 } from './gateIndexedDB';
 import { gateSyncManager } from './syncManager';
 import { gateService } from '../../../services/gateService';
@@ -661,6 +666,213 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
       ).rejects.toThrow(/Failed to persist or retrieve gate encryption key in IndexedDB/);
     } finally {
       resetEncryptionKeyMemoryCacheForTesting();
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
+  });
+
+  it('validateEncryptedRecordInvariant strictly rejects plaintext records or missing ciphertext/iv', () => {
+    // 1. Plaintext legacy record must be rejected
+    const plaintextRecord = {
+      client_event_id: 'plain-1',
+      visitor_name: 'Plaintext Visitor',
+      phone_number: '9823012345',
+    };
+    expect(() => validateEncryptedRecordInvariant(plaintextRecord)).toThrow(
+      /Security Invariant Violation: Plaintext visitor record rejected/
+    );
+
+    // 2. Missing ciphertext or iv must be rejected
+    expect(() =>
+      validateEncryptedRecordInvariant({
+        client_event_id: 'plain-2',
+        iv: 'some-iv',
+      })
+    ).toThrow(/Security Invariant Violation/);
+
+    expect(() =>
+      validateEncryptedRecordInvariant({
+        client_event_id: 'plain-3',
+        ciphertext: 'some-cipher',
+      })
+    ).toThrow(/Security Invariant Violation/);
+
+    // 3. Valid encrypted record must pass and have any accidental plaintext fields stripped
+    const validEncrypted: any = {
+      client_event_id: 'valid-enc-1',
+      iv: 'valid-iv-1234',
+      ciphertext: 'valid-ciphertext-5678',
+      visitor_name: 'Accidental Plaintext Leak',
+      phone_number: '9823000000',
+    };
+    validateEncryptedRecordInvariant(validEncrypted);
+    expect(validEncrypted.visitor_name).toBeUndefined();
+    expect(validEncrypted.phone_number).toBeUndefined();
+    expect(validEncrypted.ciphertext).toBe('valid-ciphertext-5678');
+  });
+
+  it('explicitly surfaces migration failure in getGateMigrationStatus when migration fails, preserving unmigrated count', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+    resetMigrationStatusForTesting();
+    resetEncryptionKeyMemoryCacheForTesting();
+
+    // Seed 1 unmigrated plaintext record
+    await seedLegacyOfflineRecordForTesting({
+      client_event_id: 'legacy-surface-err-01',
+      gate_id: 'gate-1',
+      visitor_name: 'Unmigrated Visitor 1',
+      phone_number: '9823011111',
+    });
+
+    expect(await countLegacyPlaintextRecords()).toBe(1);
+
+    // Force persistent key store failure
+    (globalThis as any).indexedDB = {
+      open: (_name: string) => {
+        const req: any = { error: new DOMException('Disk I/O error', 'QuotaExceededError') };
+        queueMicrotask(() => req.onerror && req.onerror());
+        return req;
+      },
+    };
+
+    try {
+      // Direct call to migrateLegacyPlaintextRecords MUST throw and NOT swallow the error
+      await expect(migrateLegacyPlaintextRecords()).rejects.toThrow(
+        /Failed to persist or retrieve gate encryption key in IndexedDB/
+      );
+
+      // Status must explicitly show FAILED, with unmigratedCount preserved
+      const status = getGateMigrationStatus();
+      expect(status.status).toBe('FAILED');
+      expect(status.unmigratedCount).toBe(1);
+      expect(status.error).toContain('Failed to persist or retrieve gate encryption key in IndexedDB');
+      expect(status.lastAttemptAt).toBeTruthy();
+    } finally {
+      resetEncryptionKeyMemoryCacheForTesting();
+      resetMigrationStatusForTesting();
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
+  });
+
+  it('safely retries migration with retryGateMigration() and transitions status to COMPLETED with 0 unmigrated records', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+    resetMigrationStatusForTesting();
+    resetEncryptionKeyMemoryCacheForTesting();
+
+    const legacyItem = {
+      client_event_id: 'legacy-retry-02',
+      gate_id: 'gate-1',
+      visitor_name: 'Retry Target Visitor',
+      phone_number: '9823022222',
+      purpose: 'DELIVERY',
+      destination_flat_id: 'flat-1',
+      privacy_notice_version: 'v1.0-2026-pune',
+    };
+    await seedLegacyOfflineRecordForTesting(legacyItem);
+
+    // 1. First attempt fails due to simulated failure
+    (globalThis as any).indexedDB = {
+      open: (_name: string) => {
+        const req: any = { error: new Error('Temporary DB lock') };
+        queueMicrotask(() => req.onerror && req.onerror());
+        return req;
+      },
+    };
+
+    await expect(migrateLegacyPlaintextRecords()).rejects.toThrow(/Temporary DB lock/);
+    expect(getGateMigrationStatus().status).toBe('FAILED');
+    expect(getGateMigrationStatus().unmigratedCount).toBe(1);
+
+    // 2. Resolve simulated failure: restore normal memory/crypto execution
+    if (originalIndexedDB) {
+      (globalThis as any).indexedDB = originalIndexedDB;
+    } else {
+      delete (globalThis as any).indexedDB;
+    }
+    resetEncryptionKeyMemoryCacheForTesting();
+
+    // 3. Retry migration safely
+    const retryResult = await retryGateMigration();
+    expect(retryResult.migratedCount).toBe(1);
+    expect(retryResult.verifiedCount).toBe(1);
+
+    // 4. Status must transition to COMPLETED with 0 unmigrated records
+    const finalStatus = getGateMigrationStatus();
+    expect(finalStatus.status).toBe('COMPLETED');
+    expect(finalStatus.unmigratedCount).toBe(0);
+    expect(finalStatus.error).toBeNull();
+
+    // 5. Raw record must now be encrypted with zero plaintext
+    const rawRecords = await getRawEncryptedRecords();
+    const migratedRaw = rawRecords.find((x) => x.client_event_id === 'legacy-retry-02');
+    expect(migratedRaw.ciphertext).toBeTruthy();
+    expect(migratedRaw.iv).toBeTruthy();
+    expect(migratedRaw.visitor_name).toBeUndefined();
+    expect(migratedRaw.phone_number).toBeUndefined();
+  });
+
+  it('openGateDB surfaces migration failure status explicitly in currentMigrationStatus without swallowing state', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+    resetMigrationStatusForTesting();
+    resetEncryptionKeyMemoryCacheForTesting();
+
+    await seedLegacyOfflineRecordForTesting({
+      client_event_id: 'legacy-opengatedb-03',
+      gate_id: 'gate-1',
+      visitor_name: 'OpenGateDB Legacy Visitor',
+      phone_number: '9823033333',
+    });
+
+    const mockDb: any = {
+      version: 2,
+      objectStoreNames: { contains: () => true },
+      createObjectStore: vi.fn(),
+      transaction: () => ({
+        objectStore: () => ({
+          getAll: () => {
+            const req: any = { result: [] };
+            queueMicrotask(() => req.onsuccess && req.onsuccess());
+            return req;
+          },
+        }),
+      }),
+      close: vi.fn(),
+    };
+
+    (globalThis as any).indexedDB = {
+      open: (name: string) => {
+        if (name === 'TownshipGateKeyStore') {
+          // Key DB fails
+          const req: any = { error: new Error('KeyStore corrupted') };
+          queueMicrotask(() => req.onerror && req.onerror());
+          return req;
+        }
+        // Gate DB succeeds
+        const req: any = { result: mockDb };
+        queueMicrotask(() => req.onsuccess && req.onsuccess());
+        return req;
+      },
+    };
+
+    try {
+      const db = await openGateDB();
+      expect(db).toBe(mockDb);
+
+      // Migration failure MUST be surfaced in migration status
+      const status = getGateMigrationStatus();
+      expect(status.status).toBe('FAILED');
+      expect(status.unmigratedCount).toBe(1);
+      expect(status.error).toContain('KeyStore corrupted');
+    } finally {
+      resetEncryptionKeyMemoryCacheForTesting();
+      resetMigrationStatusForTesting();
       if (originalIndexedDB) {
         (globalThis as any).indexedDB = originalIndexedDB;
       } else {
