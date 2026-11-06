@@ -15,6 +15,7 @@ import {
   UserCheck,
   XCircle,
   KeyRound,
+  Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient, ApiClientError } from '../../services/apiClient';
@@ -509,6 +510,35 @@ export const ResidentOverview: React.FC = () => {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Amenity & Clubhouse Bookings Card */}
+        <Card className="border-l-4 border-l-emerald-600 md:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-emerald-600" />
+                <span>Township Amenities & Clubhouse</span>
+              </span>
+              <Badge variant="success">AVAILABLE</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Reserve badminton courts, tennis courts, olympic swimming pool, fitness gym, and community halls with instant slot confirmation.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => navigate('/resident/amenities')}
+                className="w-full sm:w-auto text-xs font-semibold flex items-center justify-center gap-1.5 px-6"
+              >
+                <span>Browse & Book Amenities</span>
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

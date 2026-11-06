@@ -12,6 +12,7 @@ import { ResidentPayments } from '../features/resident/ResidentPayments';
 import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { ResidentVisitorsPage } from '../features/resident/ResidentVisitorsPage';
 import { ResidentNotificationsPage } from '../features/resident/notifications/ResidentNotificationsPage';
+import { ResidentAmenitiesPage } from '../features/resident/amenities/ResidentAmenitiesPage';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
@@ -86,6 +87,7 @@ export const AppRoutes: React.FC = () => {
       >
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<ResidentOverview />} />
+        <Route path="amenities" element={<ResidentAmenitiesPage />} />
         <Route path="visitors" element={<ResidentVisitorsPage />} />
         <Route path="billing" element={<ResidentBilling />} />
         <Route path="payments" element={<ResidentPayments />} />

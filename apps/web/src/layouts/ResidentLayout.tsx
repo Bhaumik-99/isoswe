@@ -8,6 +8,7 @@ import {
   LifeBuoy,
   Bell,
   UserCheck,
+  Sparkles,
   LogOut,
   Menu,
   X,
@@ -30,6 +31,7 @@ export const ResidentLayout: React.FC = () => {
 
   const navItems = [
     { name: 'My Flat Overview', path: '/resident/overview', icon: Home, exact: true },
+    { name: 'Amenity Bookings', path: '/resident/amenities', icon: Sparkles },
     { name: 'Visitors & Gate Passes', path: '/resident/visitors', icon: UserCheck },
     { name: 'Maintenance Invoices', path: '/resident/billing', icon: Receipt },
     { name: 'Payment Receipts', path: '/resident/payments', icon: CreditCard },

@@ -82,3 +82,4 @@ export * from './billing';
 export * from './complaints';
 export * from './visitors';
 export * from './notification';
+export * from './amenities';
