@@ -51,7 +51,13 @@ class StorageConstruct(Construct):
                     id="VisitorPhotos90DayRetention",
                     prefix="visitor-photos/",
                     expiration=Duration.days(90),
-                )
+                    noncurrent_version_expiration=Duration.days(1),
+                ),
+                s3.LifecycleRule(
+                    id="VisitorPhotosExpiredDeleteMarkers",
+                    prefix="visitor-photos/",
+                    expired_object_delete_marker=True,
+                ),
             ],
         )
 

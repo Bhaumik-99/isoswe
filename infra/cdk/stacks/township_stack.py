@@ -52,7 +52,7 @@ class TownshipStack(Stack):
                 ]
             )
 
-        # 4. Serverless Compute (FastAPI Lambda + SQS Worker Lambda)
+        # 4. Serverless Compute (FastAPI Lambda + SQS Worker Lambda + Scheduled Tasks)
         compute = ComputeConstruct(
             self,
             "Compute",
@@ -61,6 +61,7 @@ class TownshipStack(Stack):
             db_secret=security.db_secret,
             queues=messaging.queues,
             frontend_origins=frontend_origins,
+            documents_bucket=storage.documents_bucket,
         )
 
         # 5. API Exposure & WAF Protection (API Gateway + WAF)

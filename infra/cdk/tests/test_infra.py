@@ -119,6 +119,73 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
         },
     )
 
+    # 5. Scheduled Visitor Photo Retention Purge Lambda
+    prod_template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "FunctionName": "township-retention-prod",
+            "Runtime": "python3.11",
+            "Handler": "app.handlers.lambda_retention.handler",
+            "Environment": {
+                "Variables": Match.object_like(
+                    {
+                        "ENVIRONMENT": "production",
+                        "MESSAGING_PROVIDER": "aws",
+                        "DATABASE_SECRET_NAME": Match.any_value(),
+                        "DOCUMENTS_BUCKET_NAME": Match.any_value(),
+                    }
+                )
+            },
+        },
+    )
+
+    # 6. EventBridge Schedule Rule for Photo Retention Purge
+    prod_template.has_resource_properties(
+        "AWS::Events::Rule",
+        {
+            "Name": "township-retention-schedule-prod",
+            "ScheduleExpression": "cron(0 2 * * ? *)",
+            "State": "ENABLED",
+        },
+    )
+
+
+def test_s3_documents_bucket_versioning_and_lifecycle_retention(prod_template: Template) -> None:
+    """Verifies private documents S3 bucket has versioning, KMS encryption, noncurrent version lifecycle expiration, and delete marker cleanup."""
+    prod_template.has_resource_properties(
+        "AWS::S3::Bucket",
+        {
+            "VersioningConfiguration": {
+                "Status": "Enabled",
+            },
+            "LifecycleConfiguration": {
+                "Rules": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "Id": "VisitorPhotos90DayRetention",
+                                "Prefix": "visitor-photos/",
+                                "ExpirationInDays": 90,
+                                "NoncurrentVersionExpiration": {
+                                    "NoncurrentDays": 1,
+                                },
+                                "Status": "Enabled",
+                            }
+                        ),
+                        Match.object_like(
+                            {
+                                "Id": "VisitorPhotosExpiredDeleteMarkers",
+                                "Prefix": "visitor-photos/",
+                                "ExpiredObjectDeleteMarker": True,
+                                "Status": "Enabled",
+                            }
+                        ),
+                    ]
+                )
+            },
+        },
+    )
+
 
 def test_s3_buckets_block_public_access(prod_template: Template) -> None:
     """Verifies S3 buckets block all public access."""
@@ -162,6 +229,7 @@ def test_lambda_asset_packaging_and_bundler(tmp_path) -> None:
     # Verify core application components are bundled into output
     assert os.path.exists(os.path.join(out_dir, "app", "main.py"))
     assert os.path.exists(os.path.join(out_dir, "app", "handlers", "lambda_api.py"))
+    assert os.path.exists(os.path.join(out_dir, "app", "handlers", "lambda_retention.py"))
     assert os.path.exists(os.path.join(out_dir, "requirements.txt"))
     # Verify tests and local caches are cleanly excluded
     assert not os.path.exists(os.path.join(out_dir, "tests"))

@@ -447,7 +447,8 @@ class VisitorRecord(Base):
             return True
         if not self.photo_key:
             return True
-        c_at = self.created_at if self.created_at.tzinfo else self.created_at.replace(tzinfo=UTC)
+        ref_dt = self.photo_captured_at or self.created_at
+        c_at = ref_dt if ref_dt.tzinfo else ref_dt.replace(tzinfo=UTC)
         return utc_now() - c_at > timedelta(days=90)
 
     @property

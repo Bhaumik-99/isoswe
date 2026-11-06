@@ -24,6 +24,7 @@ from aws_cdk import (
     aws_lambda as _lambda,
     aws_lambda_event_sources as lambda_sources,
     aws_logs as logs,
+    aws_s3 as s3,
     aws_secretsmanager as secretsmanager,
 )
 from constructs import Construct
@@ -85,6 +86,7 @@ class ComputeConstruct(Construct):
         db_secret: secretsmanager.ISecret,
         queues: Dict[str, QueueWithDLQ],
         frontend_origins: Optional[List[str]] = None,
+        documents_bucket: Optional[s3.IBucket] = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
@@ -110,6 +112,8 @@ class ComputeConstruct(Construct):
         # Grant Secrets Manager and KMS decrypt permissions
         db_secret.grant_read(api_role)
         kms_key.grant_encrypt_decrypt(api_role)
+        if documents_bucket:
+            documents_bucket.grant_read_write(api_role)
 
         # Grant SQS SendMessage permissions to all main queues
         for q_wrapper in queues.values():
@@ -163,6 +167,10 @@ class ComputeConstruct(Construct):
         if frontend_origins:
             lambda_environment["CORS_ALLOWED_ORIGINS"] = ",".join(frontend_origins)
 
+        if documents_bucket:
+            lambda_environment["DOCUMENTS_BUCKET_NAME"] = documents_bucket.bucket_name
+            lambda_environment["S3_ATTACHMENTS_BUCKET_NAME"] = documents_bucket.bucket_name
+
         # Production Lambda asset with Amazon Linux Python 3.11 Docker bundling and local test fallback
         api_dir = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..", "..", "services", "api")
@@ -212,6 +220,8 @@ class ComputeConstruct(Construct):
         )
         db_secret.grant_read(worker_role)
         kms_key.grant_encrypt_decrypt(worker_role)
+        if documents_bucket:
+            documents_bucket.grant_read_write(worker_role)
 
         self.worker_lambda = _lambda.Function(
             self,
@@ -276,4 +286,44 @@ class ComputeConstruct(Construct):
             description=f"Scheduled trigger for Transactional Outbox publisher ({config.env_name})",
             schedule=events.Schedule.rate(Duration.minutes(1)),
             targets=[targets.LambdaFunction(self.outbox_lambda)],
+        )
+
+        # 5. Scheduled Visitor Photo Retention Purge Lambda
+        retention_role = iam.Role(
+            self,
+            "RetentionLambdaRole",
+            assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaBasicExecutionRole"
+                )
+            ],
+        )
+        db_secret.grant_read(retention_role)
+        kms_key.grant_encrypt_decrypt(retention_role)
+        if documents_bucket:
+            documents_bucket.grant_read_write(retention_role)
+
+        self.retention_lambda = _lambda.Function(
+            self,
+            "RetentionFunction",
+            function_name=f"township-retention-{config.env_name}",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="app.handlers.lambda_retention.handler",
+            code=lambda_code,
+            memory_size=512,
+            timeout=Duration.seconds(120),
+            role=retention_role,
+            log_retention=log_retention,
+            environment=lambda_environment,
+        )
+
+        # EventBridge Schedule Rule: triggers photo retention purge daily at 02:00 UTC
+        events.Rule(
+            self,
+            "RetentionScheduleRule",
+            rule_name=f"township-retention-schedule-{config.env_name}",
+            description=f"Scheduled daily trigger for Visitor Photo Retention purge ({config.env_name})",
+            schedule=events.Schedule.cron(minute="0", hour="2"),
+            targets=[targets.LambdaFunction(self.retention_lambda)],
         )

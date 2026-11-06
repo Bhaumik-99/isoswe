@@ -4,15 +4,15 @@ Manages visitor photo storage, presigned download URLs with 15-minute expiration
 IDOR access checks, 90-day logical cutoff enforcement, and automated cleanup.
 """
 
-import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import String, cast, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppException, AuthorizationError, ResourceNotFoundError
+from app.core.logging import logger
 from app.domains.complaints.storage import (
     get_storage_provider,
     validate_photo_bytes,
@@ -127,7 +127,8 @@ class PhotoRetentionService:
 
         # 2. Strict 90-Day Logical Cutoff Check (CHAL-16 & Tier 2 boundary)
         # Even if the file physically exists, if age > 90 days, return 410 immediately!
-        c_at = ensure_utc(visitor.created_at)
+        ref_dt = visitor.photo_captured_at or visitor.created_at
+        c_at = ensure_utc(ref_dt)
         if (now - c_at) > timedelta(days=90) or visitor.is_photo_expired:
             raise PhotoExpiredError(
                 message=f"Visitor photo for {visitor_id} expired after 90 days retention period",
@@ -216,20 +217,23 @@ class PhotoRetentionService:
         }
 
     def purge_expired_photos(self, batch_size: int = 100) -> int:
-        """Physical deletion worker for photos older than 90 days.
-        Deletes S3 objects, nullifies database keys, and records audit events.
+        """Physical deletion worker for photos older than 90 days based on capture time.
+        Deletes S3 objects, nullifies database keys only on verified deletion, and records audit events.
+        Failed deletions preserve the keys and are left unpurged so subsequent runs retry them.
         """
         now = utc_now()
         cutoff_date = now - timedelta(days=90)
+        ref_date_expr = func.coalesce(VisitorRecord.photo_captured_at, VisitorRecord.created_at)
 
         stmt = (
             select(VisitorRecord)
             .where(
-                VisitorRecord.created_at < cutoff_date,
+                ref_date_expr < cutoff_date,
                 or_(
                     VisitorRecord.photo_s3_key.is_not(None),
                     VisitorRecord.photo_storage_key.is_not(None),
                 ),
+                VisitorRecord.photo_purged_at.is_(None),
             )
             .limit(batch_size)
         )
@@ -240,9 +244,23 @@ class PhotoRetentionService:
         purged_count = 0
         for record in expired_records:
             key_to_delete = record.photo_key
+            deletion_succeeded = True
             if key_to_delete:
-                with contextlib.suppress(Exception):
-                    self.storage_provider.delete_file(key_to_delete)
+                try:
+                    res = self.storage_provider.delete_file(key_to_delete)
+                    deletion_succeeded = bool(res)
+                except Exception as exc:
+                    logger.warning(
+                        f"[PhotoRetention] Exception during S3 deletion of {key_to_delete}: {exc}"
+                    )
+                    deletion_succeeded = False
+
+            if not deletion_succeeded:
+                # S3 deletion failed or returned False. Preserve database keys so physical purge is retried.
+                logger.warning(
+                    f"[PhotoRetention] Physical deletion failed for visitor {record.id} key {key_to_delete}; preserving for retry."
+                )
+                continue
 
             record.photo_purged_at = now
             record.photo_deleted_at = now
@@ -260,6 +278,9 @@ class PhotoRetentionService:
                 event_metadata={
                     "visitor_id": str(record.id),
                     "created_at": record.created_at.isoformat(),
+                    "photo_captured_at": record.photo_captured_at.isoformat()
+                    if record.photo_captured_at
+                    else None,
                     "purged_at": now.isoformat(),
                     "reason": "90_day_statutory_retention_limit",
                 },

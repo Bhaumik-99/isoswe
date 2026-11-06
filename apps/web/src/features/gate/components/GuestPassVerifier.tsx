@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ShieldAlert,
   WifiOff,
-  LogIn,
   AlertCircle,
 } from 'lucide-react';
 import { GateInfo, VerifyGuestPassResponse } from '../../../types';
@@ -27,10 +26,8 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
   const { t } = useLanguage();
   const [passCode, setPassCode] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
-  const [isCheckingIn, setIsCheckingIn] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [verifiedPass, setVerifiedPass] = useState<VerifyGuestPassResponse | null>(null);
-  const [checkedInDone, setCheckedInDone] = useState(false);
 
   const offlinePolicy = evaluateOfflineGuestPassPolicy(isOnline);
 
@@ -38,7 +35,6 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
     e.preventDefault();
     setErrorMsg(null);
     setVerifiedPass(null);
-    setCheckedInDone(false);
 
     if (!offlinePolicy.allowed) {
       setErrorMsg(t.gate.passVerification.offlineDisabledBody);
@@ -63,6 +59,7 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
       });
       setVerifiedPass(res);
       setPassCode('');
+      // Redemption directly registers entry on the backend as CHECKED_IN
       onPassVerifiedAndCheckedIn();
     } catch (err: unknown) {
       if (err instanceof ApiClientError && err.status === 429) {
@@ -72,21 +69,6 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
       }
     } finally {
       setIsVerifying(false);
-    }
-  };
-
-  const handleCheckInVerifiedVisitor = async () => {
-    if (!verifiedPass?.visitor_id) return;
-    setIsCheckingIn(true);
-    setErrorMsg(null);
-    try {
-      await gateService.checkInVisitor(verifiedPass.visitor_id);
-      setCheckedInDone(true);
-      onPassVerifiedAndCheckedIn();
-    } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : t.errors.genericError);
-    } finally {
-      setIsCheckingIn(false);
     }
   };
 
@@ -152,9 +134,14 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
               <CheckCircle2 className="h-5 w-5" />
               <span>{t.gate.passVerification.verifiedSuccessTitle}</span>
             </div>
-            <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-mono font-bold">
-              {verifiedPass.approval_status}
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-mono font-bold">
+                {verifiedPass.approval_status}
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-xs font-mono font-bold">
+                {verifiedPass.entry_status || 'CHECKED_IN'}
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 text-xs bg-slate-950/70 p-3 rounded-lg border border-slate-800">
@@ -170,27 +157,14 @@ export const GuestPassVerifier: React.FC<GuestPassVerifierProps> = ({
             </div>
           </div>
 
-          {verifiedPass.visitor_id && !checkedInDone && (
-            <button
-              type="button"
-              disabled={isCheckingIn}
-              onClick={handleCheckInVerifiedVisitor}
-              className="w-full py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2"
-            >
-              <LogIn className="h-4 w-4" />
-              <span>{isCheckingIn ? t.common.loading : t.gate.liveMonitor.checkInBtn}</span>
-            </button>
-          )}
-
-          {checkedInDone && (
-            <div className="text-xs text-emerald-300 font-bold flex items-center gap-1.5">
-              <CheckCircle2 className="h-4 w-4" />
-              <span>{t.gate.liveMonitor.checkedInSuccess}</span>
-            </div>
-          )}
+          <div className="p-3 rounded-xl bg-emerald-900/40 border border-emerald-500/30 text-emerald-200 text-xs flex items-center gap-2 font-medium">
+            <CheckCircle2 className="h-4 w-4 text-emerald-400 flex-shrink-0" />
+            <span>
+              {t.gate.liveMonitor.checkedInSuccess} — {t.gate.passVerification.verifiedSuccessBody}
+            </span>
+          </div>
         </div>
       )}
     </div>
   );
 };
-
