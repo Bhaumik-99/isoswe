@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   GATE_DB_VERSION,
   MASTER_KEY_ID,
+  LEGACY_LOCALSTORAGE_FALLBACK_KEY,
   buildCanonicalPayloadString,
   clearAllOfflineQueue,
   computePayloadHash,
@@ -13,25 +14,51 @@ import {
   evaluateOfflineGuestPassPolicy,
   generateClientEventId,
   getGateMigrationStatus,
+  getLegacyLocalStorageFallbackCount,
   getOrCreateGateEncryptionKey,
   getRawEncryptedRecords,
   isLegacyPlaintextRecord,
   listOfflineQueue,
   migrateLegacyPlaintextRecords,
   openGateDB,
+  readLegacyLocalStorageFallback,
   removeSyncedOfflineItems,
   resetEncryptionKeyMemoryCacheForTesting,
   resetMigrationStatusForTesting,
   retryGateMigration,
+  seedLegacyLocalStorageFallbackForTesting,
   seedLegacyOfflineRecordForTesting,
+  setLocalStorageMockForTesting,
   updateOfflineQueueStatus,
   validateEncryptedRecordInvariant,
 } from './gateIndexedDB';
 import { gateSyncManager } from './syncManager';
 import { gateService } from '../../../services/gateService';
 
+function createMockStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, String(value)),
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    clear: () => store.clear(),
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    get length() {
+      return store.size;
+    },
+  };
+}
+
 describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
+  let mockStorage: Storage;
+
   beforeEach(async () => {
+    mockStorage = createMockStorage();
+    setLocalStorageMockForTesting(mockStorage);
+    resetMigrationStatusForTesting();
+    resetEncryptionKeyMemoryCacheForTesting();
     await clearAllOfflineQueue();
     vi.restoreAllMocks();
   });
@@ -459,14 +486,20 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
       transaction: (_stores: any, _mode: string) => {
         const tx: any = {
           objectStore: (_name: string) => ({
+            get: (key: string) => {
+              const req: any = { result: v1Records.get(key) };
+              queueMicrotask(() => req.onsuccess && req.onsuccess());
+              return req;
+            },
             getAll: () => {
               const req: any = { result: Array.from(v1Records.values()) };
               queueMicrotask(() => req.onsuccess && req.onsuccess());
               return req;
             },
-            put: (item: any) => {
-              v1Records.set(item.client_event_id, item);
-              const req: any = { result: item.client_event_id };
+            put: (item: any, key?: string) => {
+              const recordKey = key || item?.client_event_id || 'key';
+              v1Records.set(recordKey, item);
+              const req: any = { result: recordKey };
               queueMicrotask(() => req.onsuccess && req.onsuccess());
               return req;
             },
@@ -879,5 +912,212 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
         delete (globalThis as any).indexedDB;
       }
     }
+  });
+
+  it('migrates legacy localStorage fallback records (isoswe_gate_offline_queue_fallback_v1) to AES-GCM encrypted storage and removes plaintext fallback key', async () => {
+    seedLegacyLocalStorageFallbackForTesting([
+      {
+        client_event_id: 'ls-legacy-01',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T10:00:00.000Z',
+        visitor_name: 'Aakash Sharma',
+        phone_number: '9823012345',
+        vehicle_number: 'MH-12-AB-1234',
+        purpose: 'GUEST',
+        destination_flat_id: 'flat-101',
+        sync_status: 'QUEUED',
+      },
+      {
+        client_event_id: 'ls-legacy-02',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T10:05:00.000Z',
+        visitor_name: 'Deepak Verma',
+        phone_number: '9823054321',
+        vehicle_number: null,
+        purpose: 'DELIVERY',
+        destination_flat_id: 'flat-202',
+        sync_status: 'QUEUED',
+      },
+    ]);
+
+    expect(getLegacyLocalStorageFallbackCount()).toBe(2);
+    expect(await countLegacyPlaintextRecords()).toBe(2);
+
+    const result = await migrateLegacyPlaintextRecords();
+    expect(result.migratedCount).toBe(2);
+    expect(result.verifiedCount).toBe(2);
+
+    // Plaintext localStorage fallback MUST be removed
+    expect(mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY)).toBeNull();
+    expect(getLegacyLocalStorageFallbackCount()).toBe(0);
+
+    // Status updated to COMPLETED
+    const status = getGateMigrationStatus();
+    expect(status.status).toBe('COMPLETED');
+    expect(status.unmigratedCount).toBe(0);
+
+    // Both records can be decrypted accurately
+    const list = await listOfflineQueue('gate-1');
+    expect(list).toHaveLength(2);
+    const aakash = list.find((x) => x.client_event_id === 'ls-legacy-01');
+    expect(aakash).toBeDefined();
+    expect(aakash?.visitor_name).toBe('Aakash Sharma');
+    expect(aakash?.phone_number).toBe('+919823012345');
+    expect(aakash?.vehicle_number).toBe('MH-12-AB-1234');
+
+    const deepak = list.find((x) => x.client_event_id === 'ls-legacy-02');
+    expect(deepak).toBeDefined();
+    expect(deepak?.visitor_name).toBe('Deepak Verma');
+
+    // Storage contains only ciphertext and IV
+    const rawList = await getRawEncryptedRecords();
+    for (const raw of rawList) {
+      expect(raw.ciphertext).toBeDefined();
+      expect(raw.iv).toBeDefined();
+      expect(raw.visitor_name).toBeUndefined();
+      expect(raw.phone_number).toBeUndefined();
+    }
+  });
+
+  it('preserves legacy localStorage fallback records if encryption or key storage fails during migration', async () => {
+    const originalIndexedDB = (globalThis as any).indexedDB;
+
+    seedLegacyLocalStorageFallbackForTesting([
+      {
+        client_event_id: 'ls-fail-preserve-01',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T11:00:00.000Z',
+        visitor_name: 'Important Unsynced Registration',
+        phone_number: '9823099999',
+        purpose: 'GUEST',
+        destination_flat_id: 'flat-303',
+        sync_status: 'QUEUED',
+      },
+    ]);
+
+    expect(await countLegacyPlaintextRecords()).toBe(1);
+
+    // Force key DB failure
+    (globalThis as any).indexedDB = {
+      open: (_name: string) => {
+        const req: any = { error: new DOMException('Storage quota reached', 'QuotaExceededError') };
+        queueMicrotask(() => req.onerror && req.onerror());
+        return req;
+      },
+    };
+
+    // Migration must reject
+    await expect(migrateLegacyPlaintextRecords()).rejects.toThrow(
+      /Failed to persist or retrieve gate encryption key/
+    );
+
+    // CRITICAL: Unsynced record MUST be preserved in localStorage fallback! Never delete on failure!
+    const fallbackRaw = mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY);
+    expect(fallbackRaw).not.toBeNull();
+    const parsed = JSON.parse(fallbackRaw!);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].client_event_id).toBe('ls-fail-preserve-01');
+
+    // Migration status is FAILED with 1 unmigrated record
+    const status = getGateMigrationStatus();
+    expect(status.status).toBe('FAILED');
+    expect(status.unmigratedCount).toBe(1);
+
+    // Restore functioning IndexedDB and retry migration safely
+    if (originalIndexedDB) {
+      (globalThis as any).indexedDB = originalIndexedDB;
+    } else {
+      delete (globalThis as any).indexedDB;
+    }
+
+    const retryResult = await retryGateMigration();
+    expect(retryResult.migratedCount).toBe(1);
+
+    // After successful retry, fallback is removed and data is safe
+    expect(mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY)).toBeNull();
+    const finalStatus = getGateMigrationStatus();
+    expect(finalStatus.status).toBe('COMPLETED');
+    expect(finalStatus.unmigratedCount).toBe(0);
+
+    const decrypted = await listOfflineQueue('gate-1');
+    expect(decrypted[0].visitor_name).toBe('Important Unsynced Registration');
+  });
+
+  it('safely handles deduplication when the same client_event_id is in both localStorage fallback and IndexedDB', async () => {
+    seedLegacyLocalStorageFallbackForTesting([
+      {
+        client_event_id: 'shared-id-01',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T12:00:00.000Z',
+        visitor_name: 'Shared Visitor',
+        phone_number: '9823077777',
+        purpose: 'GUEST',
+        destination_flat_id: 'flat-101',
+      },
+      {
+        client_event_id: 'ls-unique-02',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T12:05:00.000Z',
+        visitor_name: 'Unique LocalStorage Visitor',
+        phone_number: '9823088888',
+        purpose: 'DELIVERY',
+        destination_flat_id: 'flat-102',
+      },
+    ]);
+
+    await seedLegacyOfflineRecordForTesting({
+      client_event_id: 'shared-id-01',
+      gate_id: 'gate-1',
+      timestamp: '2026-11-06T12:00:00.000Z',
+      visitor_name: 'Shared Visitor',
+      phone_number: '9823077777',
+      purpose: 'GUEST',
+      destination_flat_id: 'flat-101',
+    });
+
+    // Deduplicated count across stores
+    expect(await countLegacyPlaintextRecords()).toBe(2);
+
+    const result = await migrateLegacyPlaintextRecords();
+    expect(result.migratedCount).toBe(2);
+
+    expect(mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY)).toBeNull();
+    const list = await listOfflineQueue('gate-1');
+    expect(list).toHaveLength(2);
+  });
+
+  it('safely cleans up empty or malformed legacy localStorage fallback key without throwing', async () => {
+    mockStorage.setItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY, '[]');
+    expect(await countLegacyPlaintextRecords()).toBe(0);
+
+    await migrateLegacyPlaintextRecords();
+    expect(mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY)).toBeNull();
+
+    mockStorage.setItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY, '{"corrupted": true');
+    expect(readLegacyLocalStorageFallback()).toEqual([]);
+    expect(await countLegacyPlaintextRecords()).toBe(0);
+
+    await migrateLegacyPlaintextRecords();
+    expect(mockStorage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY)).toBeNull();
+  });
+
+  it('listOfflineQueue includes unsynced legacy localStorage fallback records if migration is pending', async () => {
+    seedLegacyLocalStorageFallbackForTesting([
+      {
+        client_event_id: 'ls-pending-vis-01',
+        gate_id: 'gate-1',
+        timestamp: '2026-11-06T13:00:00.000Z',
+        visitor_name: 'Pending Sync Visitor',
+        phone_number: '9823066666',
+        purpose: 'SERVICE',
+        destination_flat_id: 'flat-505',
+        sync_status: 'QUEUED',
+      },
+    ]);
+
+    const queue = await listOfflineQueue('gate-1');
+    expect(queue.some((i) => i.client_event_id === 'ls-pending-vis-01')).toBe(true);
+    const item = queue.find((i) => i.client_event_id === 'ls-pending-vis-01');
+    expect(item?.visitor_name).toBe('Pending Sync Visitor');
   });
 });

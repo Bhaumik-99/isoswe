@@ -15,6 +15,73 @@ export const GATE_KEY_DB_VERSION = 1;
 export const KEY_STORE_NAME = 'crypto_keys';
 export const MASTER_KEY_ID = 'gate_aes_gcm_master_key';
 
+/**
+ * Legacy localStorage fallback key from older installations prior to Web Crypto AES-GCM encryption.
+ * Must be safely migrated to encrypted IndexedDB and removed to prevent plaintext PII lingering on device storage.
+ */
+export const LEGACY_LOCALSTORAGE_FALLBACK_KEY = 'isoswe_gate_offline_queue_fallback_v1';
+
+let mockLocalStorageForTesting: Storage | null = null;
+
+export function setLocalStorageMockForTesting(mock: Storage | null): void {
+  mockLocalStorageForTesting = mock;
+}
+
+export function getSafeLocalStorage(): Storage | null {
+  if (mockLocalStorageForTesting) {
+    return mockLocalStorageForTesting;
+  }
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+    if (typeof localStorage !== 'undefined' && localStorage) {
+      return localStorage;
+    }
+    if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
+      return (globalThis as any).localStorage;
+    }
+  } catch {
+    // Storage access blocked or restricted
+  }
+  return null;
+}
+
+/**
+ * Safely reads raw items from the legacy localStorage fallback key if present.
+ * Returns empty array if localStorage is unavailable, empty, or unparseable.
+ */
+export function readLegacyLocalStorageFallback(): any[] {
+  const storage = getSafeLocalStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Returns count of legacy unmigrated plaintext records in the localStorage fallback store.
+ */
+export function getLegacyLocalStorageFallbackCount(): number {
+  const items = readLegacyLocalStorageFallback();
+  return items.filter(isLegacyPlaintextRecord).length;
+}
+
+/**
+ * Seeds raw legacy records directly into localStorage fallback (for migration & cleanup testing).
+ */
+export function seedLegacyLocalStorageFallbackForTesting(items: any[]): void {
+  const storage = getSafeLocalStorage();
+  if (storage) {
+    storage.setItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY, JSON.stringify(items));
+  }
+}
+
 export interface SensitiveVisitorData {
   visitor_name: string;
   phone_number: string;
@@ -583,13 +650,22 @@ export async function migrateSingleRecord(
 }
 
 /**
- * Returns the count of legacy plaintext records across in-memory and native IndexedDB stores.
+ * Returns the count of unique legacy plaintext records across in-memory, localStorage fallback, and native IndexedDB stores.
  */
 export async function countLegacyPlaintextRecords(dbInstance?: IDBDatabase): Promise<number> {
-  let count = 0;
-  for (const record of memoryStore.values()) {
+  const unmigratedIds = new Set<string>();
+
+  for (const [id, record] of memoryStore.entries()) {
     if (isLegacyPlaintextRecord(record)) {
-      count++;
+      unmigratedIds.add(id || record.client_event_id);
+    }
+  }
+
+  const fallbackItems = readLegacyLocalStorageFallback();
+  for (let i = 0; i < fallbackItems.length; i++) {
+    const item = fallbackItems[i];
+    if (isLegacyPlaintextRecord(item)) {
+      unmigratedIds.add(item.client_event_id || `ls-${i}`);
     }
   }
 
@@ -605,9 +681,14 @@ export async function countLegacyPlaintextRecords(dbInstance?: IDBDatabase): Pro
         req.onsuccess = () => resolve((req.result || []) as any[]);
         req.onerror = () => reject(req.error);
       });
-      count += allRecords.filter(isLegacyPlaintextRecord).length;
+      for (let i = 0; i < allRecords.length; i++) {
+        const rec = allRecords[i];
+        if (isLegacyPlaintextRecord(rec)) {
+          unmigratedIds.add(rec.client_event_id || `idb-${i}`);
+        }
+      }
     } catch {
-      // If store cannot be opened, count remains what was found in memory
+      // If store cannot be opened, count remains what was found so far
     } finally {
       if (shouldClose && db) {
         db.close();
@@ -615,17 +696,19 @@ export async function countLegacyPlaintextRecords(dbInstance?: IDBDatabase): Pro
     }
   }
 
-  return count;
+  return unmigratedIds.size;
 }
 
 /**
- * Scans offline queue for any legacy plaintext records, encrypts them,
- * verifies successful encryption, and updates storage without dropping or clearing the queue.
+ * Scans offline queue for any legacy plaintext records across localStorage, memory, and IndexedDB,
+ * encrypts them using AES-GCM, verifies successful encryption, stores them,
+ * and safely removes the legacy localStorage key only after verified persistence without dropping registrations.
  *
  * Invariants:
  * 1. Surfaces migration state explicitly via getGateMigrationStatus() and subscribeGateMigrationStatus().
  * 2. If migration fails (e.g. key store failure, storage error), records failure status with details and rethrows.
- * 3. Never writes unencrypted plaintext records.
+ * 3. Never deletes legacy fallback storage before verified encrypted persistence.
+ * 4. Never writes unencrypted plaintext records.
  */
 export async function migrateLegacyPlaintextRecords(
   dbInstance?: IDBDatabase
@@ -638,6 +721,16 @@ export async function migrateLegacyPlaintextRecords(
   }
 
   if (initialUnmigrated === 0) {
+    const storage = getSafeLocalStorage();
+    if (storage) {
+      try {
+        if (storage.getItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY) !== null) {
+          storage.removeItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY);
+        }
+      } catch {
+        // Ignore access restrictions
+      }
+    }
     updateMigrationStatus({
       status: 'COMPLETED',
       unmigratedCount: 0,
@@ -655,21 +748,47 @@ export async function migrateLegacyPlaintextRecords(
 
   let migratedCount = 0;
   let verifiedCount = 0;
+  const migratedIds = new Set<string>();
 
   try {
     const key = await getOrCreateGateEncryptionKey();
+    const migratedItemsToPersist: EncryptedOfflineVisitorQueueItem[] = [];
 
-    // 1. Migrate in-memory records (for tests and memory fallback)
-    for (const [id, record] of Array.from(memoryStore.entries())) {
-      if (isLegacyPlaintextRecord(record)) {
-        const migrated = await migrateSingleRecord(record, key);
-        memoryStore.set(id, migrated);
-        migratedCount++;
-        verifiedCount++;
+    // 1. Migrate records from legacy localStorage fallback store
+    const fallbackItems = readLegacyLocalStorageFallback();
+    const hasFallbackItems = fallbackItems.length > 0;
+    if (hasFallbackItems) {
+      for (const item of fallbackItems) {
+        if (isLegacyPlaintextRecord(item)) {
+          const migrated = await migrateSingleRecord(item, key);
+          validateEncryptedRecordInvariant(migrated);
+          migratedItemsToPersist.push(migrated);
+          memoryStore.set(migrated.client_event_id, migrated);
+          if (!migratedIds.has(migrated.client_event_id)) {
+            migratedIds.add(migrated.client_event_id);
+            migratedCount++;
+            verifiedCount++;
+          }
+        }
       }
     }
 
-    // 2. Migrate native IndexedDB records if present
+    // 2. Migrate in-memory records (for tests and memory fallback)
+    for (const [id, record] of Array.from(memoryStore.entries())) {
+      if (isLegacyPlaintextRecord(record)) {
+        const migrated = await migrateSingleRecord(record, key);
+        validateEncryptedRecordInvariant(migrated);
+        memoryStore.set(id, migrated);
+        migratedItemsToPersist.push(migrated);
+        if (!migratedIds.has(migrated.client_event_id)) {
+          migratedIds.add(migrated.client_event_id);
+          migratedCount++;
+          verifiedCount++;
+        }
+      }
+    }
+
+    // 3. Migrate native IndexedDB records if present
     if (hasNativeIndexedDB()) {
       const shouldClose = !dbInstance;
       let db: IDBDatabase | null = null;
@@ -684,19 +803,28 @@ export async function migrateLegacyPlaintextRecords(
         });
 
         const legacyRecords = allRecords.filter(isLegacyPlaintextRecord);
-        if (legacyRecords.length > 0) {
-          const migratedList: EncryptedOfflineVisitorQueueItem[] = [];
-          for (const legacy of legacyRecords) {
-            const migrated = await migrateSingleRecord(legacy, key);
-            migratedList.push(migrated);
+        for (const legacy of legacyRecords) {
+          const migrated = await migrateSingleRecord(legacy, key);
+          validateEncryptedRecordInvariant(migrated);
+          migratedItemsToPersist.push(migrated);
+          if (!migratedIds.has(migrated.client_event_id)) {
+            migratedIds.add(migrated.client_event_id);
             migratedCount++;
             verifiedCount++;
           }
+        }
 
+        // Deduplicate records to write to IndexedDB
+        const uniqueToWrite = new Map<string, EncryptedOfflineVisitorQueueItem>();
+        for (const item of migratedItemsToPersist) {
+          uniqueToWrite.set(item.client_event_id, item);
+        }
+
+        if (uniqueToWrite.size > 0) {
           await new Promise<void>((resolve, reject) => {
             const tx = db!.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
             const store = tx.objectStore(OFFLINE_QUEUE_STORE);
-            for (const item of migratedList) {
+            for (const item of uniqueToWrite.values()) {
               store.put(item);
             }
             tx.oncomplete = () => resolve();
@@ -706,6 +834,18 @@ export async function migrateLegacyPlaintextRecords(
       } finally {
         if (shouldClose && db) {
           db.close();
+        }
+      }
+    }
+
+    // 4. Safely clean up legacy localStorage fallback key ONLY AFTER successful persistence
+    if (hasFallbackItems) {
+      const storage = getSafeLocalStorage();
+      if (storage) {
+        try {
+          storage.removeItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY);
+        } catch {
+          // Ignore
         }
       }
     }
@@ -1034,7 +1174,41 @@ export async function listOfflineQueue(gateId?: string): Promise<OfflineVisitorQ
     }
   }
 
-  // Trigger background migration so disk storage is encrypted
+  // If legacy localStorage fallback has items, preserve availability by including any records not yet present
+  const fallbackItems = readLegacyLocalStorageFallback();
+  if (fallbackItems.length > 0) {
+    const existingIds = new Set(decryptedItems.map((i) => i.client_event_id));
+    for (const item of fallbackItems) {
+      if (item && item.client_event_id && !existingIds.has(item.client_event_id)) {
+        if (gateId && item.gate_id !== gateId) continue;
+        foundLegacyRecord = true;
+        decryptedItems.push({
+          client_event_id: item.client_event_id,
+          gate_id: item.gate_id,
+          timestamp: item.timestamp || new Date().toISOString(),
+          visitor_name: item.visitor_name || '',
+          phone_number: item.phone_number ? formatPhoneToE164(item.phone_number) : '',
+          vehicle_number: item.vehicle_number || null,
+          purpose: item.purpose || 'GUEST',
+          destination_flat_id: item.destination_flat_id || '',
+          flat_label: item.flat_label,
+          photo_base64: item.photo_base64 || null,
+          photo_sha256: item.photo_sha256 || null,
+          photo_captured_at: item.photo_captured_at || null,
+          privacy_notice_version: item.privacy_notice_version || 'v1.0-2026-pune',
+          payload_hash: item.payload_hash || '',
+          sync_status: item.sync_status || 'QUEUED',
+          approval_status: item.approval_status || 'PENDING',
+          entry_status: item.entry_status || 'EXPECTED',
+          error_message: item.error_message || null,
+          retry_count: typeof item.retry_count === 'number' ? item.retry_count : 0,
+          server_visitor_id: item.server_visitor_id || null,
+        });
+      }
+    }
+  }
+
+  // Trigger background migration so disk storage is encrypted and localStorage fallback is cleaned
   if (foundLegacyRecord) {
     migrateLegacyPlaintextRecords().catch((err) => {
       console.warn('Background migration of legacy records failed:', err);
@@ -1144,6 +1318,14 @@ export async function removeSyncedOfflineItems(gateId?: string): Promise<number>
 
 export async function clearAllOfflineQueue(): Promise<void> {
   memoryStore.clear();
+  const storage = getSafeLocalStorage();
+  if (storage) {
+    try {
+      storage.removeItem(LEGACY_LOCALSTORAGE_FALLBACK_KEY);
+    } catch {
+      // Ignore cleanup error
+    }
+  }
   if (hasNativeIndexedDB()) {
     try {
       const db = await openGateDB();
