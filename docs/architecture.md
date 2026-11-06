@@ -221,5 +221,36 @@ Every dispatch attempt across In-App, Email, and SMS is modeled with strict stat
 4. **Internal Helpdesk Isolation**: Private internal helpdesk notes are strictly excluded from resident notification bodies.
 5. **Least-Privilege IAM**: SES and SNS publishing permissions (`ses:SendEmail`, `ses:SendRawEmail`, `sns:Publish`) are granted exclusively to the background worker Lambda execution role. API, Outbox, and Retention Lambda roles have zero notification provider access.
 
+---
+
+## 8. Phase 8 — Amenity & Clubhouse Booking Management System
+
+### 8.1 Domain Entities & Multi-Tenant Separation
+- **Amenities (`amenities`)**: Configurable township facilities (badminton courts, tennis courts, clubhouse lounge, community halls, swimming pool, gym). Tracks capacity, slot duration, operating hours, booking fees in integer paise, advance booking limits, cancellation deadlines, and permitted membership types (`OWNER`, `TENANT`, `FAMILY_MEMBER`).
+- **Amenity Bookings (`amenity_bookings`)**: Discrete reservations linked to authenticated residents, flats, and time slots. Lifecycle managed through strict state machine (`PENDING_PAYMENT`, `CONFIRMED`, `CANCELLED`, `COMPLETED`, `PAYMENT_FAILED`).
+- **Amenity Maintenance Blocks (`amenity_blocks`)**: Temporal staff-created blocks for routine maintenance, private repairs, or society functions that mask capacity and reject booking attempts (`409 SLOT_BLOCKED`).
+- **Tenant Isolation**: Every query and database transaction strictly scopes records by `society_id`. Residents cannot view or reserve amenities outside their registered society.
+
+### 8.2 Concurrency Safety & Overbooking Prevention
+- **Row-Level Transaction Locking**: During booking creation, the amenity row is locked using PostgreSQL `SELECT ... FOR UPDATE` (or SQLite serialized lock). Active confirmed and unexpired pending reservations are tallied against total capacity before admitting a new booking.
+- **Race Condition Immunity**: Parallel concurrent attempts on final capacity serialize cleanly; one succeeds (`201 Created` / `CONFIRMED`) and competing attempts receive `409 Conflict` with `CAPACITY_EXCEEDED`.
+- **Daily Quota Enforcement**: `max_slots_per_day_per_resident` prevents slot hoarding, ensuring fair township access across all 2,400 apartments.
+
+### 8.3 Payment Integration & Fee Immutability
+- **Integer Paise Arithmetic**: All booking fees, payments, and refunds are calculated and stored strictly in 64-bit integer paise (e.g. ₹150.00 = 15000 paise).
+- **Payment Lifecycle & Idempotency**:
+  - Unpaid bookings enter `PENDING_PAYMENT` with a 15-minute lock (`payment_expires_at`).
+  - Payments are processed through the existing `PaymentProvider` abstraction (`SimulatedPaymentProvider` in test/staging).
+  - Every payment submission accepts a client-provided `Idempotency-Key` preventing double charges or duplicate allocations on retries or delayed callbacks.
+  - Expired or failed payments transition bookings to `PAYMENT_FAILED` and release capacity.
+- **Historical Fee Immutability**: Staff fee adjustments (e.g., updating court fee from ₹150 to ₹250) only affect future reservations. Existing bookings retain their historical `booking_fee_paise` and payment records.
+
+### 8.4 Cancellation Policies & Refund Rules
+- **Resident Self-Service Cancellation**: Permitted only prior to `cancellation_deadline_hours` (e.g., 2 hours before slot start). Applies configured `refund_percentage` (e.g., 80% refund). Expired deadlines fail with `409 CANCELLATION_DEADLINE_EXPIRED`.
+- **Staff Operational Override**: Facility staff can cancel bookings at any time with an explicit operational reason (e.g., emergency plumbing, power outage). Staff cancellations automatically issue a 100% full refund and record an audit trail.
+
+### 8.5 Transactional Outbox & Audit Logging
+All booking creations, confirmations, cancellations, and payment failures emit transactional outbox events (`amenity.booking_created`, `amenity.booking_confirmed`, `amenity.booking_cancelled`, `amenity.booking_payment_failed`) and audit log records (`AMENITY_BOOKING_CREATED`, `AMENITY_BOOKING_CONFIRMED`, `AMENITY_BOOKING_CANCELLED`, `AMENITY_BLOCK_CREATED`, `AMENITY_BLOCK_DELETED`) within the same atomic transaction as the state change.
+
 
 

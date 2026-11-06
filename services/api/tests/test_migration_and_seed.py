@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
+from app.domains.amenities.models import Amenity
 from app.domains.billing.models import (
     FinancialLedgerEntry,
     Invoice,
@@ -68,6 +69,9 @@ def test_database_migration_works_from_empty_database() -> None:
             "payment_allocations",
             "financial_ledger_entries",
             "billing_runs",
+            "amenities",
+            "amenity_bookings",
+            "amenity_blocks",
         ]
         for tbl in required_tables:
             assert tbl in table_names, f"Table '{tbl}' must be created by Alembic upgrade head"
@@ -112,6 +116,7 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         invoice_count_1 = session.scalar(select(func.count(Invoice.id)))
         payment_count_1 = session.scalar(select(func.count(Payment.id)))
         ledger_count_1 = session.scalar(select(func.count(FinancialLedgerEntry.id)))
+        amenity_count_1 = session.scalar(select(func.count(Amenity.id)))
 
         assert society_count_1 == 1
         assert tower_count_1 == 3
@@ -121,6 +126,7 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert invoice_count_1 == 3
         assert payment_count_1 == 1
         assert ledger_count_1 == 5
+        assert amenity_count_1 == 4
 
         # Verify the 3 required sample flats exist with correct details
         f1 = session.get(Flat, FLAT_1203_ID)
@@ -175,6 +181,7 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         invoice_count_2 = session.scalar(select(func.count(Invoice.id)))
         payment_count_2 = session.scalar(select(func.count(Payment.id)))
         ledger_count_2 = session.scalar(select(func.count(FinancialLedgerEntry.id)))
+        amenity_count_2 = session.scalar(select(func.count(Amenity.id)))
 
         # Counts must remain strictly identical
         assert society_count_2 == society_count_1
@@ -186,5 +193,6 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert invoice_count_2 == invoice_count_1
         assert payment_count_2 == payment_count_1
         assert ledger_count_2 == ledger_count_1
+        assert amenity_count_2 == amenity_count_1
 
     Base.metadata.drop_all(bind=engine)

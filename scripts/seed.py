@@ -20,6 +20,7 @@ sys.path.insert(0, ".")
 
 from app.core.database import SessionLocal
 from app.core.logging import logger
+from app.domains.amenities.models import Amenity, AmenityType
 from app.domains.billing.models import (
     BillingConfiguration,
     FinancialLedgerEntry,
@@ -85,6 +86,12 @@ GATE_2_ID = uuid.UUID("aaaaaaaa-2222-0000-0000-000000000002")
 GATE_3_ID = uuid.UUID("aaaaaaaa-3333-0000-0000-000000000003")
 GATE_4_ID = uuid.UUID("aaaaaaaa-4444-0000-0000-000000000004")
 GATE_ASSIGNMENT_1_ID = uuid.UUID("77777777-1111-0000-0000-000000000001")
+
+# 4 Core Amenities for Marvel Greenfield Residences (Phase 8)
+AMENITY_CLUBHOUSE_ID = uuid.UUID("bbbbbbbb-1111-0000-0000-000000000001")
+AMENITY_BADMINTON_ID = uuid.UUID("bbbbbbbb-2222-0000-0000-000000000002")
+AMENITY_TENNIS_ID = uuid.UUID("bbbbbbbb-3333-0000-0000-000000000003")
+AMENITY_COMMUNITY_HALL_ID = uuid.UUID("bbbbbbbb-4444-0000-0000-000000000004")
 
 
 def seed_database() -> None:
@@ -544,6 +551,135 @@ def seed_database() -> None:
             )
             db.flush()
             logger.info("Created Seed Payment & Allocation: ₹5,000 for Aamir Shaikh")
+
+        # 9. Amenities & Clubhouse Facilities (Phase 8)
+        amenities_data = [
+            (
+                AMENITY_CLUBHOUSE_ID,
+                "Central Clubhouse Lounge & Activity Center",
+                "Two-storey recreational clubhouse with indoor games, library, and residents lounge.",
+                AmenityType.CLUBHOUSE,
+                "Clubhouse Central Wing",
+                20,
+                60,
+                "07:00",
+                "22:00",
+                0,  # Free
+                7,
+                1,
+                2,
+                2,
+                100,
+                ["OWNER", "TENANT", "FAMILY_MEMBER"],
+                "Please maintain decorum. Outside food is not permitted in the lounge area.",
+            ),
+            (
+                AMENITY_BADMINTON_ID,
+                "Badminton Court 1 (Indoor Wooden)",
+                "BWF-standard teakwood floor indoor badminton court with LED tournament lighting.",
+                AmenityType.BADMINTON_COURT,
+                "Sports Complex 1st Floor",
+                1,
+                60,
+                "06:00",
+                "22:00",
+                15000,  # ₹150.00
+                7,
+                1,
+                2,
+                3,
+                80,
+                ["OWNER", "TENANT", "FAMILY_MEMBER"],
+                "Non-marking indoor badminton shoes are strictly mandatory. Maximum 4 players per court.",
+            ),
+            (
+                AMENITY_TENNIS_ID,
+                "Floodlit Tennis Court",
+                "All-weather synthetic hard court with night floodlights and umpire stand.",
+                AmenityType.TENNIS_COURT,
+                "Outdoor Sports Wing",
+                1,
+                60,
+                "06:00",
+                "21:00",
+                25000,  # ₹250.00
+                7,
+                2,
+                2,
+                4,
+                80,
+                ["OWNER", "TENANT", "FAMILY_MEMBER"],
+                "Tennis footwear required. Floodlights turn off promptly at 21:00.",
+            ),
+            (
+                AMENITY_COMMUNITY_HALL_ID,
+                "Grand Community Hall",
+                "Spacious air-conditioned banquet hall with dining area, stage, and audio-visual setup.",
+                AmenityType.COMMUNITY_HALL,
+                "Tower 7 Ground Floor",
+                1,
+                180,  # 3 hour slots
+                "09:00",
+                "21:00",
+                500000,  # ₹5,000.00
+                30,
+                24,
+                1,
+                48,
+                75,
+                ["OWNER", "TENANT"],
+                "Loud music restricted after 22:00 in accordance with township bylaws. Security deposit settled separately.",
+            ),
+        ]
+
+        for (
+            amn_id,
+            name,
+            desc,
+            a_type,
+            loc,
+            cap,
+            dur,
+            opn,
+            cls,
+            fee,
+            adv_days,
+            min_adv,
+            max_day,
+            c_dead,
+            ref_pct,
+            allowed,
+            rules,
+        ) in amenities_data:
+            existing_amenity = db.get(Amenity, amn_id)
+            if not existing_amenity:
+                db.add(
+                    Amenity(
+                        id=amn_id,
+                        society_id=SOCIETY_PUNE_ID,
+                        name=name,
+                        description=desc,
+                        amenity_type=a_type,
+                        location=loc,
+                        capacity=cap,
+                        slot_duration_minutes=dur,
+                        opening_time=opn,
+                        closing_time=cls,
+                        booking_fee_paise=fee,
+                        advance_booking_days=adv_days,
+                        min_advance_hours=min_adv,
+                        max_slots_per_day_per_resident=max_day,
+                        cancellation_deadline_hours=c_dead,
+                        refund_percentage=ref_pct,
+                        allowed_membership_types=allowed,
+                        is_active=True,
+                        rules_and_guidelines=rules,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                db.flush()
+                logger.info(f"Created Seed Amenity: {name} ({a_type.value})")
 
         db.commit()
         logger.info("Seed data successfully committed without errors.")
