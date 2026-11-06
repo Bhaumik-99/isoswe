@@ -13,6 +13,8 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.domains.complaints.storage import S3StorageProvider
 from app.domains.visitors.models import (
     ApprovalStatus,
     EntryStatus,
@@ -204,3 +206,116 @@ def test_lambda_retention_handler_execution(
     assert result["statusCode"] == 200
     assert "purgedCount" in result
     assert isinstance(result["purgedCount"], int)
+
+
+def test_missing_s3_client_fails_closed_in_production(
+    db_session: Session,
+    gate_environment: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves that a missing S3 client in production raises RuntimeError and never results in a successful purge."""
+    now = datetime.now(UTC)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "S3_ATTACHMENTS_BUCKET_NAME", "test-production-bucket")
+
+    provider = S3StorageProvider(bucket_name="test-production-bucket")
+    provider.s3_client = None
+
+    # Direct call to delete_object must raise RuntimeError (fail-closed)
+    with pytest.raises(RuntimeError) as exc_info:
+        provider.delete_object("visitor-photos/test/photo.jpg")
+    assert "CRITICAL: S3 client is uninitialized in production/staging environment" in str(
+        exc_info.value
+    )
+
+    # Now verify inside PhotoRetentionService:
+    # Expired photo record (>90 days old)
+    vid = uuid.uuid4()
+    storage_key = f"visitor-photos/{gate_environment['society_id']}/test/{vid}.jpg"
+    record = VisitorRecord(
+        id=vid,
+        society_id=gate_environment["society_id"],
+        gate_id=gate_environment["gate_1_id"],
+        visitor_name="Unpurged Prod Visitor",
+        phone_number="+919876543299",
+        purpose=VisitorPurpose.GUEST,
+        destination_tower_id=gate_environment["tower_t07_id"],
+        destination_flat_id=gate_environment["flat_1203_id"],
+        created_by_user_id=gate_environment["user_neeraj_id"],
+        photo_storage_key=storage_key,
+        photo_s3_key=storage_key,
+        approval_status=ApprovalStatus.APPROVED,
+        entry_status=EntryStatus.CHECKED_IN,
+        created_at=now - timedelta(days=95),
+        updated_at=now - timedelta(days=95),
+    )
+    db_session.add(record)
+    db_session.commit()
+
+    service = PhotoRetentionService(db_session)
+    service.storage_provider = provider
+
+    # Purge must fail closed: 0 purged, DB keys preserved
+    purged = service.purge_expired_photos(batch_size=10)
+    assert purged == 0
+
+    db_session.expire_all()
+    reloaded = db_session.get(VisitorRecord, vid)
+    assert reloaded is not None
+    assert reloaded.photo_storage_key == storage_key
+    assert reloaded.photo_s3_key == storage_key
+    assert reloaded.photo_purged_at is None
+    assert reloaded.photo_deleted_at is None
+
+
+def test_missing_s3_client_returns_false_and_preserves_record_in_non_production(
+    db_session: Session,
+    gate_environment: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves that a missing S3 client in non-production returns False and never results in a successful purge."""
+    now = datetime.now(UTC)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development")
+
+    provider = S3StorageProvider(bucket_name="test-dev-bucket")
+    provider.s3_client = None
+
+    # Direct call to delete_object must return False (fail-closed, no deletion happened)
+    res = provider.delete_object("visitor-photos/test/photo.jpg")
+    assert res is False
+
+    vid = uuid.uuid4()
+    storage_key = f"visitor-photos/{gate_environment['society_id']}/test/{vid}.jpg"
+    record = VisitorRecord(
+        id=vid,
+        society_id=gate_environment["society_id"],
+        gate_id=gate_environment["gate_1_id"],
+        visitor_name="Unpurged Dev Visitor",
+        phone_number="+919876543298",
+        purpose=VisitorPurpose.GUEST,
+        destination_tower_id=gate_environment["tower_t07_id"],
+        destination_flat_id=gate_environment["flat_1203_id"],
+        created_by_user_id=gate_environment["user_neeraj_id"],
+        photo_storage_key=storage_key,
+        photo_s3_key=storage_key,
+        approval_status=ApprovalStatus.APPROVED,
+        entry_status=EntryStatus.CHECKED_IN,
+        created_at=now - timedelta(days=95),
+        updated_at=now - timedelta(days=95),
+    )
+    db_session.add(record)
+    db_session.commit()
+
+    service = PhotoRetentionService(db_session)
+    service.storage_provider = provider
+
+    purged = service.purge_expired_photos(batch_size=10)
+    assert purged == 0
+
+    db_session.expire_all()
+    reloaded = db_session.get(VisitorRecord, vid)
+    assert reloaded is not None
+    assert reloaded.photo_storage_key == storage_key
+    assert reloaded.photo_s3_key == storage_key
+    assert reloaded.photo_purged_at is None
+    assert reloaded.photo_deleted_at is None

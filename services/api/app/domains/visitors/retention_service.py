@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppException, AuthorizationError, ResourceNotFoundError
 from app.core.logging import logger
 from app.domains.complaints.storage import (
+    StorageProvider,
     get_storage_provider,
     validate_photo_bytes,
 )
@@ -51,9 +52,9 @@ class PhotoExpiredError(AppException):
 class PhotoRetentionService:
     """Service managing private S3 storage, presigned URLs, and 90-day retention policies."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, storage_provider: StorageProvider | None = None) -> None:
         self.db = db
-        self.storage_provider = get_storage_provider()
+        self.storage_provider = storage_provider or get_storage_provider()
 
     @staticmethod
     def generate_photo_storage_key(

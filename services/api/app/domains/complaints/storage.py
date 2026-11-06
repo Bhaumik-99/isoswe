@@ -22,6 +22,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.errors import ValidationError
+from app.core.logging import logger
 
 ALLOWED_MIME_TYPES = {
     "image/jpeg": ".jpg",
@@ -306,11 +307,19 @@ class S3StorageProvider(StorageProvider):
 
     def delete_object(self, storage_key: str) -> bool:
         if not self.s3_client:
-            return True
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError(
+                    "CRITICAL: S3 client is uninitialized in production/staging environment; cannot delete object."
+                )
+            logger.warning(
+                f"[S3StorageProvider] S3 client is uninitialized; cannot delete object {storage_key}."
+            )
+            return False
         try:
             self.s3_client.delete_object(Bucket=self.bucket_name, Key=storage_key)
             return True
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"[S3StorageProvider] Failed to delete S3 object {storage_key}: {exc}")
             return False
 
     def validate_image_bytes(self, storage_key: str, content_type: str) -> tuple[bool, str | None]:
