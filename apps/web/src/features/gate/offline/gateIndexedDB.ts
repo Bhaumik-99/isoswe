@@ -6,7 +6,7 @@ import {
 import { formatPhoneToE164 } from '../../../services/gateService';
 
 export const GATE_DB_NAME = 'TownshipGateDB';
-export const GATE_DB_VERSION = 1;
+export const GATE_DB_VERSION = 2; // Version 2: Encrypted offline queue migration
 export const OFFLINE_QUEUE_STORE = 'offline_visitor_queue';
 
 export const GATE_KEY_DB_NAME = 'TownshipGateKeyStore';
@@ -33,8 +33,8 @@ export interface EncryptedOfflineVisitorQueueItem {
   photo_sha256: string | null;
   photo_captured_at: string | null;
   sync_status: OfflineSyncStatus;
-  approval_status: 'PENDING';
-  entry_status: 'EXPECTED';
+  approval_status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'AUTO_APPROVED' | string;
+  entry_status: 'EXPECTED' | 'CHECKED_IN' | 'CHECKED_OUT' | string;
   error_message: string | null;
   retry_count: number;
   server_visitor_id: string | null;
@@ -45,9 +45,9 @@ export interface EncryptedOfflineVisitorQueueItem {
 // Module-level in-memory cache for the non-extractable key
 let memoryCryptoKey: CryptoKey | null = null;
 
-// In-memory encrypted store for environments without IndexedDB (e.g. Node unit tests)
-// Notice: records stored here are strictly EncryptedOfflineVisitorQueueItem with zero plaintext PII
-const memoryEncryptedStore = new Map<string, EncryptedOfflineVisitorQueueItem>();
+// In-memory store for environments without IndexedDB (e.g. Node unit tests) or hybrid storage
+const memoryStore = new Map<string, any>();
+export const memoryEncryptedStore = memoryStore;
 
 export function hasNativeIndexedDB(): boolean {
   return typeof indexedDB !== 'undefined' && indexedDB !== null;
@@ -114,10 +114,12 @@ function openKeyDB(): Promise<IDBDatabase> {
   });
 }
 
-function openGateDB(): Promise<IDBDatabase> {
+let migrationLock: Promise<{ migratedCount: number; verifiedCount: number }> | null = null;
+
+export function openRawGateDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(GATE_DB_NAME, GATE_DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (_event: IDBVersionChangeEvent) => {
       const db = request.result;
       if (!db.objectStoreNames.contains(OFFLINE_QUEUE_STORE)) {
         const store = db.createObjectStore(OFFLINE_QUEUE_STORE, {
@@ -127,10 +129,27 @@ function openGateDB(): Promise<IDBDatabase> {
         store.createIndex('by_status', 'sync_status', { unique: false });
         store.createIndex('by_timestamp', 'timestamp', { unique: false });
       }
+      // If upgrading from v1 or earlier, stores exist and will be migrated post-open.
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+export async function openGateDB(): Promise<IDBDatabase> {
+  const db = await openRawGateDB();
+  if (!migrationLock) {
+    migrationLock = migrateLegacyPlaintextRecords(db)
+      .catch((err) => {
+        console.error('Migration failed during openGateDB:', err);
+        return { migratedCount: 0, verifiedCount: 0 };
+      })
+      .finally(() => {
+        migrationLock = null;
+      });
+  }
+  await migrationLock;
+  return db;
 }
 
 /**
@@ -341,8 +360,205 @@ export function evaluateOfflineGuestPassPolicy(isOnline: boolean): {
   };
 }
 
+/**
+ * Detects whether a queue item is unencrypted or contains legacy plaintext fields.
+ */
+export function isLegacyPlaintextRecord(item: any): boolean {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+  const lacksEncryption =
+    typeof item.ciphertext !== 'string' ||
+    item.ciphertext.trim() === '' ||
+    typeof item.iv !== 'string' ||
+    item.iv.trim() === '';
+
+  const hasPlaintextPII =
+    (typeof item.visitor_name === 'string' &&
+      item.visitor_name.trim().length > 0 &&
+      !item.visitor_name.startsWith('[ENCRYPTED_')) ||
+    (typeof item.phone_number === 'string' &&
+      item.phone_number.trim().length > 0 &&
+      !item.phone_number.startsWith('[ENCRYPTED_')) ||
+    (typeof item.photo_base64 === 'string' && item.photo_base64.trim().length > 0) ||
+    (typeof item.vehicle_number === 'string' && item.vehicle_number.trim().length > 0) ||
+    typeof item.flat_label === 'string';
+
+  return lacksEncryption || hasPlaintextPII;
+}
+
+/**
+ * Migrates a single legacy record:
+ * 1. Encrypts sensitive fields with AES-GCM master key.
+ * 2. Verifies round-trip decryption matches original plaintext.
+ * 3. Strips all plaintext sensitive fields so raw storage contains zero PII.
+ */
+export async function migrateSingleRecord(
+  raw: any,
+  key: CryptoKey
+): Promise<EncryptedOfflineVisitorQueueItem> {
+  const sensitive: SensitiveVisitorData = {
+    visitor_name: (raw.visitor_name || '').trim(),
+    phone_number: raw.phone_number ? formatPhoneToE164(raw.phone_number) : '',
+    vehicle_number: raw.vehicle_number ? raw.vehicle_number.trim() : null,
+    photo_base64: raw.photo_base64 || null,
+    flat_label: raw.flat_label,
+  };
+
+  let photoSha256: string | null = raw.photo_sha256 || null;
+  let photoCapturedAt: string | null = raw.photo_captured_at || null;
+
+  if (sensitive.photo_base64 && !photoSha256) {
+    photoSha256 = await computePhotoSha256(sensitive.photo_base64);
+  }
+  if (sensitive.photo_base64 && !photoCapturedAt) {
+    photoCapturedAt = raw.photo_captured_at || raw.timestamp || new Date().toISOString();
+  }
+
+  let payloadHash: string = raw.payload_hash || '';
+  if (!payloadHash) {
+    payloadHash = await computePayloadHash({
+      visitor_name: sensitive.visitor_name,
+      phone_number: sensitive.phone_number,
+      vehicle_number: sensitive.vehicle_number,
+      purpose: raw.purpose || 'GUEST',
+      destination_flat_id: raw.destination_flat_id || '',
+      privacy_notice_version: raw.privacy_notice_version || 'v1.0-2026-pune',
+      photo_sha256: photoSha256,
+      photo_captured_at: photoCapturedAt,
+    });
+  }
+
+  // Encrypt sensitive PII
+  const { iv, ciphertext } = await encryptSensitivePayload(sensitive, key);
+
+  // Verification step: assert decryption round-trip
+  const verification = await decryptSensitivePayload(iv, ciphertext, key);
+  if (
+    verification.visitor_name !== sensitive.visitor_name ||
+    verification.phone_number !== sensitive.phone_number ||
+    verification.vehicle_number !== sensitive.vehicle_number ||
+    verification.photo_base64 !== sensitive.photo_base64 ||
+    verification.flat_label !== sensitive.flat_label
+  ) {
+    throw new Error(
+      `Migration round-trip verification failed for client_event_id: ${raw.client_event_id}`
+    );
+  }
+
+  const migrated: EncryptedOfflineVisitorQueueItem = {
+    client_event_id: raw.client_event_id,
+    gate_id: raw.gate_id,
+    timestamp: raw.timestamp || new Date().toISOString(),
+    purpose: raw.purpose || 'GUEST',
+    destination_flat_id: raw.destination_flat_id || '',
+    privacy_notice_version: raw.privacy_notice_version || 'v1.0-2026-pune',
+    payload_hash: payloadHash,
+    photo_sha256: photoSha256,
+    photo_captured_at: photoCapturedAt,
+    sync_status: raw.sync_status || 'QUEUED',
+    approval_status: raw.approval_status || 'PENDING',
+    entry_status: raw.entry_status || 'EXPECTED',
+    error_message: raw.error_message || null,
+    retry_count: typeof raw.retry_count === 'number' ? raw.retry_count : 0,
+    server_visitor_id: raw.server_visitor_id || null,
+    iv,
+    ciphertext,
+  };
+
+  return migrated;
+}
+
+/**
+ * Scans offline queue for any legacy plaintext records, encrypts them,
+ * verifies successful encryption, and updates storage without dropping or clearing the queue.
+ */
+export async function migrateLegacyPlaintextRecords(
+  dbInstance?: IDBDatabase
+): Promise<{ migratedCount: number; verifiedCount: number }> {
+  const key = await getOrCreateGateEncryptionKey();
+  let migratedCount = 0;
+  let verifiedCount = 0;
+
+  // 1. Migrate in-memory records (for tests and memory fallback)
+  for (const [id, record] of Array.from(memoryStore.entries())) {
+    if (isLegacyPlaintextRecord(record)) {
+      const migrated = await migrateSingleRecord(record, key);
+      memoryStore.set(id, migrated);
+      migratedCount++;
+      verifiedCount++;
+    }
+  }
+
+  // 2. Migrate native IndexedDB records if present
+  if (hasNativeIndexedDB()) {
+    const shouldClose = !dbInstance;
+    const db = dbInstance || (await openRawGateDB());
+    try {
+      const allRecords = await new Promise<any[]>((resolve, reject) => {
+        const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readonly');
+        const store = tx.objectStore(OFFLINE_QUEUE_STORE);
+        const req = store.getAll();
+        req.onsuccess = () => resolve((req.result || []) as any[]);
+        req.onerror = () => reject(req.error);
+      });
+
+      const legacyRecords = allRecords.filter(isLegacyPlaintextRecord);
+      if (legacyRecords.length > 0) {
+        const migratedList: EncryptedOfflineVisitorQueueItem[] = [];
+        for (const legacy of legacyRecords) {
+          const migrated = await migrateSingleRecord(legacy, key);
+          migratedList.push(migrated);
+          migratedCount++;
+          verifiedCount++;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+          const store = tx.objectStore(OFFLINE_QUEUE_STORE);
+          for (const item of migratedList) {
+            store.put(item);
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+    } finally {
+      if (shouldClose) {
+        db.close();
+      }
+    }
+  }
+
+  return { migratedCount, verifiedCount };
+}
+
+/**
+ * Seeds a raw record directly into storage (for migration testing).
+ */
+export async function seedLegacyOfflineRecordForTesting(record: any): Promise<void> {
+  memoryStore.set(record.client_event_id, record);
+
+  if (hasNativeIndexedDB()) {
+    const db = await openRawGateDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readwrite');
+      const store = tx.objectStore(OFFLINE_QUEUE_STORE);
+      store.put(record);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  }
+}
+
 async function putEncryptedItem(item: EncryptedOfflineVisitorQueueItem): Promise<void> {
-  memoryEncryptedStore.set(item.client_event_id, item);
+  memoryStore.set(item.client_event_id, item);
 
   if (!hasNativeIndexedDB()) {
     return;
@@ -367,17 +583,17 @@ async function putEncryptedItem(item: EncryptedOfflineVisitorQueueItem): Promise
 /**
  * Returns raw encrypted records directly from storage to verify no plaintext PII survives.
  */
-export async function getRawEncryptedRecords(): Promise<EncryptedOfflineVisitorQueueItem[]> {
+export async function getRawEncryptedRecords(): Promise<any[]> {
   if (hasNativeIndexedDB()) {
     try {
       const db = await openGateDB();
-      return await new Promise<EncryptedOfflineVisitorQueueItem[]>((resolve, reject) => {
+      return await new Promise<any[]>((resolve, reject) => {
         const tx = db.transaction(OFFLINE_QUEUE_STORE, 'readonly');
         const store = tx.objectStore(OFFLINE_QUEUE_STORE);
         const req = store.getAll();
         req.onsuccess = () => {
           db.close();
-          resolve((req.result || []) as EncryptedOfflineVisitorQueueItem[]);
+          resolve((req.result || []) as any[]);
         };
         req.onerror = () => {
           db.close();
@@ -388,7 +604,7 @@ export async function getRawEncryptedRecords(): Promise<EncryptedOfflineVisitorQ
       // Fall through to memory store
     }
   }
-  return Array.from(memoryEncryptedStore.values());
+  return Array.from(memoryStore.values());
 }
 
 export async function enqueueOfflineVisitor(params: {
@@ -493,11 +709,42 @@ export async function listOfflineQueue(gateId?: string): Promise<OfflineVisitorQ
   const key = await getOrCreateGateEncryptionKey();
 
   const decryptedItems: OfflineVisitorQueueItem[] = [];
+  let foundLegacyRecord = false;
 
   for (const raw of rawEncryptedList) {
     if (gateId && raw.gate_id !== gateId) {
       continue;
     }
+
+    // Defensive check: if unencrypted legacy record is encountered, read it directly
+    // so it is NEVER stranded or presented as [ENCRYPTED_VISITOR]
+    if (isLegacyPlaintextRecord(raw)) {
+      foundLegacyRecord = true;
+      decryptedItems.push({
+        client_event_id: raw.client_event_id,
+        gate_id: raw.gate_id,
+        timestamp: raw.timestamp,
+        visitor_name: raw.visitor_name || '',
+        phone_number: raw.phone_number ? formatPhoneToE164(raw.phone_number) : '',
+        vehicle_number: raw.vehicle_number || null,
+        purpose: raw.purpose,
+        destination_flat_id: raw.destination_flat_id,
+        flat_label: raw.flat_label,
+        photo_base64: raw.photo_base64 || null,
+        photo_sha256: raw.photo_sha256 || null,
+        photo_captured_at: raw.photo_captured_at || null,
+        privacy_notice_version: raw.privacy_notice_version || 'v1.0-2026-pune',
+        payload_hash: raw.payload_hash,
+        sync_status: raw.sync_status || 'QUEUED',
+        approval_status: raw.approval_status || 'PENDING',
+        entry_status: raw.entry_status || 'EXPECTED',
+        error_message: raw.error_message || null,
+        retry_count: typeof raw.retry_count === 'number' ? raw.retry_count : 0,
+        server_visitor_id: raw.server_visitor_id || null,
+      });
+      continue;
+    }
+
     try {
       const sensitive = await decryptSensitivePayload(raw.iv, raw.ciphertext, key);
       decryptedItems.push({
@@ -548,6 +795,13 @@ export async function listOfflineQueue(gateId?: string): Promise<OfflineVisitorQ
     }
   }
 
+  // Trigger background migration so disk storage is encrypted
+  if (foundLegacyRecord) {
+    migrateLegacyPlaintextRecords().catch((err) => {
+      console.warn('Background migration of legacy records failed:', err);
+    });
+  }
+
   return decryptedItems.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 }
 
@@ -561,8 +815,14 @@ export async function updateOfflineQueueStatus(
   }
 ): Promise<OfflineVisitorQueueItem | null> {
   const rawList = await getRawEncryptedRecords();
-  const target = rawList.find((x) => x.client_event_id === clientEventId);
+  let target = rawList.find((x) => x.client_event_id === clientEventId);
   if (!target) return null;
+
+  const key = await getOrCreateGateEncryptionKey();
+
+  if (isLegacyPlaintextRecord(target)) {
+    target = await migrateSingleRecord(target, key);
+  }
 
   const updatedRaw: EncryptedOfflineVisitorQueueItem = {
     ...target,
@@ -578,7 +838,6 @@ export async function updateOfflineQueueStatus(
 
   await putEncryptedItem(updatedRaw);
 
-  const key = await getOrCreateGateEncryptionKey();
   const sensitive = await decryptSensitivePayload(updatedRaw.iv, updatedRaw.ciphertext, key);
 
   return {
@@ -597,8 +856,8 @@ export async function updateOfflineQueueStatus(
     privacy_notice_version: updatedRaw.privacy_notice_version,
     payload_hash: updatedRaw.payload_hash,
     sync_status: updatedRaw.sync_status,
-    approval_status: updatedRaw.approval_status,
-    entry_status: updatedRaw.entry_status,
+    approval_status: updatedRaw.approval_status as any,
+    entry_status: updatedRaw.entry_status as any,
     error_message: updatedRaw.error_message,
     retry_count: updatedRaw.retry_count,
     server_visitor_id: updatedRaw.server_visitor_id,
@@ -611,7 +870,7 @@ export async function removeSyncedOfflineItems(gateId?: string): Promise<number>
 
   for (const item of rawList) {
     if (item.sync_status === 'SYNCED' && (!gateId || item.gate_id === gateId)) {
-      memoryEncryptedStore.delete(item.client_event_id);
+      memoryStore.delete(item.client_event_id);
       removedCount += 1;
     }
   }
@@ -645,7 +904,7 @@ export async function removeSyncedOfflineItems(gateId?: string): Promise<number>
 }
 
 export async function clearAllOfflineQueue(): Promise<void> {
-  memoryEncryptedStore.clear();
+  memoryStore.clear();
   if (hasNativeIndexedDB()) {
     try {
       const db = await openGateDB();

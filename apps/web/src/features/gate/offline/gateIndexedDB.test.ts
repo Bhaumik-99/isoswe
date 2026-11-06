@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  GATE_DB_VERSION,
   buildCanonicalPayloadString,
   clearAllOfflineQueue,
   computePayloadHash,
@@ -8,8 +9,13 @@ import {
   evaluateOfflineGuestPassPolicy,
   generateClientEventId,
   getRawEncryptedRecords,
+  isLegacyPlaintextRecord,
   listOfflineQueue,
+  migrateLegacyPlaintextRecords,
+  openGateDB,
   removeSyncedOfflineItems,
+  seedLegacyOfflineRecordForTesting,
+  updateOfflineQueueStatus,
 } from './gateIndexedDB';
 import { gateSyncManager } from './syncManager';
 import { gateService } from '../../../services/gateService';
@@ -196,5 +202,317 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0].client_event_id).toBe(ev2.client_event_id);
     expect(remaining[0].sync_status).toBe('CONFLICT');
+  });
+
+  it('declares GATE_DB_VERSION = 2 for encryption migration', () => {
+    expect(GATE_DB_VERSION).toBe(2);
+  });
+
+  it('correctly detects legacy plaintext records vs encrypted records with isLegacyPlaintextRecord', async () => {
+    const legacyItem = {
+      client_event_id: 'ev-legacy-1',
+      visitor_name: 'Old Plaintext Visitor',
+      phone_number: '9823011223',
+    };
+    expect(isLegacyPlaintextRecord(legacyItem)).toBe(true);
+
+    const encryptedItem = await enqueueOfflineVisitor({
+      gate_id: 'gate-1',
+      visitor_name: 'Encrypted Visitor',
+      phone_number: '9823011223',
+      purpose: 'DELIVERY',
+      destination_flat_id: 'flat-1',
+      privacy_notice_version: 'v1.0-2026-pune',
+    });
+    const rawList = await getRawEncryptedRecords();
+    const raw = rawList.find((x) => x.client_event_id === encryptedItem.client_event_id);
+    expect(isLegacyPlaintextRecord(raw)).toBe(false);
+  });
+
+  it('migrates legacy v1 plaintext records to encrypted storage, preserves IDs and sync states, and verifies round-trip', async () => {
+    const legacy1 = {
+      client_event_id: 'legacy-event-001',
+      gate_id: '60000000-0000-4000-a000-000000000001',
+      timestamp: '2026-11-06T09:30:00.000Z',
+      visitor_name: 'Suresh Patil',
+      phone_number: '9823055555',
+      vehicle_number: 'MH-12-QQ-4321',
+      purpose: 'GUEST',
+      destination_flat_id: '70000000-0000-4000-a000-000000000701',
+      flat_label: 'Tower 7 Flat 701',
+      photo_base64: 'data:image/jpeg;base64,dGVzdF9qcGVnX2J5dGVzXzEyMzQ1',
+      privacy_notice_version: 'v1.0-2026-pune',
+      payload_hash: '',
+      sync_status: 'QUEUED',
+      approval_status: 'PENDING',
+      entry_status: 'EXPECTED',
+      error_message: null,
+      retry_count: 2,
+      server_visitor_id: null,
+    };
+
+    const legacy2 = {
+      client_event_id: 'legacy-event-002',
+      gate_id: '60000000-0000-4000-a000-000000000001',
+      timestamp: '2026-11-06T09:45:00.000Z',
+      visitor_name: 'Kavita Deshmukh',
+      phone_number: '+919823066666',
+      vehicle_number: null,
+      purpose: 'DELIVERY',
+      destination_flat_id: '70000000-0000-4000-a000-000000000702',
+      flat_label: 'Tower 7 Flat 702',
+      photo_base64: null,
+      privacy_notice_version: 'v1.0-2026-pune',
+      payload_hash: '',
+      sync_status: 'FAILED',
+      approval_status: 'PENDING',
+      entry_status: 'EXPECTED',
+      error_message: 'Gateway timed out',
+      retry_count: 3,
+      server_visitor_id: null,
+    };
+
+    await seedLegacyOfflineRecordForTesting(legacy1);
+    await seedLegacyOfflineRecordForTesting(legacy2);
+
+    // Verify storage currently holds legacy records with plaintext
+    const initialRaw = await getRawEncryptedRecords();
+    expect(initialRaw).toHaveLength(2);
+    expect(isLegacyPlaintextRecord(initialRaw[0])).toBe(true);
+
+    // Execute migration
+    const migrationResult = await migrateLegacyPlaintextRecords();
+    expect(migrationResult.migratedCount).toBe(2);
+    expect(migrationResult.verifiedCount).toBe(2);
+
+    // Verify raw storage now contains ONLY ciphertext + IV, with zero plaintext PII
+    const rawAfter = await getRawEncryptedRecords();
+    expect(rawAfter).toHaveLength(2);
+
+    for (const raw of rawAfter) {
+      expect(raw.ciphertext).toBeTruthy();
+      expect(raw.iv).toBeTruthy();
+      expect(raw).not.toHaveProperty('visitor_name');
+      expect(raw).not.toHaveProperty('phone_number');
+      expect(raw).not.toHaveProperty('vehicle_number');
+      expect(raw).not.toHaveProperty('photo_base64');
+      expect(raw).not.toHaveProperty('flat_label');
+
+      const serialized = JSON.stringify(raw);
+      expect(serialized).not.toContain('Suresh');
+      expect(serialized).not.toContain('Patil');
+      expect(serialized).not.toContain('Kavita');
+      expect(serialized).not.toContain('Deshmukh');
+      expect(serialized).not.toContain('9823055555');
+      expect(serialized).not.toContain('9823066666');
+      expect(serialized).not.toContain('MH-12-QQ-4321');
+      expect(serialized).not.toContain('dGVzdF9qcGVnX2J5dGVzXzEyMzQ1');
+    }
+
+    // Verify listOfflineQueue decodes all fields accurately with preserved IDs and sync states
+    const decoded = await listOfflineQueue();
+    expect(decoded).toHaveLength(2);
+
+    const item1 = decoded.find((x) => x.client_event_id === 'legacy-event-001');
+    expect(item1).toBeDefined();
+    expect(item1?.visitor_name).toBe('Suresh Patil');
+    expect(item1?.phone_number).toBe('+919823055555');
+    expect(item1?.vehicle_number).toBe('MH-12-QQ-4321');
+    expect(item1?.flat_label).toBe('Tower 7 Flat 701');
+    expect(item1?.sync_status).toBe('QUEUED');
+    expect(item1?.retry_count).toBe(2);
+    expect(item1?.photo_sha256).toBe('ffc33203974fa792b54250be3c955f720d941dd940168bd6ed0e03ab645904d9');
+
+    const item2 = decoded.find((x) => x.client_event_id === 'legacy-event-002');
+    expect(item2).toBeDefined();
+    expect(item2?.visitor_name).toBe('Kavita Deshmukh');
+    expect(item2?.phone_number).toBe('+919823066666');
+    expect(item2?.vehicle_number).toBeNull();
+    expect(item2?.sync_status).toBe('FAILED');
+    expect(item2?.error_message).toBe('Gateway timed out');
+    expect(item2?.retry_count).toBe(3);
+  });
+
+  it('safely handles legacy records during listOfflineQueue without stranding or emitting redacted placeholders', async () => {
+    const legacy = {
+      client_event_id: 'legacy-unmigrated-003',
+      gate_id: 'gate-1',
+      timestamp: '2026-11-06T11:00:00.000Z',
+      visitor_name: 'Direct Reader Visitor',
+      phone_number: '9823077777',
+      vehicle_number: null,
+      purpose: 'CAB',
+      destination_flat_id: 'flat-703',
+      privacy_notice_version: 'v1.0-2026-pune',
+      payload_hash: 'legacy_hash_003',
+      sync_status: 'QUEUED',
+      approval_status: 'PENDING',
+      entry_status: 'EXPECTED',
+      error_message: null,
+      retry_count: 0,
+      server_visitor_id: null,
+    };
+
+    await seedLegacyOfflineRecordForTesting(legacy);
+
+    // Call listOfflineQueue directly without prior migration call
+    const list = await listOfflineQueue('gate-1');
+    expect(list).toHaveLength(1);
+    expect(list[0].visitor_name).toBe('Direct Reader Visitor');
+    expect(list[0].visitor_name).not.toBe('[ENCRYPTED_VISITOR]');
+    expect(list[0].phone_number).toBe('+919823077777');
+    expect(list[0].sync_status).toBe('QUEUED');
+
+    // Wait a brief microtask for background migration to finish
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Verify background migration encrypted the record
+    const raw = await getRawEncryptedRecords();
+    expect(raw[0].ciphertext).toBeTruthy();
+    expect(raw[0].visitor_name).toBeUndefined();
+  });
+
+  it('migrates legacy records on-the-fly during updateOfflineQueueStatus', async () => {
+    const legacy = {
+      client_event_id: 'legacy-update-004',
+      gate_id: 'gate-1',
+      timestamp: '2026-11-06T11:15:00.000Z',
+      visitor_name: 'Update Target Visitor',
+      phone_number: '9823088888',
+      vehicle_number: 'MH-14-ZZ-9999',
+      purpose: 'GUEST',
+      destination_flat_id: 'flat-704',
+      privacy_notice_version: 'v1.0-2026-pune',
+      payload_hash: 'legacy_hash_004',
+      sync_status: 'QUEUED',
+      approval_status: 'PENDING',
+      entry_status: 'EXPECTED',
+      error_message: null,
+      retry_count: 0,
+      server_visitor_id: null,
+    };
+
+    await seedLegacyOfflineRecordForTesting(legacy);
+
+    const updated = await updateOfflineQueueStatus('legacy-update-004', {
+      sync_status: 'SYNCED',
+      server_visitor_id: 'visitor-srv-004',
+      increment_retry: true,
+    });
+
+    expect(updated).not.toBeNull();
+    expect(updated?.visitor_name).toBe('Update Target Visitor');
+    expect(updated?.sync_status).toBe('SYNCED');
+    expect(updated?.server_visitor_id).toBe('visitor-srv-004');
+    expect(updated?.retry_count).toBe(1);
+
+    // Verify raw record is now encrypted
+    const raw = (await getRawEncryptedRecords()).find((x) => x.client_event_id === 'legacy-update-004');
+    expect(raw.ciphertext).toBeTruthy();
+    expect(raw.visitor_name).toBeUndefined();
+    expect(raw.sync_status).toBe('SYNCED');
+  });
+
+  it('simulates native IndexedDB v1-to-v2 upgrade: onupgradeneeded fired, legacy records encrypted and verified', async () => {
+    const v1Records = new Map<string, any>();
+    const legacyItem = {
+      client_event_id: 'legacy-idb-1111-2222',
+      gate_id: 'gate-idb-1',
+      timestamp: '2026-11-06T10:00:00Z',
+      visitor_name: 'IDB Legacy Visitor',
+      phone_number: '9876543210',
+      vehicle_number: 'MH12IDB999',
+      purpose: 'GUEST',
+      destination_flat_id: 'flat-idb-1',
+      flat_label: 'T10-101',
+      photo_base64: 'data:image/jpeg;base64,dGVzdF9qcGVnX2J5dGVzXzEyMzQ1',
+      privacy_notice_version: 'v1.0-2026-pune',
+      payload_hash: 'legacy_hash_idb',
+      sync_status: 'QUEUED',
+      approval_status: 'PENDING',
+      entry_status: 'EXPECTED',
+      error_message: null,
+      retry_count: 3,
+      server_visitor_id: null,
+    };
+    v1Records.set(legacyItem.client_event_id, { ...legacyItem });
+
+    let upgradeFiredWithOldVersion: number | null = null;
+    let currentDbVersion = 1;
+
+    const mockDb: any = {
+      version: 1,
+      objectStoreNames: {
+        contains: (name: string) => name === 'offline_visitor_queue',
+      },
+      createObjectStore: vi.fn(),
+      transaction: (_stores: any, _mode: string) => {
+        const tx: any = {
+          objectStore: (_name: string) => ({
+            getAll: () => {
+              const req: any = { result: Array.from(v1Records.values()) };
+              queueMicrotask(() => req.onsuccess && req.onsuccess());
+              return req;
+            },
+            put: (item: any) => {
+              v1Records.set(item.client_event_id, item);
+              const req: any = { result: item.client_event_id };
+              queueMicrotask(() => req.onsuccess && req.onsuccess());
+              return req;
+            },
+          }),
+          oncomplete: null,
+          onerror: null,
+        };
+        queueMicrotask(() => tx.oncomplete && tx.oncomplete());
+        return tx;
+      },
+      close: vi.fn(),
+    };
+
+    const originalIndexedDB = (globalThis as any).indexedDB;
+    (globalThis as any).indexedDB = {
+      open: (_name: string, version: number) => {
+        const req: any = { result: mockDb, error: null };
+        queueMicrotask(() => {
+          if (version > currentDbVersion) {
+            upgradeFiredWithOldVersion = currentDbVersion;
+            currentDbVersion = version;
+            mockDb.version = version;
+            if (req.onupgradeneeded) {
+              req.onupgradeneeded({ oldVersion: upgradeFiredWithOldVersion, newVersion: version });
+            }
+          }
+          if (req.onsuccess) req.onsuccess();
+        });
+        return req;
+      },
+    };
+
+    try {
+      const db = await openGateDB();
+      expect(upgradeFiredWithOldVersion).toBe(1);
+      expect(db.version).toBe(2);
+
+      // Verify records in v1Records map are now encrypted
+      const migratedRaw = v1Records.get(legacyItem.client_event_id);
+      expect(migratedRaw.ciphertext).toBeTruthy();
+      expect(migratedRaw.iv).toBeTruthy();
+      expect(migratedRaw.visitor_name).toBeUndefined();
+      expect(migratedRaw.phone_number).toBeUndefined();
+      expect(migratedRaw.photo_base64).toBeUndefined();
+      expect(migratedRaw.vehicle_number).toBeUndefined();
+
+      // Verify retry count, sync status, and client_event_id preserved
+      expect(migratedRaw.retry_count).toBe(3);
+      expect(migratedRaw.sync_status).toBe('QUEUED');
+      expect(migratedRaw.client_event_id).toBe(legacyItem.client_event_id);
+    } finally {
+      if (originalIndexedDB) {
+        (globalThis as any).indexedDB = originalIndexedDB;
+      } else {
+        delete (globalThis as any).indexedDB;
+      }
+    }
   });
 });
