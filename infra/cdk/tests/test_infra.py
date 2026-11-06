@@ -39,16 +39,27 @@ def test_sqs_queues_have_dedicated_dlqs_and_encryption(prod_template: Template) 
 
 
 def test_secrets_manager_supabase_credentials(prod_template: Template) -> None:
-    """Verifies AWS Secrets Manager secret is configured for Supabase credentials & Guest Pass HMAC with KMS encryption."""
+    """Verifies AWS Secrets Manager is configured for Supabase credentials & dedicated Guest Pass HMAC with KMS encryption."""
+    # 1. Supabase credentials secret preserves original static SecretString to prevent CloudFormation overwriting live DB credentials
     prod_template.has_resource_properties(
         "AWS::SecretsManager::Secret",
         {
             "Description": Match.string_like_regexp("Supabase"),
             "KmsKeyId": Match.any_value(),
+            "SecretString": Match.string_like_regexp("DATABASE_URL"),
+        },
+    )
+
+    # 2. Dedicated Guest Pass HMAC secret auto-generates 64-char key independently without touching DB credentials
+    prod_template.has_resource_properties(
+        "AWS::SecretsManager::Secret",
+        {
+            "Description": Match.string_like_regexp("Guest Pass"),
+            "KmsKeyId": Match.any_value(),
             "GenerateSecretString": {
-                "GenerateStringKey": "GUEST_PASS_HMAC_SECRET",
                 "PasswordLength": 64,
-                "SecretStringTemplate": Match.string_like_regexp("DATABASE_URL"),
+                "ExcludePunctuation": True,
+                "RequireEachIncludedType": True,
             },
         },
     )

@@ -59,6 +59,7 @@ class TownshipStack(Stack):
             config=config,
             kms_key=security.kms_key,
             db_secret=security.db_secret,
+            guest_pass_secret=security.guest_pass_secret,
             queues=messaging.queues,
             frontend_origins=frontend_origins,
             documents_bucket=storage.documents_bucket,
@@ -91,4 +92,10 @@ class TownshipStack(Stack):
             "SupabaseSecretArn",
             value=security.db_secret.secret_arn,
             description="AWS Secrets Manager Supabase Secret ARN",
+        )
+        CfnOutput(
+            self,
+            "GuestPassSecretArn",
+            value=security.guest_pass_secret.secret_arn,
+            description="AWS Secrets Manager Guest Pass HMAC Secret ARN",
         )

@@ -78,6 +78,43 @@ def test_secrets_manager_hydration_populates_guest_pass_hmac_secret(
     assert hydrated["SUPABASE_URL"] == secret_payload["SUPABASE_URL"]
 
 
+def test_secrets_manager_hydration_from_dedicated_guest_pass_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies that hydrate_aws_secrets extracts GUEST_PASS_HMAC_SECRET from dedicated GUEST_PASS_SECRET_NAME."""
+    test_secret = "dedicated-secret-token-" + ("y" * 41)
+    db_payload = {
+        "DATABASE_URL": "postgresql+psycopg://prod_db:5432/township",
+        "SUPABASE_URL": "https://xyzcompany.supabase.co",
+    }
+
+    mock_client = MagicMock()
+
+    def get_secret_side_effect(SecretId: str):
+        if SecretId == "township-guest-pass-hmac-prod":
+            return {"SecretString": test_secret}
+        if SecretId == "township-supabase-credentials-prod":
+            return {"SecretString": json.dumps(db_payload)}
+        return {"SecretString": ""}
+
+    mock_client.get_secret_value.side_effect = get_secret_side_effect
+
+    with patch("boto3.client", return_value=mock_client):
+        hydrated = Settings.hydrate_aws_secrets(
+            {
+                "ENVIRONMENT": "production",
+                "DATABASE_SECRET_NAME": "township-supabase-credentials-prod",
+                "GUEST_PASS_SECRET_NAME": "township-guest-pass-hmac-prod",
+                "AWS_REGION": "ap-south-1",
+            }
+        )
+
+    assert hydrated["GUEST_PASS_HMAC_SECRET"] == test_secret
+    assert len(hydrated["GUEST_PASS_HMAC_SECRET"]) == 64
+    assert hydrated["DATABASE_URL"] == db_payload["DATABASE_URL"]
+    assert hydrated["SUPABASE_URL"] == db_payload["SUPABASE_URL"]
+
+
 def test_guest_pass_hash_generation_with_provisioned_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

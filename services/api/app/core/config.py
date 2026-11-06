@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     AWS_ACCOUNT_ID: str = ""
     DATABASE_SECRET_NAME: str = ""
     DATABASE_SECRET_ARN: str = ""
+    GUEST_PASS_SECRET_NAME: str = ""
+    GUEST_PASS_SECRET_ARN: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -138,6 +140,41 @@ class Settings(BaseSettings):
                 if env in ("staging", "production"):
                     raise RuntimeError(
                         f"CRITICAL: Failed to retrieve required secret '{secret_id}' from AWS Secrets Manager in '{env}': {exc}"
+                    ) from exc
+
+        # Check for dedicated Guest Pass HMAC secret ID
+        guest_pass_secret_id = (
+            data.get("GUEST_PASS_SECRET_NAME")
+            or data.get("GUEST_PASS_SECRET_ARN")
+            or os.environ.get("GUEST_PASS_SECRET_NAME")
+            or os.environ.get("GUEST_PASS_SECRET_ARN")
+        )
+
+        if guest_pass_secret_id:
+            try:
+                import boto3
+
+                client = boto3.client("secretsmanager", region_name=region)
+                res = client.get_secret_value(SecretId=guest_pass_secret_id)
+                secret_str = res.get("SecretString")
+                if secret_str:
+                    try:
+                        secret_dict = json.loads(secret_str)
+                        if (
+                            isinstance(secret_dict, dict)
+                            and "GUEST_PASS_HMAC_SECRET" in secret_dict
+                        ):
+                            data["GUEST_PASS_HMAC_SECRET"] = secret_dict[
+                                "GUEST_PASS_HMAC_SECRET"
+                            ]
+                        elif isinstance(secret_dict, str):
+                            data["GUEST_PASS_HMAC_SECRET"] = secret_dict
+                    except json.JSONDecodeError:
+                        data["GUEST_PASS_HMAC_SECRET"] = secret_str.strip()
+            except Exception as exc:
+                if env in ("staging", "production") and not data.get("GUEST_PASS_HMAC_SECRET"):
+                    raise RuntimeError(
+                        f"CRITICAL: Failed to retrieve required guest pass secret '{guest_pass_secret_id}' from AWS Secrets Manager in '{env}': {exc}"
                     ) from exc
 
         # Derive JWKS URL and JWT Issuer if SUPABASE_URL is provided and they are empty
