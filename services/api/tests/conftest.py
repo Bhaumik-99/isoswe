@@ -36,11 +36,13 @@ from app.domains.identity.models import (
     FlatStatus,
     MembershipStatus,
     MembershipType,
+    Permission,
     RoleType,
     Society,
     SocietyStatus,
     Tower,
     User,
+    UserPermission,
     UserRole,
     UserStatus,
 )
@@ -176,9 +178,17 @@ def db_session() -> Generator[Session, None, None]:
             UserRole(user_id=user_swati.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_aamir.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.HELPDESK),
-            UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.COMMITTEE),
             UserRole(user_id=user_helpdesk_2.id, society_id=society_id, role=RoleType.HELPDESK),
         ]
+    )
+
+    # Explicit granular permissions: give committee reporting access to user_helpdesk
+    session.add(
+        UserPermission(
+            user_id=user_helpdesk.id,
+            society_id=society_id,
+            permission=Permission.COMMITTEE_REPORT_READ,
+        )
     )
 
     now = datetime.now(UTC)

@@ -97,12 +97,11 @@ class IdentityService:
         if not flat:
             raise ResourceNotFoundError(message=f"Flat {flat_id} not found", code="FLAT_NOT_FOUND")
 
-        # Society helpdesk and committee members can access flats within assigned society
+        # Society helpdesk can access flats within assigned society
         is_staff_or_admin = any(
             role
             in [
                 RoleType.HELPDESK,
-                RoleType.COMMITTEE,
             ]
             for role in claims.roles
         )
@@ -294,13 +293,37 @@ class IdentityService:
                 .filter(FlatMembership.flat_id == flat.id, FlatMembership.user_id == user.id)
                 .first()
             )
+            audit_action: str
+            audit_metadata: dict[str, Any]
             if existing:
+                prev_metadata = {
+                    "membership_type": existing.membership_type.value,
+                    "status": existing.status.value,
+                    "valid_from": existing.valid_from.isoformat() if existing.valid_from else None,
+                    "valid_until": (
+                        existing.valid_until.isoformat() if existing.valid_until else None
+                    ),
+                    "is_primary": existing.is_primary,
+                }
                 existing.membership_type = req.membership_type
                 existing.valid_from = v_from
                 existing.valid_until = v_until
                 existing.is_primary = req.is_primary
                 existing.status = MembershipStatus.APPROVED
                 m = existing
+                audit_action = "identity.membership.updated"
+                audit_metadata = {
+                    "flat_id": str(flat.id),
+                    "user_id": str(user.id),
+                    "previous": prev_metadata,
+                    "new": {
+                        "membership_type": m.membership_type.value,
+                        "status": m.status.value,
+                        "valid_from": m.valid_from.isoformat() if m.valid_from else None,
+                        "valid_until": m.valid_until.isoformat() if m.valid_until else None,
+                        "is_primary": m.is_primary,
+                    },
+                }
             else:
                 m = FlatMembership(
                     id=uuid.uuid4(),
@@ -314,6 +337,16 @@ class IdentityService:
                     status=MembershipStatus.APPROVED,
                 )
                 self.db.add(m)
+                audit_action = "identity.membership.created"
+                audit_metadata = {
+                    "flat_id": str(flat.id),
+                    "user_id": str(user.id),
+                    "membership_type": m.membership_type.value,
+                    "status": m.status.value,
+                    "valid_from": m.valid_from.isoformat() if m.valid_from else None,
+                    "valid_until": m.valid_until.isoformat() if m.valid_until else None,
+                    "is_primary": m.is_primary,
+                }
             self.db.flush()
 
             has_role = (
@@ -336,18 +369,13 @@ class IdentityService:
                 )
 
             self.record_audit(
-                action="identity.membership.created",
+                action=audit_action,
                 resource_type="flat_membership",
                 resource_id=str(m.id),
                 correlation_id=str(uuid.uuid4()),
                 actor_id=claims.user_id,
                 society_id=society_id,
-                metadata={
-                    "flat_id": str(flat.id),
-                    "user_id": str(user.id),
-                    "membership_type": m.membership_type.value,
-                    "status": m.status.value,
-                },
+                metadata=audit_metadata,
             )
             self.db.commit()
             self.db.refresh(m)

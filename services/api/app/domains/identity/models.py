@@ -66,7 +66,6 @@ class MembershipStatus(str, enum.Enum):
 class RoleType(str, enum.Enum):
     RESIDENT = "RESIDENT"
     HELPDESK = "HELPDESK"
-    COMMITTEE = "COMMITTEE"
 
 
 class Permission(str, enum.Enum):
@@ -102,6 +101,9 @@ class Society(Base):
         "Flat", back_populates="society", cascade="all, delete-orphan"
     )
     user_roles: Mapped[list["UserRole"]] = relationship("UserRole", back_populates="society")
+    user_permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission", back_populates="society"
+    )
 
 
 class Tower(Base):
@@ -193,6 +195,9 @@ class User(Base):
     roles: Mapped[list["UserRole"]] = relationship(
         "UserRole", back_populates="user", cascade="all, delete-orphan"
     )
+    permissions: Mapped[list["UserPermission"]] = relationship(
+        "UserPermission", back_populates="user", cascade="all, delete-orphan"
+    )
     memberships: Mapped[list["FlatMembership"]] = relationship(
         "FlatMembership", back_populates="user", cascade="all, delete-orphan"
     )
@@ -274,3 +279,33 @@ class UserRole(Base):
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="roles")
     society: Mapped["Society"] = relationship("Society", back_populates="user_roles")
+
+
+class UserPermission(Base):
+    __tablename__ = "user_permissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    permission: Mapped[Permission] = mapped_column(
+        SAEnum(Permission, native_enum=False), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "society_id", "permission", name="uq_user_society_permission"),
+        Index("ix_user_permissions_lookup", "user_id", "permission"),
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="permissions")
+    society: Mapped["Society"] = relationship("Society", back_populates="user_permissions")

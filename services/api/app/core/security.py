@@ -127,7 +127,7 @@ def get_current_user(
     roles: list[RoleType] = [r.role for r in user.roles]
     society_ids: list[UUID] = list({r.society_id for r in user.roles})
 
-    # Derive granular permissions based on validated role
+    # Derive granular permissions based on validated role and explicitly assigned permissions
     user_permissions: list[Permission] = []
     if RoleType.HELPDESK in roles:
         user_permissions.extend(
@@ -138,8 +138,11 @@ def get_current_user(
                 Permission.BILLING_MANAGE,
             ]
         )
-    if RoleType.COMMITTEE in roles:
-        user_permissions.append(Permission.COMMITTEE_REPORT_READ)
+
+    # Collect explicitly assigned permissions from database for this user in their societies
+    for perm_record in getattr(user, "permissions", []):
+        if perm_record.society_id in society_ids and perm_record.permission not in user_permissions:
+            user_permissions.append(perm_record.permission)
 
     # Collect active flat memberships taking tenant validity dates into account
     active_memberships = repo.get_active_memberships_for_user(user.id)
@@ -232,7 +235,7 @@ def require_flat_access(
         )
 
     # Staff roles: check society-level boundary
-    staff_roles = {RoleType.HELPDESK, RoleType.COMMITTEE}
+    staff_roles = {RoleType.HELPDESK}
     if any(r in staff_roles for r in claims.roles):
         if flat.society_id not in claims.society_ids:
             raise TenantIsolationError(

@@ -108,6 +108,39 @@ def test_membership_creation_with_lease_validity(client: TestClient, db_session:
     assert audit is not None
     assert audit.event_metadata["membership_type"] == "TENANT"
 
+    # 3. Update existing membership via registration endpoint -> distinct identity.membership.updated audit event
+    res_update = client.post(
+        "/api/v1/registry/memberships",
+        json={
+            "phone": tenant_phone,
+            "full_name": "Tenant Jane Updated",
+            "flat_id": str(flat.id),
+            "membership_type": "TENANT",
+            "valid_from": valid_from.isoformat(),
+            "valid_until": (valid_until + timedelta(days=180)).isoformat(),
+            "is_primary": True,
+        },
+        headers=AUTH_HELPDESK,
+    )
+    assert res_update.status_code == 201
+    updated = res_update.json()
+    assert updated["id"] == created["id"]
+    assert updated["is_primary"] is True
+
+    audit_update = (
+        db_session.query(AuditEvent)
+        .filter(
+            AuditEvent.action == "identity.membership.updated",
+            AuditEvent.resource_id == created["id"],
+        )
+        .first()
+    )
+    assert audit_update is not None
+    assert audit_update.event_metadata["previous"]["is_primary"] is False
+    assert audit_update.event_metadata["new"]["is_primary"] is True
+    assert "previous" in audit_update.event_metadata
+    assert "new" in audit_update.event_metadata
+
 
 def test_membership_lifecycle_state_transitions(client: TestClient, db_session: Session) -> None:
     """Staff can update membership status between APPROVED, REJECTED, and TERMINATED."""

@@ -5,20 +5,20 @@ Can populate up to 28 residential towers and 2,400 flats for Pune township scale
 """
 
 import sys
-import uuid
-from datetime import datetime, timezone
-from typing import Optional
 
 sys.path.insert(0, "services/api")
 
-from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.core.logging import logger
 from app.domains.identity.models import Flat, FlatStatus, Society, Tower
+from sqlalchemy import select
+
 from scripts.seed import SOCIETY_PUNE_ID
 
 
-def generate_extended_sample_data(num_towers: int = 5, flats_per_tower: int = 20) -> None:
+def generate_extended_sample_data(
+    num_towers: int = 5, flats_per_tower: int = 20
+) -> None:
     """Generates additional towers and flats for scaling tests."""
     with SessionLocal() as db:
         society = db.get(Society, SOCIETY_PUNE_ID)
@@ -29,7 +29,9 @@ def generate_extended_sample_data(num_towers: int = 5, flats_per_tower: int = 20
         for t_idx in range(1, num_towers + 1):
             t_num = f"T{t_idx:02d}"
             # Check existing
-            stmt = select(Tower).where(Tower.society_id == SOCIETY_PUNE_ID, Tower.tower_number == t_num)
+            stmt = select(Tower).where(
+                Tower.society_id == SOCIETY_PUNE_ID, Tower.tower_number == t_num
+            )
             tower = db.scalars(stmt).first()
             if not tower:
                 tower = Tower(
@@ -42,7 +44,9 @@ def generate_extended_sample_data(num_towers: int = 5, flats_per_tower: int = 20
 
             for f_idx in range(101, 101 + flats_per_tower):
                 f_num = f"{f_idx}"
-                f_stmt = select(Flat).where(Flat.tower_id == tower.id, Flat.flat_number == f_num)
+                f_stmt = select(Flat).where(
+                    Flat.tower_id == tower.id, Flat.flat_number == f_num
+                )
                 existing_flat = db.scalars(f_stmt).first()
                 if not existing_flat:
                     flat = Flat(
@@ -50,12 +54,16 @@ def generate_extended_sample_data(num_towers: int = 5, flats_per_tower: int = 20
                         tower_id=tower.id,
                         flat_number=f_num,
                         area_sqft=1100 + (f_idx % 4) * 150,
-                        status=FlatStatus.OCCUPIED if f_idx % 5 != 0 else FlatStatus.VACANT,
+                        status=FlatStatus.OCCUPIED
+                        if f_idx % 5 != 0
+                        else FlatStatus.VACANT,
                     )
                     db.add(flat)
 
         db.commit()
-        logger.info(f"Generated {num_towers} towers and {flats_per_tower} flats per tower.")
+        logger.info(
+            f"Generated {num_towers} towers and {flats_per_tower} flats per tower."
+        )
 
 
 if __name__ == "__main__":

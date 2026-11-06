@@ -54,6 +54,7 @@ class IdentityRepository:
             select(User)
             .options(
                 joinedload(User.roles).joinedload(UserRole.society),
+                joinedload(User.permissions),
                 joinedload(User.memberships).joinedload(FlatMembership.flat),
             )
             .where(User.supabase_uid == supabase_uid, User.status == UserStatus.ACTIVE)
@@ -85,6 +86,7 @@ class IdentityRepository:
             select(User)
             .options(
                 joinedload(User.roles).joinedload(UserRole.society),
+                joinedload(User.permissions),
                 joinedload(User.memberships).joinedload(FlatMembership.flat),
             )
             .where(User.phone.in_(list(candidates)), User.status == UserStatus.ACTIVE)

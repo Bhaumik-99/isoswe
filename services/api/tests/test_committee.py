@@ -12,8 +12,13 @@ Validates:
 
 from fastapi.testclient import TestClient
 
-AUTH_HELPDESK = {"X-Dev-User": "helpdesk"}  # Holds both HELPDESK and COMMITTEE roles
-AUTH_FRONTLINE_HELPDESK = {"X-Dev-User": "helpdesk-2"}  # Holds only HELPDESK role (no COMMITTEE)
+AUTH_HELPDESK = {"X-Dev-User": "helpdesk"}
+AUTH_HELPDESK = {
+    "X-Dev-User": "helpdesk"
+}  # Seeded staff account with HELPDESK role + COMMITTEE_REPORT_READ permission
+AUTH_FRONTLINE_HELPDESK = {
+    "X-Dev-User": "helpdesk-2"
+}  # Frontline staff holding only HELPDESK role (no COMMITTEE_REPORT_READ permission)
 AUTH_RESIDENT = {"X-Dev-User": "neeraj"}
 
 
@@ -23,10 +28,9 @@ def test_committee_overview_sql_aggregates(client: TestClient) -> None:
     res_forbidden = client.get("/api/v1/committee/overview", headers=AUTH_RESIDENT)
     assert res_forbidden.status_code == 403
 
+    # 2. Staff / Committee member fetches overview
     # 2. Frontline helpdesk without COMMITTEE role cannot view committee dashboard -> 403 Forbidden
-    res_frontline_forbidden = client.get(
-        "/api/v1/committee/overview", headers=AUTH_FRONTLINE_HELPDESK
-    )
+    res_frontline_forbidden = client.get("/api/v1/committee/overview", headers=AUTH_FRONTLINE_HELPDESK)
     assert res_frontline_forbidden.status_code == 403
 
     # 3. Staff / Committee member fetches overview
@@ -79,9 +83,7 @@ def test_committee_monthly_reports(client: TestClient) -> None:
     res_forbidden = client.get("/api/v1/committee/reports/monthly", headers=AUTH_RESIDENT)
     assert res_forbidden.status_code == 403
 
-    res_frontline_forbidden = client.get(
-        "/api/v1/committee/reports/monthly", headers=AUTH_FRONTLINE_HELPDESK
-    )
+    res_frontline_forbidden = client.get("/api/v1/committee/reports/monthly", headers=AUTH_FRONTLINE_HELPDESK)
     assert res_frontline_forbidden.status_code == 403
 
     res = client.get("/api/v1/committee/reports/monthly", headers=AUTH_HELPDESK)
@@ -103,9 +105,7 @@ def test_committee_report_csv_export(client: TestClient) -> None:
     res_forbidden = client.get("/api/v1/committee/reports/export", headers=AUTH_RESIDENT)
     assert res_forbidden.status_code == 403
 
-    res_frontline_forbidden = client.get(
-        "/api/v1/committee/reports/export", headers=AUTH_FRONTLINE_HELPDESK
-    )
+    res_frontline_forbidden = client.get("/api/v1/committee/reports/export", headers=AUTH_FRONTLINE_HELPDESK)
     assert res_frontline_forbidden.status_code == 403
 
     res = client.get("/api/v1/committee/reports/export", headers=AUTH_HELPDESK)

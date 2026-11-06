@@ -138,6 +138,11 @@ jobs:
           cd apps/web
           npm ci
 
+      - name: Run Frontend Tests (Vitest)
+        run: |
+          cd apps/web
+          npm test -- --run
+
       - name: TypeScript Type Checking & Production Build
         run: |
           cd apps/web

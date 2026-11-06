@@ -56,6 +56,7 @@ def test_database_migration_works_from_empty_database() -> None:
             "users",
             "flat_memberships",
             "user_roles",
+            "user_permissions",
             "audit_events",
             "outbox_events",
             "idempotency_keys",
@@ -115,8 +116,8 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         assert society_count_1 == 1
         assert tower_count_1 == 3
         assert flat_count_1 == 3
-        assert user_count_1 == 4
-        assert role_count_1 == 4
+        assert user_count_1 == 5
+        assert role_count_1 == 5
         assert invoice_count_1 == 3
         assert payment_count_1 == 1
         assert ledger_count_1 == 5

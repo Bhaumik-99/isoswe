@@ -7,7 +7,9 @@ Produces:
 """
 
 import os
+
 from PIL import Image, ImageDraw
+
 
 def create_township_icon(size: int, is_maskable: bool = False) -> Image.Image:
     # 4f46e5 is indigo-600 (Township brand primary)

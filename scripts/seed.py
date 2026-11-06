@@ -12,30 +12,14 @@ INVARIANT: Idempotent execution. Running multiple times produces no duplicates.
 
 import sys
 import uuid
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 # Ensure services/api is on sys.path
 sys.path.insert(0, "services/api")
 sys.path.insert(0, ".")
 
-from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.core.logging import logger
-from app.domains.identity.models import (
-    Flat,
-    FlatMembership,
-    FlatStatus,
-    MembershipStatus,
-    MembershipType,
-    RoleType,
-    Society,
-    SocietyStatus,
-    Tower,
-    User,
-    UserRole,
-    UserStatus,
-)
 from app.domains.billing.models import (
     BillingConfiguration,
     FinancialLedgerEntry,
@@ -47,6 +31,23 @@ from app.domains.billing.models import (
     PaymentAllocation,
     PaymentStatus,
 )
+from app.domains.identity.models import (
+    Flat,
+    FlatMembership,
+    FlatStatus,
+    MembershipStatus,
+    MembershipType,
+    Permission,
+    RoleType,
+    Society,
+    SocietyStatus,
+    Tower,
+    User,
+    UserPermission,
+    UserRole,
+    UserStatus,
+)
+from sqlalchemy import select
 
 # Fixed deterministic UUIDs for seed records so they are easily referenceable in tests
 SOCIETY_PUNE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -74,13 +75,14 @@ PAYMENT_AAMIR_ID = uuid.UUID("88888888-8888-8888-8888-888888880001")
 ALLOCATION_AAMIR_ID = uuid.UUID("99999999-9999-9999-9999-999999990001")
 
 
-
 def seed_database() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     one_year_later = now + timedelta(days=365)
 
     with SessionLocal() as db:
-        logger.info("Starting idempotent database seed for Marvel Greenfield Residences, Pune...")
+        logger.info(
+            "Starting idempotent database seed for Marvel Greenfield Residences, Pune..."
+        )
 
         # 1. Society
         society = db.get(Society, SOCIETY_PUNE_ID)
@@ -170,6 +172,14 @@ def seed_database() -> None:
                 "Rajesh Shinde",
                 RoleType.HELPDESK,
             ),
+            (
+                USER_COMMITTEE_ID,
+                uuid.UUID("00000000-0000-0000-0000-000000000006"),
+                "committee@example.com",
+                "+91-98000-00006",
+                "Aniket Patwardhan",
+                RoleType.HELPDESK,
+            ),
         ]
 
         for u_id, s_uid, email, phone, name, primary_role in users_data:
@@ -203,6 +213,28 @@ def seed_database() -> None:
                 db.add(new_role)
                 db.flush()
                 logger.info(f"Assigned role {primary_role.value} to {name}")
+
+        # 4b. Explicit Granular User Permissions
+        permissions_data = [
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
+            (USER_COMMITTEE_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
+        ]
+        for u_id, soc_id, perm in permissions_data:
+            perm_stmt = select(UserPermission).where(
+                UserPermission.user_id == u_id,
+                UserPermission.society_id == soc_id,
+                UserPermission.permission == perm,
+            )
+            existing_perm = db.scalars(perm_stmt).first()
+            if not existing_perm:
+                new_perm = UserPermission(
+                    user_id=u_id,
+                    society_id=soc_id,
+                    permission=perm,
+                )
+                db.add(new_perm)
+                db.flush()
+                logger.info(f"Assigned permission {perm.value} to user {u_id}")
 
         # 5. Flat Memberships
         memberships_data = [
@@ -251,7 +283,9 @@ def seed_database() -> None:
                 )
                 db.add(membership)
                 db.flush()
-                logger.info(f"Assigned {m_type.value} membership for user {u_id} to flat {f_id}")
+                logger.info(
+                    f"Assigned {m_type.value} membership for user {u_id} to flat {f_id}"
+                )
 
         # 6. Billing Configuration (Rate: ₹6.50/sq ft = 650 paise)
         b_config = db.get(BillingConfiguration, BILLING_CONFIG_PUNE_ID)
@@ -316,7 +350,18 @@ def seed_database() -> None:
             ),
         ]
 
-        for inv_id, f_id, period, inv_num, area, rate, total_paise, due_d, inv_status, resident_name in invoices_data:
+        for (
+            inv_id,
+            f_id,
+            period,
+            inv_num,
+            area,
+            rate,
+            total_paise,
+            due_d,
+            inv_status,
+            resident_name,
+        ) in invoices_data:
             inv = db.get(Invoice, inv_id)
             if not inv:
                 inv = Invoice(
@@ -359,7 +404,9 @@ def seed_database() -> None:
                 )
                 db.add(charge_entry)
                 db.flush()
-                logger.info(f"Created Invoice: {inv_num} for {resident_name} (₹{total_paise/100:,.2f})")
+                logger.info(
+                    f"Created Invoice: {inv_num} for {resident_name} (₹{total_paise / 100:,.2f})"
+                )
 
         # 8. Payments & Allocations (Aamir Shaikh: ₹5,000 paid against ₹10,660 invoice)
         payment_aamir = db.get(Payment, PAYMENT_AAMIR_ID)

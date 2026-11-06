@@ -26,6 +26,7 @@ export const ResidentsDirectory: React.FC = () => {
   // Search and Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [flatSearch, setFlatSearch] = useState<string>('');
+  const [selectedTower, setSelectedTower] = useState<string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedType, setSelectedType] = useState<string>('ALL');
 
@@ -58,11 +59,12 @@ export const ResidentsDirectory: React.FC = () => {
     isLoading,
     error,
   } = useQuery<ResidentDirectoryItem[]>({
-    queryKey: ['staff-residents', searchQuery, flatSearch, selectedStatus, selectedType],
+    queryKey: ['staff-residents', searchQuery, flatSearch, selectedTower, selectedStatus, selectedType],
     queryFn: () =>
       registryService.listResidents({
         query: searchQuery || undefined,
         flat_number: flatSearch || undefined,
+        tower_id: selectedTower !== 'ALL' ? selectedTower : undefined,
         status: selectedStatus,
         membership_type: selectedType,
       }),
@@ -186,7 +188,7 @@ export const ResidentsDirectory: React.FC = () => {
                 className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
             </div>
-            <div className="w-full md:w-44">
+            <div className="w-full md:w-36">
               <input
                 type="text"
                 value={flatSearch}
@@ -194,6 +196,18 @@ export const ResidentsDirectory: React.FC = () => {
                 placeholder="Flat No. (e.g. 1203)"
                 className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
+            </div>
+            <div className="w-full md:w-36">
+              <select
+                value={selectedTower}
+                onChange={(e) => setSelectedTower(e.target.value)}
+                className="w-full text-xs border border-slate-200 rounded-md px-3 py-2 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="ALL">All Towers</option>
+                <option value="22222222-2222-2222-2222-222222222207">Tower 7 (T07)</option>
+                <option value="22222222-2222-2222-2222-222222222212">Tower 12 (T12)</option>
+                <option value="22222222-2222-2222-2222-222222222221">Tower 21 (T21)</option>
+              </select>
             </div>
             <div className="flex items-center gap-2">
               <select
