@@ -167,7 +167,9 @@ def test_serverless_lambda_functions_configured(prod_template: Template) -> None
     )
 
 
-def test_s3_documents_bucket_versioning_and_lifecycle_retention(prod_template: Template) -> None:
+def test_s3_documents_bucket_versioning_and_lifecycle_retention(
+    prod_template: Template,
+) -> None:
     """Verifies private documents S3 bucket has versioning, KMS encryption, noncurrent version lifecycle expiration, and delete marker cleanup."""
     prod_template.has_resource_properties(
         "AWS::S3::Bucket",
@@ -246,7 +248,9 @@ def test_lambda_asset_packaging_and_bundler(tmp_path) -> None:
     # Verify core application components are bundled into output
     assert os.path.exists(os.path.join(out_dir, "app", "main.py"))
     assert os.path.exists(os.path.join(out_dir, "app", "handlers", "lambda_api.py"))
-    assert os.path.exists(os.path.join(out_dir, "app", "handlers", "lambda_retention.py"))
+    assert os.path.exists(
+        os.path.join(out_dir, "app", "handlers", "lambda_retention.py")
+    )
     assert os.path.exists(os.path.join(out_dir, "requirements.txt"))
     # Verify tests and local caches are cleanly excluded
     assert not os.path.exists(os.path.join(out_dir, "tests"))

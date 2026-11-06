@@ -164,9 +164,7 @@ class Settings(BaseSettings):
                             isinstance(secret_dict, dict)
                             and "GUEST_PASS_HMAC_SECRET" in secret_dict
                         ):
-                            data["GUEST_PASS_HMAC_SECRET"] = secret_dict[
-                                "GUEST_PASS_HMAC_SECRET"
-                            ]
+                            data["GUEST_PASS_HMAC_SECRET"] = secret_dict["GUEST_PASS_HMAC_SECRET"]
                         elif isinstance(secret_dict, str):
                             data["GUEST_PASS_HMAC_SECRET"] = secret_dict
                     except json.JSONDecodeError:

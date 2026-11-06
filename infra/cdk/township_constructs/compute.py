@@ -176,7 +176,9 @@ class ComputeConstruct(Construct):
 
         if documents_bucket:
             lambda_environment["DOCUMENTS_BUCKET_NAME"] = documents_bucket.bucket_name
-            lambda_environment["S3_ATTACHMENTS_BUCKET_NAME"] = documents_bucket.bucket_name
+            lambda_environment["S3_ATTACHMENTS_BUCKET_NAME"] = (
+                documents_bucket.bucket_name
+            )
 
         # Production Lambda asset with Amazon Linux Python 3.11 Docker bundling and local test fallback
         api_dir = os.path.abspath(

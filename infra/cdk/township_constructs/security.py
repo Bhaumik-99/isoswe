@@ -3,8 +3,6 @@
 Provides cryptographic foundation and audit trail across the stack.
 """
 
-import json
-
 from aws_cdk import (
     RemovalPolicy,
     SecretValue,

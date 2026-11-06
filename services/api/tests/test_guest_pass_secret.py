@@ -90,10 +90,11 @@ def test_secrets_manager_hydration_from_dedicated_guest_pass_secret(
 
     mock_client = MagicMock()
 
-    def get_secret_side_effect(SecretId: str):
-        if SecretId == "township-guest-pass-hmac-prod":
+    def get_secret_side_effect(*_args, **kwargs):
+        target = kwargs.get("SecretId", "")
+        if target == "township-guest-pass-hmac-prod":
             return {"SecretString": test_secret}
-        if SecretId == "township-supabase-credentials-prod":
+        if target == "township-supabase-credentials-prod":
             return {"SecretString": json.dumps(db_payload)}
         return {"SecretString": ""}
 
