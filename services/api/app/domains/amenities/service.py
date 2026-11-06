@@ -4,11 +4,13 @@ Handles business logic, operating hours, slot generation, resident eligibility,
 concurrency-safe slot reservations, cancellation rules, refunds, and structured audit events.
 """
 
+import hashlib
+import json
 import math
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.errors import (
@@ -19,6 +21,7 @@ from app.core.errors import (
 )
 from app.domains.amenities.models import (
     Amenity,
+    AmenityBlock,
     AmenityBooking,
     AmenityType,
     BookingPaymentStatus,
@@ -26,16 +29,20 @@ from app.domains.amenities.models import (
     RefundStatus,
 )
 from app.domains.amenities.schemas import (
+    AmenityBlockResponse,
     AmenityCreateRequest,
     AmenitySlotsResponse,
     AmenityUpdateRequest,
     BookingResponse,
+    CreateAmenityBlockRequest,
     CreateBookingRequest,
     PaginatedBookingsResponse,
     TimeSlotAvailability,
 )
-from app.domains.identity.models import FlatMembership, MembershipStatus
-from app.domains.reliability.models import AuditEvent, OutboxEvent, OutboxStatus
+from app.domains.billing.models import Payment, PaymentStatus
+from app.domains.billing.provider import SimulatedPaymentProvider
+from app.domains.identity.models import Flat, FlatMembership, MembershipStatus, User
+from app.domains.reliability.models import AuditEvent, IdempotencyKey, OutboxEvent, OutboxStatus
 
 
 def utc_now() -> datetime:
@@ -268,14 +275,31 @@ class AmenityService:
                 message=f"Slots can only be viewed up to {amenity.advance_booking_days} days in advance.",
             )
 
-        # Query all active bookings for this amenity on booking_date
+        # Query all active or unexpired pending bookings for this amenity on booking_date
         stmt = select(AmenityBooking).where(
             AmenityBooking.society_id == society_id,
             AmenityBooking.amenity_id == amenity_id,
             AmenityBooking.booking_date == booking_date,
-            AmenityBooking.status == BookingStatus.CONFIRMED,
+            or_(
+                AmenityBooking.status == BookingStatus.CONFIRMED,
+                and_(
+                    AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        AmenityBooking.payment_expires_at.is_(None),
+                        AmenityBooking.payment_expires_at > now,
+                    ),
+                ),
+            ),
         )
         bookings = list(self.db.scalars(stmt).all())
+
+        # Query temporary maintenance or management blocks
+        blocks_stmt = select(AmenityBlock).where(
+            AmenityBlock.society_id == society_id,
+            AmenityBlock.amenity_id == amenity_id,
+            AmenityBlock.block_date == booking_date,
+        )
+        blocks = list(self.db.scalars(blocks_stmt).all())
 
         # Generate slots grid
         start_min = time_to_minutes(amenity.opening_time)
@@ -297,6 +321,23 @@ class AmenityService:
             is_past = slot_start_dt <= now
             violates_lead_time = slot_start_dt < lead_time_cutoff
 
+            # Check maintenance / management blocks
+            is_blocked = False
+            block_reason = None
+            cur_s_min = time_to_minutes(s_time)
+            cur_e_min = time_to_minutes(e_time)
+            for blk in blocks:
+                if not blk.start_time or not blk.end_time:
+                    is_blocked = True
+                    block_reason = blk.reason
+                    break
+                b_start = time_to_minutes(blk.start_time)
+                b_end = time_to_minutes(blk.end_time)
+                if not (cur_e_min <= b_start or cur_s_min >= b_end):
+                    is_blocked = True
+                    block_reason = blk.reason
+                    break
+
             slot_bookings = [b for b in bookings if b.start_time == s_time]
             booked_units = sum(b.booked_units for b in slot_bookings)
             remaining_capacity = max(0, amenity.capacity - booked_units)
@@ -305,6 +346,7 @@ class AmenityService:
             is_available = (
                 (not is_past)
                 and (not violates_lead_time)
+                and (not is_blocked)
                 and (remaining_capacity > 0)
                 and (not user_booked)
             )
@@ -319,6 +361,8 @@ class AmenityService:
                     is_available=is_available,
                     is_past=is_past,
                     user_booked=user_booked,
+                    is_blocked=is_blocked,
+                    block_reason=block_reason,
                 )
             )
             start_min += duration
@@ -432,6 +476,29 @@ class AmenityService:
                 message=f"Bookings can only be made up to {amenity.advance_booking_days} days in advance.",
             )
 
+        # Check temporary blocks
+        blocks_stmt = select(AmenityBlock).where(
+            AmenityBlock.society_id == society_id,
+            AmenityBlock.amenity_id == amenity.id,
+            AmenityBlock.block_date == req.booking_date,
+        )
+        blocks = list(self.db.scalars(blocks_stmt).all())
+        cur_s_min = time_to_minutes(req.start_time)
+        cur_e_min = time_to_minutes(req.end_time)
+        for blk in blocks:
+            if not blk.start_time or not blk.end_time:
+                raise ConflictError(
+                    code="SLOT_BLOCKED",
+                    message=f"Amenity is temporarily blocked by management on {req.booking_date}: {blk.reason}",
+                )
+            b_start = time_to_minutes(blk.start_time)
+            b_end = time_to_minutes(blk.end_time)
+            if not (cur_e_min <= b_start or cur_s_min >= b_end):
+                raise ConflictError(
+                    code="SLOT_BLOCKED",
+                    message=f"Requested slot {req.start_time}-{req.end_time} is temporarily blocked by management: {blk.reason}",
+                )
+
         # Operating hours & slot alignment
         start_min = time_to_minutes(req.start_time)
         end_min = time_to_minutes(req.end_time)
@@ -483,7 +550,16 @@ class AmenityService:
                 AmenityBooking.amenity_id == amenity.id,
                 AmenityBooking.booking_date == req.booking_date,
                 AmenityBooking.start_time == req.start_time,
-                AmenityBooking.status == BookingStatus.CONFIRMED,
+                or_(
+                    AmenityBooking.status == BookingStatus.CONFIRMED,
+                    and_(
+                        AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
+                        or_(
+                            AmenityBooking.payment_expires_at.is_(None),
+                            AmenityBooking.payment_expires_at > now,
+                        ),
+                    ),
+                ),
             )
             .with_for_update()
         )
@@ -508,7 +584,16 @@ class AmenityService:
             AmenityBooking.amenity_id == amenity.id,
             AmenityBooking.user_id == user_id,
             AmenityBooking.booking_date == req.booking_date,
-            AmenityBooking.status == BookingStatus.CONFIRMED,
+            or_(
+                AmenityBooking.status == BookingStatus.CONFIRMED,
+                and_(
+                    AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        AmenityBooking.payment_expires_at.is_(None),
+                        AmenityBooking.payment_expires_at > now,
+                    ),
+                ),
+            ),
         )
         current_daily_count = self.db.scalar(daily_count_stmt) or 0
         if current_daily_count >= amenity.max_slots_per_day_per_resident:
@@ -520,11 +605,15 @@ class AmenityService:
         # Fee and payment calculation
         total_fee_paise = amenity.booking_fee_paise * req.booked_units
         if total_fee_paise > 0:
-            payment_status = BookingPaymentStatus.PAID
-            payment_ref = f"PAY-AMN-{uuid.uuid4().hex[:10].upper()}"
+            booking_status = BookingStatus.PENDING_PAYMENT
+            payment_status = BookingPaymentStatus.PENDING
+            payment_expires_at = now + timedelta(minutes=15)
+            payment_ref = None
             refund_status = RefundStatus.NOT_APPLICABLE
         else:
+            booking_status = BookingStatus.CONFIRMED
             payment_status = BookingPaymentStatus.FREE
+            payment_expires_at = None
             payment_ref = None
             refund_status = RefundStatus.NOT_APPLICABLE
 
@@ -538,10 +627,11 @@ class AmenityService:
             start_time=req.start_time,
             end_time=req.end_time,
             booked_units=req.booked_units,
-            status=BookingStatus.CONFIRMED,
+            status=booking_status,
             booking_fee_paise=total_fee_paise,
             payment_status=payment_status,
             payment_reference=payment_ref,
+            payment_expires_at=payment_expires_at,
             refund_status=refund_status,
             refund_amount_paise=0,
             notes=req.notes.strip() if req.notes else None,
@@ -549,6 +639,8 @@ class AmenityService:
                 "amenity_name": amenity.name,
                 "slot_duration_minutes": amenity.slot_duration_minutes,
                 "unit_fee_paise": amenity.booking_fee_paise,
+                "cancellation_deadline_hours": amenity.cancellation_deadline_hours,
+                "refund_percentage": amenity.refund_percentage,
             },
             created_at=now,
             updated_at=now,
@@ -575,14 +667,20 @@ class AmenityService:
                 "booked_units": req.booked_units,
                 "booking_fee_paise": total_fee_paise,
                 "payment_status": payment_status.value,
+                "status": booking_status.value,
             },
         )
         self.db.add(audit)
 
         # Transactional Outbox Event for Notifications
+        outbox_event_type = (
+            "amenity.booking_confirmed"
+            if booking_status == BookingStatus.CONFIRMED
+            else "amenity.booking_created"
+        )
         outbox = OutboxEvent(
             id=uuid.uuid4(),
-            event_type="amenity.booking_created",
+            event_type=outbox_event_type,
             aggregate_type="amenity_booking",
             aggregate_id=str(booking.id),
             payload={
@@ -596,11 +694,16 @@ class AmenityService:
                 "end_time": req.end_time,
                 "booked_units": req.booked_units,
                 "booking_fee_paise": total_fee_paise,
+                "status": booking_status.value,
             },
             status=OutboxStatus.PENDING,
         )
         self.db.add(outbox)
         self.db.flush()
+
+        if total_fee_paise > 0 and req.auto_pay:
+            self.pay_booking(society_id=society_id, user_id=user_id, booking_id=booking.id)
+            self.db.refresh(booking)
 
         return booking
 
@@ -691,8 +794,10 @@ class AmenityService:
         booking_date: date | None = None,
         status: BookingStatus | None = None,
         flat_id: uuid.UUID | None = None,
+        payment_status: BookingPaymentStatus | None = None,
+        search: str | None = None,
     ) -> PaginatedBookingsResponse:
-        """Staff overview of all bookings across society."""
+        """Staff overview of all bookings across society with filters and search."""
         page = max(1, page)
         page_size = max(1, min(100, page_size))
         offset = (page - 1) * page_size
@@ -706,18 +811,41 @@ class AmenityService:
             filters.append(AmenityBooking.status == status)
         if flat_id:
             filters.append(AmenityBooking.flat_id == flat_id)
-
-        total_stmt = select(func.count(AmenityBooking.id)).where(*filters)
-        total = self.db.scalar(total_stmt) or 0
+        if payment_status:
+            filters.append(AmenityBooking.payment_status == payment_status)
 
         stmt = (
             select(AmenityBooking)
-            .options(joinedload(AmenityBooking.amenity), joinedload(AmenityBooking.flat))
-            .where(*filters)
+            .options(
+                joinedload(AmenityBooking.amenity),
+                joinedload(AmenityBooking.flat),
+                joinedload(AmenityBooking.user),
+            )
             .order_by(AmenityBooking.booking_date.desc(), AmenityBooking.start_time.desc())
-            .offset(offset)
-            .limit(page_size)
         )
+        total_stmt = select(func.count(AmenityBooking.id))
+
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            stmt = stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id).join(
+                Flat, AmenityBooking.flat_id == Flat.id
+            ).join(User, AmenityBooking.user_id == User.id)
+            total_stmt = total_stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id).join(
+                Flat, AmenityBooking.flat_id == Flat.id
+            ).join(User, AmenityBooking.user_id == User.id)
+            filters.append(
+                or_(
+                    Amenity.name.ilike(s),
+                    Flat.flat_number.ilike(s),
+                    User.full_name.ilike(s),
+                    AmenityBooking.payment_reference.ilike(s),
+                )
+            )
+
+        total_stmt = total_stmt.where(*filters)
+        total = self.db.scalar(total_stmt) or 0
+
+        stmt = stmt.where(*filters).offset(offset).limit(page_size)
         bookings = list(self.db.scalars(stmt).all())
 
         items = [self._to_booking_response(b) for b in bookings]
@@ -744,7 +872,7 @@ class AmenityService:
     ) -> AmenityBooking:
         """Cancels a booking by the resident, enforcing cancellation deadlines and calculating refunds."""
         booking = self.get_booking_by_id(society_id, booking_id, user_id=user_id)
-        if booking.status != BookingStatus.CONFIRMED:
+        if booking.status not in (BookingStatus.CONFIRMED, BookingStatus.PENDING_PAYMENT):
             raise ConflictError(
                 code="INVALID_BOOKING_STATUS",
                 message=f"Cannot cancel a booking with status '{booking.status.value}'.",
@@ -771,11 +899,13 @@ class AmenityService:
             )
 
         # Refund calculation
-        if booking.booking_fee_paise > 0:
+        if booking.booking_fee_paise > 0 and booking.payment_status == BookingPaymentStatus.PAID:
             refund_amount = int(booking.booking_fee_paise * (amenity.refund_percentage / 100))
             refund_status = (
                 RefundStatus.REFUNDED if refund_amount > 0 else RefundStatus.CANCELLED_NO_REFUND
             )
+            if refund_amount > 0:
+                booking.payment_status = BookingPaymentStatus.REFUNDED
         else:
             refund_amount = 0
             refund_status = RefundStatus.NOT_APPLICABLE
@@ -839,17 +969,18 @@ class AmenityService:
     ) -> AmenityBooking:
         """Cancels a booking with administrative override and 100% refund."""
         booking = self.get_booking_by_id(society_id, booking_id)
-        if booking.status != BookingStatus.CONFIRMED:
+        if booking.status not in (BookingStatus.CONFIRMED, BookingStatus.PENDING_PAYMENT):
             raise ConflictError(
                 code="INVALID_BOOKING_STATUS",
                 message=f"Cannot cancel a booking with status '{booking.status.value}'.",
             )
 
         now = utc_now()
-        # Management/facility emergency cancellation provides 100% refund
-        if booking.booking_fee_paise > 0:
+        # Management/facility emergency cancellation provides 100% refund if paid
+        if booking.booking_fee_paise > 0 and booking.payment_status == BookingPaymentStatus.PAID:
             refund_amount = booking.booking_fee_paise
             refund_status = RefundStatus.REFUNDED
+            booking.payment_status = BookingPaymentStatus.REFUNDED
         else:
             refund_amount = 0
             refund_status = RefundStatus.NOT_APPLICABLE
@@ -927,6 +1058,8 @@ class AmenityService:
             booking_fee_paise=booking.booking_fee_paise,
             payment_status=booking.payment_status,
             payment_reference=booking.payment_reference,
+            payment_id=booking.payment_id,
+            payment_expires_at=booking.payment_expires_at,
             refund_status=booking.refund_status,
             refund_amount_paise=booking.refund_amount_paise,
             cancellation_reason=booking.cancellation_reason,
@@ -937,3 +1070,428 @@ class AmenityService:
             created_at=booking.created_at,
             updated_at=booking.updated_at,
         )
+
+    # -------------------------------------------------------------------------
+    # Payment Processing & Idempotency
+    # -------------------------------------------------------------------------
+
+    def pay_booking(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+        booking_id: uuid.UUID,
+        idempotency_key: str | None = None,
+        simulate_failure: bool = False,
+    ) -> BookingResponse:
+        """Processes simulated payment for an amenity booking with idempotency and state safety."""
+        now = utc_now()
+        req_hash = hashlib.sha256(
+            f"{user_id}:{booking_id}:{simulate_failure}".encode()
+        ).hexdigest()
+
+        # Step 1: Idempotency reservation
+        if idempotency_key:
+            idemp_record = self._reserve_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_payment",
+                req_hash=req_hash,
+            )
+            if idemp_record is not None:
+                if idemp_record.request_hash != req_hash:
+                    raise ConflictError(
+                        "Idempotency key reuse with differing request payload is prohibited."
+                    )
+                if idemp_record.response_body:
+                    data = json.loads(idemp_record.response_body)
+                    if idemp_record.response_status and idemp_record.response_status >= 400:
+                        raise ValidationError(data.get("message", "Payment validation failed"))
+                    return BookingResponse(**data)
+                raise ConflictError(
+                    "A payment with this idempotency key is currently being processed. Please retry in a moment."
+                )
+
+        # Step 2: Lock booking row with SELECT FOR UPDATE
+        lock_stmt = (
+            select(AmenityBooking)
+            .options(joinedload(AmenityBooking.amenity), joinedload(AmenityBooking.flat))
+            .where(AmenityBooking.id == booking_id, AmenityBooking.society_id == society_id)
+            .with_for_update()
+        )
+        booking = self.db.execute(lock_stmt).scalar_one_or_none()
+        if not booking:
+            raise ResourceNotFoundError(
+                code="BOOKING_NOT_FOUND",
+                message=f"Booking {booking_id} not found in society {society_id}",
+            )
+
+        if booking.user_id != user_id:
+            raise AuthorizationError(
+                code="BOOKING_ACCESS_DENIED",
+                message="You are not authorized to pay for this booking.",
+            )
+
+        # If already confirmed/paid, return idempotently
+        if (
+            booking.status == BookingStatus.CONFIRMED
+            and booking.payment_status in (BookingPaymentStatus.PAID, BookingPaymentStatus.FREE)
+        ):
+            resp = self._to_booking_response(booking)
+            if idempotency_key:
+                self._complete_idempotency_key(
+                    idempotency_key=idempotency_key,
+                    scope="amenity_payment",
+                    req_hash=req_hash,
+                    status=200,
+                    body=json.dumps(resp.model_dump(mode="json")),
+                )
+            return resp
+
+        if booking.status == BookingStatus.CANCELLED:
+            raise ConflictError(
+                code="BOOKING_CANCELLED",
+                message="Cannot pay for a booking that has already been cancelled.",
+            )
+
+        # Check expiration
+        if booking.payment_expires_at:
+            exp_at = (
+                booking.payment_expires_at.replace(tzinfo=UTC)
+                if booking.payment_expires_at.tzinfo is None
+                else booking.payment_expires_at
+            )
+            if now > exp_at:
+                booking.status = BookingStatus.PAYMENT_FAILED
+                booking.payment_status = BookingPaymentStatus.FAILED
+                booking.updated_at = now
+                self.db.flush()
+                raise ValidationError(
+                    code="PAYMENT_WINDOW_EXPIRED",
+                    message="The payment window for this booking has expired. Please create a new booking.",
+                )
+
+        # Step 3: Create Payment intent record in payments table
+        payment_ref = f"SIM-AMN-{uuid.uuid4().hex[:10].upper()}"
+        payment = Payment(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            flat_id=booking.flat_id,
+            booking_id=booking.id,
+            amount_paise=booking.booking_fee_paise,
+            currency="INR",
+            provider="SIMULATED",
+            provider_reference=payment_ref,
+            status=PaymentStatus.PENDING,
+            initiated_by=user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(payment)
+        self.db.flush()
+
+        # Step 4: Invoke simulated provider
+        provider = SimulatedPaymentProvider()
+        payment_result = provider.process_payment(
+            amount_paise=booking.booking_fee_paise,
+            currency="INR",
+            metadata={
+                "society_id": str(society_id),
+                "flat_id": str(booking.flat_id),
+                "booking_id": str(booking.id),
+                "amenity_id": str(booking.amenity_id),
+                "intent_reference": payment_ref,
+                "simulate_failure": simulate_failure,
+            },
+        )
+
+        booking.payment_id = payment.id
+        booking.payment_reference = payment_result.provider_reference
+        booking.updated_at = now
+
+        if payment_result.success:
+            payment.status = PaymentStatus.SUCCESS
+            booking.status = BookingStatus.CONFIRMED
+            booking.payment_status = BookingPaymentStatus.PAID
+
+            # Audit Event
+            audit = AuditEvent(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                actor_id=user_id,
+                action="AMENITY_BOOKING_PAYMENT_SUCCESS",
+                resource_type="amenity_booking",
+                resource_id=str(booking.id),
+                correlation_id=str(uuid.uuid4()),
+                event_metadata={
+                    "payment_id": str(payment.id),
+                    "amount_paise": booking.booking_fee_paise,
+                    "provider_reference": payment_result.provider_reference,
+                },
+            )
+            self.db.add(audit)
+
+            # Outbox Event
+            outbox = OutboxEvent(
+                id=uuid.uuid4(),
+                event_type="amenity.booking_confirmed",
+                aggregate_type="amenity_booking",
+                aggregate_id=str(booking.id),
+                payload={
+                    "society_id": str(society_id),
+                    "amenity_id": str(booking.amenity_id),
+                    "amenity_name": booking.amenity.name if booking.amenity else "",
+                    "user_id": str(user_id),
+                    "flat_id": str(booking.flat_id),
+                    "booking_date": str(booking.booking_date),
+                    "start_time": booking.start_time,
+                    "end_time": booking.end_time,
+                    "booked_units": booking.booked_units,
+                    "booking_fee_paise": booking.booking_fee_paise,
+                    "payment_id": str(payment.id),
+                    "payment_reference": payment_result.provider_reference,
+                },
+                status=OutboxStatus.PENDING,
+            )
+            self.db.add(outbox)
+        else:
+            payment.status = PaymentStatus.FAILED
+            booking.status = BookingStatus.PAYMENT_FAILED
+            booking.payment_status = BookingPaymentStatus.FAILED
+
+            # Audit Event
+            audit = AuditEvent(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                actor_id=user_id,
+                action="AMENITY_BOOKING_PAYMENT_FAILED",
+                resource_type="amenity_booking",
+                resource_id=str(booking.id),
+                correlation_id=str(uuid.uuid4()),
+                event_metadata={
+                    "payment_id": str(payment.id),
+                    "amount_paise": booking.booking_fee_paise,
+                    "error_message": payment_result.error_message,
+                },
+            )
+            self.db.add(audit)
+
+            # Outbox Event
+            outbox = OutboxEvent(
+                id=uuid.uuid4(),
+                event_type="amenity.booking_payment_failed",
+                aggregate_type="amenity_booking",
+                aggregate_id=str(booking.id),
+                payload={
+                    "society_id": str(society_id),
+                    "amenity_id": str(booking.amenity_id),
+                    "amenity_name": booking.amenity.name if booking.amenity else "",
+                    "user_id": str(user_id),
+                    "flat_id": str(booking.flat_id),
+                    "booking_fee_paise": booking.booking_fee_paise,
+                    "payment_id": str(payment.id),
+                    "error_message": payment_result.error_message,
+                },
+                status=OutboxStatus.PENDING,
+            )
+            self.db.add(outbox)
+
+        self.db.flush()
+        resp = self._to_booking_response(booking)
+
+        if idempotency_key:
+            self._complete_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_payment",
+                req_hash=req_hash,
+                status=200,
+                body=json.dumps(resp.model_dump(mode="json")),
+            )
+
+        return resp
+
+    def _reserve_idempotency_key(
+        self,
+        idempotency_key: str,
+        scope: str,
+        req_hash: str,
+    ) -> IdempotencyKey | None:
+        """Atomically reserves an idempotency key to prevent concurrent duplicate payments."""
+        now = utc_now()
+        existing = (
+            self.db.query(IdempotencyKey)
+            .filter_by(scope=scope, idempotency_key=idempotency_key)
+            .first()
+        )
+        if existing:
+            exp = (
+                existing.expires_at.replace(tzinfo=UTC)
+                if existing.expires_at.tzinfo is None
+                else existing.expires_at
+            )
+            if exp <= now:
+                self.db.delete(existing)
+                self.db.flush()
+                existing = None
+            elif existing.response_status is None:
+                created = (
+                    existing.created_at.replace(tzinfo=UTC)
+                    if existing.created_at.tzinfo is None
+                    else existing.created_at
+                )
+                if (now - created) > timedelta(minutes=2):
+                    self.db.delete(existing)
+                    self.db.flush()
+                    existing = None
+                else:
+                    return existing
+            else:
+                return existing
+
+        try:
+            record = IdempotencyKey(
+                id=uuid.uuid4(),
+                scope=scope,
+                idempotency_key=idempotency_key,
+                request_hash=req_hash,
+                response_status=None,
+                response_body=None,
+                created_at=now,
+                expires_at=now + timedelta(hours=24),
+            )
+            self.db.add(record)
+            self.db.flush()
+            return None
+        except Exception:
+            self.db.rollback()
+            return (
+                self.db.query(IdempotencyKey)
+                .filter_by(scope=scope, idempotency_key=idempotency_key)
+                .first()
+            )
+
+    def _complete_idempotency_key(
+        self,
+        idempotency_key: str,
+        scope: str,
+        req_hash: str,
+        status: int,
+        body: str,
+    ) -> None:
+        """Records payment response against the idempotency record."""
+        record = (
+            self.db.query(IdempotencyKey)
+            .filter_by(scope=scope, idempotency_key=idempotency_key)
+            .first()
+        )
+        if record:
+            record.response_status = status
+            record.response_body = body
+        else:
+            self.db.add(
+                IdempotencyKey(
+                    id=uuid.uuid4(),
+                    scope=scope,
+                    idempotency_key=idempotency_key,
+                    request_hash=req_hash,
+                    response_status=status,
+                    response_body=body,
+                    created_at=utc_now(),
+                    expires_at=utc_now() + timedelta(hours=24),
+                )
+            )
+        self.db.flush()
+
+    # -------------------------------------------------------------------------
+    # Amenity Blocking (Staff Management)
+    # -------------------------------------------------------------------------
+
+    def create_amenity_block(
+        self,
+        society_id: uuid.UUID,
+        staff_user_id: uuid.UUID,
+        amenity_id: uuid.UUID,
+        req: CreateAmenityBlockRequest,
+    ) -> AmenityBlock:
+        """Blocks an amenity for a date or specific time window (staff only)."""
+        amenity = self.get_amenity(society_id, amenity_id)
+        now = utc_now()
+        block = AmenityBlock(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            amenity_id=amenity.id,
+            block_date=req.block_date,
+            start_time=req.start_time,
+            end_time=req.end_time,
+            reason=req.reason.strip(),
+            blocked_by_user_id=staff_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(block)
+        self.db.flush()
+
+        audit = AuditEvent(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            actor_id=staff_user_id,
+            action="AMENITY_BLOCKED",
+            resource_type="amenity_block",
+            resource_id=str(block.id),
+            correlation_id=str(uuid.uuid4()),
+            event_metadata={
+                "amenity_id": str(amenity.id),
+                "amenity_name": amenity.name,
+                "block_date": str(req.block_date),
+                "start_time": req.start_time,
+                "end_time": req.end_time,
+                "reason": req.reason,
+            },
+        )
+        self.db.add(audit)
+        self.db.flush()
+        return block
+
+    def list_amenity_blocks(
+        self,
+        society_id: uuid.UUID,
+        amenity_id: uuid.UUID,
+        block_date: date | None = None,
+    ) -> list[AmenityBlock]:
+        """Lists active amenity blocks (staff only)."""
+        amenity = self.get_amenity(society_id, amenity_id)
+        stmt = select(AmenityBlock).where(
+            AmenityBlock.society_id == society_id,
+            AmenityBlock.amenity_id == amenity.id,
+        )
+        if block_date:
+            stmt = stmt.where(AmenityBlock.block_date == block_date)
+        stmt = stmt.order_by(AmenityBlock.block_date.asc(), AmenityBlock.start_time.asc())
+        return list(self.db.scalars(stmt).all())
+
+    def delete_amenity_block(
+        self,
+        society_id: uuid.UUID,
+        staff_user_id: uuid.UUID,
+        block_id: uuid.UUID,
+    ) -> None:
+        """Removes an amenity block (staff only)."""
+        block = self.db.get(AmenityBlock, block_id)
+        if not block or block.society_id != society_id:
+            raise ResourceNotFoundError(
+                code="BLOCK_NOT_FOUND",
+                message=f"Amenity block {block_id} not found in society {society_id}",
+            )
+        amenity_id = block.amenity_id
+        self.db.delete(block)
+        audit = AuditEvent(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            actor_id=staff_user_id,
+            action="AMENITY_UNBLOCKED",
+            resource_type="amenity_block",
+            resource_id=str(block_id),
+            correlation_id=str(uuid.uuid4()),
+            event_metadata={"amenity_id": str(amenity_id)},
+        )
+        self.db.add(audit)
+        self.db.flush()
+

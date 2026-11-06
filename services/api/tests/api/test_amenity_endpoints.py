@@ -138,9 +138,21 @@ def test_resident_create_and_view_booking(client: TestClient, test_amenity: Amen
     assert create_resp.status_code == 201
     booking_data = create_resp.json()
     booking_id = booking_data["id"]
-    assert booking_data["status"] == "CONFIRMED"
+    assert booking_data["status"] == "PENDING_PAYMENT"
     assert booking_data["booking_fee_paise"] == 15000
-    assert booking_data["payment_status"] == "PAID"
+    assert booking_data["payment_status"] == "PENDING"
+
+    # Neeraj pays for the booking
+    pay_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/pay",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={},
+    )
+    assert pay_resp.status_code == 200
+    paid_data = pay_resp.json()
+    assert paid_data["status"] == "CONFIRMED"
+    assert paid_data["payment_status"] == "PAID"
+    assert paid_data["payment_reference"] is not None
 
     # 2. Neeraj views own bookings list
     me_resp = client.get("/api/v1/amenities/bookings/me", headers=RESIDENT_NEERAJ_HEADERS)
@@ -316,6 +328,14 @@ def test_staff_create_update_toggle_and_cancel_booking(
     assert book_resp.status_code == 201
     booking_id = book_resp.json()["id"]
 
+    # Resident pays for booking
+    pay_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/pay",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={},
+    )
+    assert pay_resp.status_code == 200
+
     # 5. Staff lists bookings
     staff_list = client.get(
         "/api/v1/amenities/staff/bookings",
@@ -351,3 +371,176 @@ def test_cross_society_access_denied(client: TestClient, test_amenity: Amenity) 
         headers=RESIDENT_NEERAJ_HEADERS,
     )
     assert resp.status_code == 403
+
+
+# -----------------------------------------------------------------------------
+# Staff Blocks Management & Payment APIs
+# -----------------------------------------------------------------------------
+
+
+def test_amenity_blocks_crud_api(client: TestClient, test_amenity: Amenity) -> None:
+    target_date = str(utc_now().date() + timedelta(days=2))
+
+    # 1. Staff creates maintenance block
+    create_block_resp = client.post(
+        f"/api/v1/amenities/staff/{test_amenity.id}/blocks",
+        headers=STAFF_HELPDESK_HEADERS,
+        json={
+            "block_date": target_date,
+            "start_time": "14:00",
+            "end_time": "16:00",
+            "reason": "Court floor polishing",
+        },
+    )
+    assert create_block_resp.status_code == 201
+    block_id = create_block_resp.json()["id"]
+
+    # 2. Resident queries slot availability
+    slots_resp = client.get(
+        f"/api/v1/amenities/{test_amenity.id}/slots?booking_date={target_date}",
+        headers=RESIDENT_NEERAJ_HEADERS,
+    )
+    assert slots_resp.status_code == 200
+    slot_14 = next(s for s in slots_resp.json()["slots"] if s["start_time"] == "14:00")
+    assert slot_14["is_blocked"] is True
+    assert slot_14["block_reason"] == "Court floor polishing"
+
+    # 3. Resident attempts to book blocked slot
+    book_resp = client.post(
+        f"/api/v1/amenities/{test_amenity.id}/bookings",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={
+            "flat_id": FLAT_1203_ID,
+            "booking_date": target_date,
+            "start_time": "14:00",
+            "end_time": "15:00",
+            "booked_units": 1,
+        },
+    )
+    assert book_resp.status_code == 409
+    assert book_resp.json()["error"]["code"] == "SLOT_BLOCKED"
+
+    # 4. Staff lists blocks
+    list_blocks_resp = client.get(
+        f"/api/v1/amenities/staff/{test_amenity.id}/blocks",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert list_blocks_resp.status_code == 200
+    assert any(b["id"] == block_id for b in list_blocks_resp.json())
+
+    # 5. Staff deletes block
+    del_resp = client.delete(
+        f"/api/v1/amenities/staff/blocks/{block_id}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert del_resp.status_code == 204
+
+    # 6. Slot is now bookable
+    book_ok_resp = client.post(
+        f"/api/v1/amenities/{test_amenity.id}/bookings",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={
+            "flat_id": FLAT_1203_ID,
+            "booking_date": target_date,
+            "start_time": "14:00",
+            "end_time": "15:00",
+            "booked_units": 1,
+            "auto_pay": True,
+        },
+    )
+    assert book_ok_resp.status_code == 201
+
+
+def test_resident_pay_booking_failure_and_idempotency_api(
+    client: TestClient, test_amenity: Amenity
+) -> None:
+    target_date = str(utc_now().date() + timedelta(days=2))
+
+    # 1. Create booking to test simulated failure
+    book_resp = client.post(
+        f"/api/v1/amenities/{test_amenity.id}/bookings",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={
+            "flat_id": FLAT_1203_ID,
+            "booking_date": target_date,
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "booked_units": 1,
+            "auto_pay": False,
+        },
+    )
+    assert book_resp.status_code == 201
+    booking_id = book_resp.json()["id"]
+
+    # Other resident forbidden from paying
+    forbidden_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/pay",
+        headers=RESIDENT_SWATI_HEADERS,
+        json={},
+    )
+    assert forbidden_resp.status_code == 403
+
+    # Pay with simulated failure
+    fail_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/pay",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={"simulate_failure": True},
+    )
+    assert fail_resp.status_code == 200
+    assert fail_resp.json()["status"] == "PAYMENT_FAILED"
+    assert fail_resp.json()["payment_status"] == "FAILED"
+
+    # 2. Create another booking to test success and idempotency
+    book_resp2 = client.post(
+        f"/api/v1/amenities/{test_amenity.id}/bookings",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={
+            "flat_id": FLAT_1203_ID,
+            "booking_date": target_date,
+            "start_time": "11:00",
+            "end_time": "12:00",
+            "booked_units": 1,
+            "auto_pay": False,
+        },
+    )
+    assert book_resp2.status_code == 201
+    booking_id2 = book_resp2.json()["id"]
+
+    idem_key = f"api-pay-{uuid.uuid4()}"
+    pay_headers = {**RESIDENT_NEERAJ_HEADERS, "Idempotency-Key": idem_key}
+
+    pay1_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id2}/pay",
+        headers=pay_headers,
+        json={},
+    )
+    assert pay1_resp.status_code == 200
+    assert pay1_resp.json()["status"] == "CONFIRMED"
+    assert pay1_resp.json()["payment_status"] == "PAID"
+
+    # Repeat with same idempotency key
+    pay2_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id2}/pay",
+        headers=pay_headers,
+        json={},
+    )
+    assert pay2_resp.status_code == 200
+    assert pay2_resp.json()["id"] == pay1_resp.json()["id"]
+    assert pay2_resp.json()["payment_id"] == pay1_resp.json()["payment_id"]
+
+
+def test_staff_booking_search_and_filters_api(
+    client: TestClient, test_amenity: Amenity
+) -> None:
+    # Query staff bookings with various filters
+    resp_all = client.get(
+        "/api/v1/amenities/staff/bookings",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert resp_all.status_code == 200
+
+    resp_search = client.get(
+        "/api/v1/amenities/staff/bookings?search=Badminton",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert resp_search.status_code == 200

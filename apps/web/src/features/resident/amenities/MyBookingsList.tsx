@@ -41,6 +41,11 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
   const [cancelReason, setCancelReason] = useState<string>('');
   const [cancelError, setCancelError] = useState<string | null>(null);
 
+  // Pay dialog state
+  const [bookingToPay, setBookingToPay] = useState<AmenityBooking | null>(null);
+  const [paySimulateFailure, setPaySimulateFailure] = useState<boolean>(false);
+  const [payError, setPayError] = useState<string | null>(null);
+
   // Fetch resident bookings
   const {
     data: bookingsData,
@@ -96,6 +101,43 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
         }
       } else {
         setCancelError('Failed to cancel booking. Please try again.');
+      }
+    },
+  });
+
+  // Pay mutation
+  const payMutation = useMutation({
+    mutationFn: async ({
+      bookingId,
+      simulateFailure,
+    }: {
+      bookingId: string;
+      simulateFailure?: boolean;
+    }) => {
+      return amenityService.payBooking(
+        bookingId,
+        {
+          simulate_failure: simulateFailure,
+          idempotency_key: `pay-${bookingId}-${Date.now()}`,
+        },
+        selectedFlat.society_id
+      );
+    },
+    onSuccess: () => {
+      setBookingToPay(null);
+      setPayError(null);
+      setPaySimulateFailure(false);
+      void queryClient.invalidateQueries({ queryKey: ['my-amenity-bookings'] });
+    },
+    onError: (err: unknown) => {
+      if (err instanceof ApiClientError) {
+        if (err.code === 'PAYMENT_WINDOW_EXPIRED') {
+          setPayError('The 15-minute payment window for this reservation has expired.');
+        } else {
+          setPayError(err.message);
+        }
+      } else {
+        setPayError('Failed to process payment. Please try again.');
       }
     },
   });
@@ -189,7 +231,9 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
         <div className="space-y-3">
           {bookings.map((booking) => {
             const isConfirmed = booking.status === 'CONFIRMED';
+            const isPendingPayment = booking.status === 'PENDING_PAYMENT';
             const isCancelled = booking.status === 'CANCELLED';
+            const isFailed = booking.status === 'PAYMENT_FAILED';
 
             return (
               <Card key={booking.id} className="border-slate-200 hover:shadow-sm transition-shadow">
@@ -204,12 +248,27 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
                         variant={
                           isConfirmed
                             ? 'success'
-                            : isCancelled
+                            : isPendingPayment
+                            ? 'warning'
+                            : isCancelled || isFailed
                             ? 'danger'
                             : 'neutral'
                         }
                       >
                         {booking.status}
+                      </Badge>
+                      <Badge
+                        variant={
+                          booking.payment_status === 'PAID'
+                            ? 'success'
+                            : booking.payment_status === 'PENDING'
+                            ? 'warning'
+                            : booking.payment_status === 'FAILED'
+                            ? 'danger'
+                            : 'neutral'
+                        }
+                      >
+                        {booking.payment_status}
                       </Badge>
                       <span className="text-[11px] font-mono text-slate-400 bg-slate-100 px-2 py-0.5 rounded">
                         REF: {booking.id.substring(0, 8).toUpperCase()}
@@ -232,6 +291,13 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
                       </div>
                     </div>
 
+                    {/* Pending payment notice */}
+                    {isPendingPayment && (
+                      <p className="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
+                        Payment window is active. Please complete payment to confirm your booking.
+                      </p>
+                    )}
+
                     {/* Refund or Cancellation details */}
                     {isCancelled && (
                       <div className="text-xs text-rose-700 bg-rose-50/70 px-3 py-1.5 rounded-lg border border-rose-100 flex items-center justify-between gap-2 flex-wrap">
@@ -253,8 +319,22 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
                   </div>
 
                   {/* Actions */}
-                  {isConfirmed && (
-                    <div className="shrink-0 flex items-center sm:self-center">
+                  <div className="shrink-0 flex items-center gap-2 sm:self-center">
+                    {isPendingPayment && (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="text-xs font-semibold px-4"
+                        onClick={() => {
+                          setBookingToPay(booking);
+                          setPayError(null);
+                          setPaySimulateFailure(false);
+                        }}
+                      >
+                        Pay Now
+                      </Button>
+                    )}
+                    {(isConfirmed || isPendingPayment) && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -267,8 +347,8 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
                       >
                         Cancel Booking
                       </Button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             );
@@ -349,6 +429,102 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
                   </>
                 ) : (
                   <span>Confirm Cancellation</span>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Processing Modal */}
+      {bookingToPay && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                <Receipt className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Complete Amenity Payment</h3>
+                <p className="text-xs text-slate-500">
+                  {bookingToPay.amenity_name} on {formatDateIST(bookingToPay.booking_date)}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-200/80 text-xs space-y-2">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Scheduled Time</span>
+                <span className="font-semibold text-slate-800">
+                  {formatTimeRange(bookingToPay.start_time, bookingToPay.end_time)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200/60 pt-1.5">
+                <span className="text-slate-500">Total Payable Amount</span>
+                <span className="font-bold text-emerald-700 text-sm">
+                  {formatAmenityFee(bookingToPay.booking_fee_paise)}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-indigo-50/50 rounded-xl border border-indigo-100 text-xs space-y-2">
+              <span className="font-semibold text-indigo-900 block">Test Gateway Simulation</span>
+              <p className="text-[11px] text-slate-600">
+                This is a sandbox test payment environment. No actual money movement occurs.
+              </p>
+              <label className="flex items-center gap-2 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={paySimulateFailure}
+                  onChange={(e) => setPaySimulateFailure(e.target.checked)}
+                  className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+                />
+                <span className="text-[11px] text-slate-700 font-medium">
+                  Simulate Payment Gateway Failure
+                </span>
+              </label>
+            </div>
+
+            {payError && (
+              <Alert variant="error" title="Payment Failed">
+                {payError}
+              </Alert>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBookingToPay(null)}
+                disabled={payMutation.isPending}
+              >
+                Dismiss
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={payMutation.isPending}
+                onClick={() =>
+                  payMutation.mutate({
+                    bookingId: bookingToPay.id,
+                    simulateFailure: paySimulateFailure,
+                  })
+                }
+                className="flex items-center gap-1.5 font-semibold px-5"
+              >
+                {payMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Processing...</span>
+                  </>
+                ) : (
+                  <span>
+                    Pay {formatAmenityFee(bookingToPay.booking_fee_paise)}
+                  </span>
                 )}
               </Button>
             </div>

@@ -193,4 +193,133 @@ describe('Amenity Service API Client Integration', () => {
     expect(res.status).toBe('CANCELLED');
     expect(res.refund_status).toBe('REFUNDED');
   });
+
+  it('calls payBooking endpoint with idempotency header', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      id: 'book-1',
+      status: 'CONFIRMED',
+      payment_status: 'PAID',
+      payment_id: 'pay-123',
+    });
+
+    const res = await amenityService.payBooking(
+      'book-1',
+      { simulate_failure: false, idempotency_key: 'idem-xyz' },
+      'soc-1'
+    );
+
+    expect(postSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/bookings/book-1/pay?society_id=soc-1',
+      { simulate_failure: false },
+      { headers: { 'Idempotency-Key': 'idem-xyz' } }
+    );
+    expect(res.status).toBe('CONFIRMED');
+    expect(res.payment_status).toBe('PAID');
+  });
+
+  it('calls staffCreateAmenity and staffUpdateAmenity', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      id: 'amn-new',
+      name: 'Squash Court',
+    });
+    const patchSpy = vi.spyOn(apiClient, 'patch').mockResolvedValue({
+      id: 'amn-new',
+      name: 'Squash Court Updated',
+    });
+
+    const createRes = await amenityService.staffCreateAmenity(
+      {
+        name: 'Squash Court',
+        amenity_type: 'OTHER',
+      },
+      'soc-1'
+    );
+    expect(postSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff?society_id=soc-1',
+      { name: 'Squash Court', amenity_type: 'OTHER' }
+    );
+    expect(createRes.id).toBe('amn-new');
+
+    const updateRes = await amenityService.staffUpdateAmenity(
+      'amn-new',
+      { name: 'Squash Court Updated' },
+      'soc-1'
+    );
+    expect(patchSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff/amn-new?society_id=soc-1',
+      { name: 'Squash Court Updated' }
+    );
+    expect(updateRes.name).toBe('Squash Court Updated');
+  });
+
+  it('calls staffListBookings and staffCancelBooking with mandatory reason', async () => {
+    const getSpy = vi.spyOn(apiClient, 'get').mockResolvedValue({
+      items: [{ id: 'b-1', status: 'CONFIRMED' }],
+      total: 1,
+    });
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      id: 'b-1',
+      status: 'CANCELLED',
+      refund_status: 'REFUNDED',
+      refund_amount_paise: 25000,
+    });
+
+    const listRes = await amenityService.staffListBookings({
+      search: '1203',
+      status: 'CONFIRMED',
+      society_id: 'soc-1',
+    });
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    const calledUrl = getSpy.mock.calls[0][0];
+    expect(calledUrl).toContain('/api/v1/amenities/staff/bookings?');
+    expect(calledUrl).toContain('search=1203');
+    expect(calledUrl).toContain('status=CONFIRMED');
+    expect(calledUrl).toContain('society_id=soc-1');
+    expect(listRes.items).toHaveLength(1);
+
+    const cancelRes = await amenityService.staffCancelBooking(
+      'b-1',
+      { reason: 'Severe weather advisory closure' },
+      'soc-1'
+    );
+    expect(postSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff/bookings/b-1/cancel?society_id=soc-1',
+      { reason: 'Severe weather advisory closure' }
+    );
+    expect(cancelRes.status).toBe('CANCELLED');
+    expect(cancelRes.refund_amount_paise).toBe(25000);
+  });
+
+  it('manages amenity blocks with create, list, and delete', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      id: 'blk-1',
+      reason: 'Deep cleaning',
+    });
+    const getSpy = vi.spyOn(apiClient, 'get').mockResolvedValue([
+      { id: 'blk-1', reason: 'Deep cleaning' },
+    ]);
+    const deleteSpy = vi.spyOn(apiClient, 'delete').mockResolvedValue(undefined);
+
+    await amenityService.createAmenityBlock(
+      'amn-1',
+      { block_date: '2026-11-10', reason: 'Deep cleaning' },
+      'soc-1'
+    );
+    expect(postSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff/amn-1/blocks?society_id=soc-1',
+      { block_date: '2026-11-10', reason: 'Deep cleaning' }
+    );
+
+    const blocks = await amenityService.listAmenityBlocks('amn-1', '2026-11-10', 'soc-1');
+    expect(getSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff/amn-1/blocks?block_date=2026-11-10&society_id=soc-1'
+    );
+    expect(blocks).toHaveLength(1);
+
+    await amenityService.deleteAmenityBlock('blk-1', 'soc-1');
+    expect(deleteSpy).toHaveBeenCalledWith(
+      '/api/v1/amenities/staff/blocks/blk-1?society_id=soc-1'
+    );
+  });
 });
+

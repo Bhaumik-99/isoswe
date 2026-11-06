@@ -71,6 +71,8 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
   const [slots, setSlots] = useState<TimeSlotAvailability[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<TimeSlotAvailability | null>(null);
   const [notes, setNotes] = useState<string>('');
+  const [autoPay, setAutoPay] = useState<boolean>(true);
+  const [simulateFailure, setSimulateFailure] = useState<boolean>(false);
 
   const [isLoadingSlots, setIsLoadingSlots] = useState<boolean>(true);
   const [slotError, setSlotError] = useState<string | null>(null);
@@ -115,7 +117,10 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
     setSubmitError(null);
 
     try {
-      const booking = await amenityService.createBooking(
+      const isPaid = amenity.booking_fee_paise > 0;
+      const shouldUseAutoPay = isPaid && autoPay && !simulateFailure;
+
+      let booking = await amenityService.createBooking(
         amenity.id,
         {
           flat_id: selectedFlat.flat_id,
@@ -124,9 +129,19 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
           end_time: selectedSlot.end_time,
           booked_units: 1,
           notes: notes.trim() || null,
+          auto_pay: shouldUseAutoPay,
         },
         selectedFlat.society_id
       );
+
+      // If user opted to test simulated payment failure
+      if (isPaid && autoPay && simulateFailure) {
+        booking = await amenityService.payBooking(
+          booking.id,
+          { simulate_failure: true },
+          selectedFlat.society_id
+        );
+      }
 
       setConfirmedBooking(booking);
       onBookingSuccess(booking);
@@ -137,6 +152,11 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
             'This slot is no longer available or was just reserved by another resident. Please select another slot.'
           );
           // Refresh slots to show updated state
+          void loadSlots(selectedDate);
+        } else if (err.code === 'SLOT_BLOCKED') {
+          setSubmitError(
+            'This slot is temporarily blocked by township management for maintenance. Please choose another time.'
+          );
           void loadSlots(selectedDate);
         } else if (err.code === 'LEASE_EXPIRED_FOR_DATE') {
           setSubmitError(
@@ -200,13 +220,35 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
           {/* Confirmed Booking Screen */}
           {confirmedBooking ? (
             <div className="text-center py-6 space-y-5">
-              <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 mx-auto flex items-center justify-center">
-                <CheckCircle2 className="h-9 w-9" />
+              <div className={`w-16 h-16 rounded-full mx-auto flex items-center justify-center ${
+                confirmedBooking.status === 'CONFIRMED'
+                  ? 'bg-emerald-100 text-emerald-600'
+                  : confirmedBooking.status === 'PENDING_PAYMENT'
+                  ? 'bg-amber-100 text-amber-600'
+                  : 'bg-rose-100 text-rose-600'
+              }`}>
+                {confirmedBooking.status === 'CONFIRMED' ? (
+                  <CheckCircle2 className="h-9 w-9" />
+                ) : confirmedBooking.status === 'PENDING_PAYMENT' ? (
+                  <Clock className="h-9 w-9" />
+                ) : (
+                  <X className="h-9 w-9" />
+                )}
               </div>
               <div>
-                <h3 className="text-xl font-bold text-slate-900">Reservation Confirmed!</h3>
+                <h3 className="text-xl font-bold text-slate-900">
+                  {confirmedBooking.status === 'CONFIRMED'
+                    ? 'Reservation Confirmed!'
+                    : confirmedBooking.status === 'PENDING_PAYMENT'
+                    ? 'Slot Reserved (Payment Pending)'
+                    : 'Payment Failed'}
+                </h3>
                 <p className="text-sm text-slate-500 mt-1">
-                  Your time slot at {amenity.name} has been booked.
+                  {confirmedBooking.status === 'CONFIRMED'
+                    ? `Your time slot at ${amenity.name} has been booked.`
+                    : confirmedBooking.status === 'PENDING_PAYMENT'
+                    ? 'Your booking is temporarily on hold for 15 minutes. Please complete payment to confirm.'
+                    : 'The test payment failed. Your reservation could not be confirmed.'}
                 </p>
               </div>
 
@@ -234,9 +276,33 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
                     {selectedFlat.tower_number}-{selectedFlat.flat_number}
                   </span>
                 </div>
+                <div className="flex justify-between py-1 border-b border-slate-200/60">
+                  <span className="text-slate-500">Booking Status</span>
+                  <Badge
+                    variant={
+                      confirmedBooking.status === 'CONFIRMED'
+                        ? 'success'
+                        : confirmedBooking.status === 'PENDING_PAYMENT'
+                        ? 'warning'
+                        : 'danger'
+                    }
+                  >
+                    {confirmedBooking.status}
+                  </Badge>
+                </div>
                 <div className="flex justify-between py-1">
                   <span className="text-slate-500">Payment Status</span>
-                  <Badge variant={confirmedBooking.payment_status === 'FREE' ? 'neutral' : 'success'}>
+                  <Badge
+                    variant={
+                      confirmedBooking.payment_status === 'PAID'
+                        ? 'success'
+                        : confirmedBooking.payment_status === 'FREE'
+                        ? 'neutral'
+                        : confirmedBooking.payment_status === 'PENDING'
+                        ? 'warning'
+                        : 'danger'
+                    }
+                  >
                     {confirmedBooking.payment_status}
                   </Badge>
                 </div>
@@ -346,6 +412,10 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
                               <span className="text-indigo-700 font-medium">You booked this</span>
                             ) : slot.is_past ? (
                               <span className="text-slate-400">Past slot</span>
+                            ) : slot.is_blocked ? (
+                              <span className="text-amber-600 font-medium truncate" title={slot.block_reason || 'Maintenance'}>
+                                {slot.block_reason || 'Maintenance'}
+                              </span>
                             ) : slot.remaining_capacity === 0 ? (
                               <span className="text-rose-500 font-medium">Fully booked</span>
                             ) : (
@@ -408,6 +478,40 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
                       className="w-full text-xs px-3 py-2 rounded-lg border border-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
                     />
                   </div>
+
+                  {/* Payment Options (When fee > 0) */}
+                  {amenity.booking_fee_paise > 0 && (
+                    <div className="pt-2 border-t border-slate-200/60 space-y-2">
+                      <div className="flex items-center justify-between p-2.5 bg-white rounded-lg border border-slate-200 text-xs">
+                        <div>
+                          <span className="font-semibold text-slate-800 block">Instant Payment (Simulation)</span>
+                          <span className="text-slate-500 text-[11px]">Execute payment immediately via simulated provider</span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={autoPay}
+                          onChange={(e) => setAutoPay(e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                        />
+                      </div>
+
+                      {autoPay ? (
+                        <label className="flex items-center gap-2 text-[11px] text-slate-500 cursor-pointer pl-1">
+                          <input
+                            type="checkbox"
+                            checked={simulateFailure}
+                            onChange={(e) => setSimulateFailure(e.target.checked)}
+                            className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 cursor-pointer"
+                          />
+                          <span>Simulate Payment Failure (Test Mode)</span>
+                        </label>
+                      ) : (
+                        <p className="text-[11px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-100">
+                          Slot will be held in PENDING PAYMENT status for 15 minutes. You can pay anytime before it expires.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

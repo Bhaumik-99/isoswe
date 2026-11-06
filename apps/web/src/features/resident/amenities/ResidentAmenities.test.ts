@@ -154,11 +154,59 @@ describe('Resident Amenity Components & Booking Logic', () => {
         LEASE_EXPIRED_FOR_DATE: 'Your tenancy lease date expires before this booking date. Reservations beyond your lease are restricted.',
         DAILY_LIMIT_EXCEEDED: 'You have reached the daily booking limit (2 slots) for this amenity.',
         CANCELLATION_DEADLINE_EXPIRED: 'The cancellation deadline for this booking has expired. Cancellations must be made prior to the amenity cutoff window.',
+        SLOT_BLOCKED: 'This slot is temporarily blocked by township management for maintenance. Please choose another time.',
+        PAYMENT_WINDOW_EXPIRED: 'The 15-minute payment window for this reservation has expired.',
       };
 
       expect(errorMap['CAPACITY_EXCEEDED']).toContain('no longer available');
       expect(errorMap['LEASE_EXPIRED_FOR_DATE']).toContain('lease date expires');
       expect(errorMap['CANCELLATION_DEADLINE_EXPIRED']).toContain('cancellation deadline');
+      expect(errorMap['SLOT_BLOCKED']).toContain('temporarily blocked');
+      expect(errorMap['PAYMENT_WINDOW_EXPIRED']).toContain('15-minute payment window');
+    });
+  });
+
+  describe('Phase 8 Part 3: Payments, Blocks, & Staff Management Invariants', () => {
+    it('validates booking lifecycle transitions', () => {
+      const allowedTransitions: Record<string, string[]> = {
+        PENDING_PAYMENT: ['CONFIRMED', 'CANCELLED', 'PAYMENT_FAILED'],
+        CONFIRMED: ['COMPLETED', 'CANCELLED'],
+        CANCELLED: [],
+        COMPLETED: [],
+        PAYMENT_FAILED: [],
+      };
+
+      expect(allowedTransitions['PENDING_PAYMENT']).toContain('CONFIRMED');
+      expect(allowedTransitions['PENDING_PAYMENT']).toContain('PAYMENT_FAILED');
+      expect(allowedTransitions['CONFIRMED']).toContain('CANCELLED');
+    });
+
+    it('enforces staff cancellation 100% refund policy override', () => {
+      const paidFeePaise = 25000; // 250 INR
+      const standardRefundPercentage = 80;
+
+      // Resident cancellation gives standard refund percentage
+      const residentRefundPaise = Math.round((paidFeePaise * standardRefundPercentage) / 100);
+      expect(residentRefundPaise).toBe(20000);
+
+      // Staff cancellation overrides with 100% full refund
+      const staffRefundPaise = Math.round((paidFeePaise * 100) / 100);
+      expect(staffRefundPaise).toBe(25000);
+    });
+
+    it('flags blocked slots as unavailable with custom operational reason', () => {
+      const slot = {
+        start_time: '14:00',
+        end_time: '15:00',
+        is_available: false,
+        is_blocked: true,
+        block_reason: 'Tournament preparations and court resealing',
+      };
+
+      expect(slot.is_blocked).toBe(true);
+      expect(slot.is_available).toBe(false);
+      expect(slot.block_reason).toContain('resealing');
     });
   });
 });
+

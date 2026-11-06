@@ -245,6 +245,17 @@ class Payment(Base):
         nullable=False,
         index=True,
     )
+    booking_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "amenity_bookings.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_payments_booking_id",
+        ),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

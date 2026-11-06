@@ -12,7 +12,12 @@ export type AmenityType =
   | 'GUEST_ROOM'
   | 'OTHER';
 
-export type BookingStatus = 'CONFIRMED' | 'CANCELLED' | 'COMPLETED';
+export type BookingStatus =
+  | 'PENDING_PAYMENT'
+  | 'CONFIRMED'
+  | 'CANCELLED'
+  | 'COMPLETED'
+  | 'PAYMENT_FAILED';
 
 export type BookingPaymentStatus = 'FREE' | 'PAID' | 'PENDING' | 'REFUNDED' | 'FAILED';
 
@@ -61,6 +66,8 @@ export interface TimeSlotAvailability {
   is_available: boolean;
   is_past: boolean;
   user_booked: boolean;
+  is_blocked?: boolean;
+  block_reason?: string | null;
 }
 
 export interface AmenitySlotsResponse {
@@ -76,10 +83,93 @@ export interface CreateBookingRequest {
   end_time: string; // HH:MM
   booked_units?: number;
   notes?: string | null;
+  auto_pay?: boolean;
+}
+
+export interface PayBookingRequest {
+  simulate_failure?: boolean;
+  idempotency_key?: string;
 }
 
 export interface CancelBookingRequest {
   reason?: string | null;
+}
+
+export interface StaffCancelBookingRequest {
+  reason: string;
+}
+
+export interface AmenityBlock {
+  id: string;
+  society_id: string;
+  amenity_id: string;
+  block_date: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  reason: string;
+  blocked_by_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateAmenityBlockRequest {
+  block_date: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  reason: string;
+}
+
+export interface CreateAmenityRequest {
+  name: string;
+  description?: string | null;
+  amenity_type: AmenityType;
+  location?: string | null;
+  tower_id?: string | null;
+  capacity?: number;
+  slot_duration_minutes?: number;
+  opening_time?: string;
+  closing_time?: string;
+  booking_fee_paise?: number;
+  advance_booking_days?: number;
+  min_advance_hours?: number;
+  max_slots_per_day_per_resident?: number;
+  cancellation_deadline_hours?: number;
+  refund_percentage?: number;
+  allowed_membership_types?: string[];
+  rules_and_guidelines?: string | null;
+  is_active?: boolean;
+}
+
+export interface UpdateAmenityRequest {
+  name?: string;
+  description?: string | null;
+  location?: string | null;
+  tower_id?: string | null;
+  capacity?: number;
+  slot_duration_minutes?: number;
+  opening_time?: string;
+  closing_time?: string;
+  booking_fee_paise?: number;
+  advance_booking_days?: number;
+  min_advance_hours?: number;
+  max_slots_per_day_per_resident?: number;
+  cancellation_deadline_hours?: number;
+  refund_percentage?: number;
+  allowed_membership_types?: string[];
+  rules_and_guidelines?: string | null;
+  is_active?: boolean;
+}
+
+export interface StaffBookingFilterParams {
+  amenity_id?: string;
+  booking_date?: string;
+  status?: BookingStatus;
+  payment_status?: BookingPaymentStatus;
+  flat_id?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+  society_id?: string;
 }
 
 export interface AmenityBooking {
@@ -98,7 +188,9 @@ export interface AmenityBooking {
   status: BookingStatus;
   booking_fee_paise: number;
   payment_status: BookingPaymentStatus;
+  payment_id?: string | null;
   payment_reference?: string | null;
+  payment_expires_at?: string | null;
   refund_status: RefundStatus;
   refund_amount_paise: number;
   cancellation_reason?: string | null;
@@ -117,3 +209,4 @@ export interface PaginatedBookingsResponse {
   page_size: number;
   total_pages: number;
 }
+

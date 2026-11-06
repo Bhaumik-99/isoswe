@@ -67,6 +67,10 @@ class NotificationHandler(MessageHandler):
             "visitor.rejected",
             "visitor.checked_in",
             "pass.revoked",
+            # Amenities & Clubhouses
+            "amenity.booking_confirmed",
+            "amenity.booking_payment_failed",
+            "amenity.booking_cancelled",
             # Direct dispatches
             "notification.dispatch_sms",
             "notification.dispatch_email",

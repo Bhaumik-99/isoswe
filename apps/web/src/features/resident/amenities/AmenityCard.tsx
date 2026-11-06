@@ -180,3 +180,4 @@ export const AmenityCard: React.FC<AmenityCardProps> = ({
     </Card>
   );
 };
+

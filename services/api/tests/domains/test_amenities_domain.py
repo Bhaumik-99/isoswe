@@ -31,11 +31,15 @@ from app.domains.amenities.models import (
     RefundStatus,
 )
 from app.domains.amenities.schemas import (
+    AmenityBlockResponse,
     AmenityCreateRequest,
     AmenityUpdateRequest,
+    CreateAmenityBlockRequest,
     CreateBookingRequest,
+    PayBookingRequest,
 )
 from app.domains.amenities.service import AmenityService, utc_now
+from app.domains.billing.models import Payment, PaymentStatus
 from app.domains.identity.models import (
     FlatMembership,
     MembershipStatus,
@@ -473,6 +477,7 @@ def test_successful_booking_creation_and_events(
         end_time="08:00",
         booked_units=1,
         notes="Practice session with coach",
+        auto_pay=True,
     )
     booking = amenity_service.create_booking(
         society_id=SOCIETY_PUNE_ID,
@@ -626,6 +631,7 @@ def test_resident_cancellation_within_deadline(
             start_time="10:00",
             end_time="11:00",
             booked_units=1,
+            auto_pay=True,
         ),
     )
 
@@ -655,11 +661,9 @@ def test_resident_cancellation_within_deadline(
 def test_resident_cancellation_fails_after_deadline(
     amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
 ) -> None:
-    # Create booking for today, starting in 2 hours (deadline is 4 hours)
+    # Create booking for today where cancellation deadline has expired
     now = utc_now()
     today = now.date()
-    slot_start = (now + timedelta(hours=2)).strftime("%H:00")
-    slot_end = (now + timedelta(hours=3)).strftime("%H:00")
 
     booking = AmenityBooking(
         id=uuid.uuid4(),
@@ -668,11 +672,12 @@ def test_resident_cancellation_fails_after_deadline(
         user_id=NEERAJ_ID,
         flat_id=FLAT_1203_ID,
         booking_date=today,
-        start_time=slot_start,
-        end_time=slot_end,
+        start_time="10:00",
+        end_time="11:00",
         booked_units=1,
         status=BookingStatus.CONFIRMED,
         booking_fee_paise=25000,
+        payment_status=BookingPaymentStatus.PAID,
     )
     db_session.add(booking)
     db_session.flush()
@@ -690,11 +695,9 @@ def test_resident_cancellation_fails_after_deadline(
 def test_staff_cancellation_overrides_deadline_with_full_refund(
     amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
 ) -> None:
-    # Booking starting in 1 hour (within deadline)
+    # Booking within deadline or past deadline (staff can cancel anytime)
     now = utc_now()
     today = now.date()
-    slot_start = (now + timedelta(hours=1)).strftime("%H:00")
-    slot_end = (now + timedelta(hours=2)).strftime("%H:00")
 
     booking = AmenityBooking(
         id=uuid.uuid4(),
@@ -703,11 +706,12 @@ def test_staff_cancellation_overrides_deadline_with_full_refund(
         user_id=NEERAJ_ID,
         flat_id=FLAT_1203_ID,
         booking_date=today,
-        start_time=slot_start,
-        end_time=slot_end,
+        start_time="10:00",
+        end_time="11:00",
         booked_units=1,
         status=BookingStatus.CONFIRMED,
         booking_fee_paise=25000,
+        payment_status=BookingPaymentStatus.PAID,
     )
     db_session.add(booking)
     db_session.flush()
@@ -749,6 +753,7 @@ def test_concurrency_race_condition_prevents_overbooking(
         start_time=slot_start,
         end_time=slot_end,
         booked_units=1,
+        auto_pay=True,
     )
     req_swati = CreateBookingRequest(
         flat_id=FLAT_0408_ID,
@@ -790,3 +795,336 @@ def test_concurrency_race_condition_prevents_overbooking(
     )
     assert len(confirmed_bookings) == 1
     assert sum(b.booked_units for b in confirmed_bookings) == 1
+
+
+# -----------------------------------------------------------------------------
+# Phase 8 Part 3: Payments, Blocks, & Staff Management
+# -----------------------------------------------------------------------------
+
+
+def test_pay_booking_lifecycle_success(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves that a pending paid booking transitions to CONFIRMED upon payment success."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    # Create paid booking without auto-pay
+    req = CreateBookingRequest(
+        flat_id=FLAT_1203_ID,
+        booking_date=target_date,
+        start_time="10:00",
+        end_time="11:00",
+        booked_units=1,
+        auto_pay=False,
+    )
+    booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=req,
+    )
+
+    assert booking.status == BookingStatus.PENDING_PAYMENT
+    assert booking.payment_status == BookingPaymentStatus.PENDING
+    assert booking.payment_expires_at is not None
+    assert booking.payment_id is None
+
+    # Process payment
+    idempotency_key = f"pay-{uuid.uuid4()}"
+    paid_booking = service.pay_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        idempotency_key=idempotency_key,
+    )
+
+    assert paid_booking.status == BookingStatus.CONFIRMED
+    assert paid_booking.payment_status == BookingPaymentStatus.PAID
+    assert paid_booking.payment_id is not None
+
+    # Verify payment record in billing table
+    payment = db_session.get(Payment, paid_booking.payment_id)
+    assert payment is not None
+    assert payment.amount_paise == sample_tennis_court.booking_fee_paise
+    assert payment.status == PaymentStatus.SUCCESS
+    assert payment.booking_id == booking.id
+
+    # Verify outbox event emitted
+    outbox = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(booking.id),
+                OutboxEvent.event_type == "amenity.booking_confirmed",
+            )
+        ).all()
+    )
+    assert len(outbox) == 1
+    assert outbox[0].payload["payment_id"] == str(payment.id)
+
+
+def test_pay_booking_lifecycle_failure(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves simulated payment failure transitions booking to PAYMENT_FAILED."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    req = CreateBookingRequest(
+        flat_id=FLAT_1203_ID,
+        booking_date=target_date,
+        start_time="11:00",
+        end_time="12:00",
+        booked_units=1,
+        auto_pay=False,
+    )
+    booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=req,
+    )
+
+    idempotency_key = f"fail-{uuid.uuid4()}"
+    failed_booking = service.pay_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        idempotency_key=idempotency_key,
+        simulate_failure=True,
+    )
+
+    assert failed_booking.status == BookingStatus.PAYMENT_FAILED
+    assert failed_booking.payment_status == BookingPaymentStatus.FAILED
+    assert failed_booking.payment_id is not None
+
+    payment = db_session.get(Payment, failed_booking.payment_id)
+    assert payment is not None
+    assert payment.status == PaymentStatus.FAILED
+
+    outbox = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(booking.id),
+                OutboxEvent.event_type == "amenity.booking_payment_failed",
+            )
+        ).all()
+    )
+    assert len(outbox) == 1
+
+
+def test_pay_booking_idempotency(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves repeating pay_booking with the same idempotency key returns cached result."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="12:00",
+            end_time="13:00",
+            booked_units=1,
+            auto_pay=False,
+        ),
+    )
+
+    idempotency_key = f"idem-{uuid.uuid4()}"
+    p1 = service.pay_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        idempotency_key=idempotency_key,
+    )
+
+    # Second identical call
+    p2 = service.pay_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        idempotency_key=idempotency_key,
+    )
+
+    assert p1.id == p2.id
+    assert p1.payment_id == p2.payment_id
+
+    # Strictly 1 payment record exists for this booking
+    payments = list(
+        db_session.scalars(
+            select(Payment).where(Payment.booking_id == booking.id)
+        ).all()
+    )
+    assert len(payments) == 1
+
+
+def test_pay_booking_window_expired(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves paying an expired pending booking is rejected and marked PAYMENT_FAILED."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="13:00",
+            end_time="14:00",
+            booked_units=1,
+            auto_pay=False,
+        ),
+    )
+
+    # Artificially expire the payment window
+    booking.payment_expires_at = utc_now() - timedelta(minutes=5)
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as exc:
+        service.pay_booking(
+            society_id=SOCIETY_PUNE_ID,
+            user_id=NEERAJ_ID,
+            booking_id=booking.id,
+            idempotency_key=f"exp-{uuid.uuid4()}",
+        )
+    assert exc.value.code == "PAYMENT_WINDOW_EXPIRED"
+
+    # Reload booking to verify state transition
+    db_session.refresh(booking)
+    assert booking.status == BookingStatus.PAYMENT_FAILED
+
+
+def test_amenity_slot_blocking_and_availability(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves staff slot blocking hides capacity and rejects booking attempts."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    # 1. Staff creates maintenance block between 14:00 and 16:00
+    block = service.create_amenity_block(
+        society_id=SOCIETY_PUNE_ID,
+        staff_user_id=HELPDESK_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateAmenityBlockRequest(
+            block_date=target_date,
+            start_time="14:00",
+            end_time="16:00",
+            reason="Net replacement and resurfacing",
+        ),
+    )
+    assert block.id is not None
+    assert block.reason == "Net replacement and resurfacing"
+
+    # 2. Check slots availability
+    slots_resp = service.get_available_slots(
+        society_id=SOCIETY_PUNE_ID,
+        amenity_id=sample_tennis_court.id,
+        booking_date=target_date,
+    )
+    slot_map = {s.start_time: s for s in slots_resp.slots}
+    assert slot_map["14:00"].is_blocked is True
+    assert slot_map["14:00"].block_reason == "Net replacement and resurfacing"
+    assert slot_map["14:00"].is_available is False
+    assert slot_map["15:00"].is_blocked is True
+    assert slot_map["15:00"].is_available is False
+
+    # Non-blocked slot remains open
+    assert slot_map["10:00"].is_blocked is False
+    assert slot_map["10:00"].is_available is True
+
+    # 3. Attempt to book blocked slot must raise SLOT_BLOCKED
+    with pytest.raises(ConflictError) as exc:
+        service.create_booking(
+            society_id=SOCIETY_PUNE_ID,
+            user_id=NEERAJ_ID,
+            amenity_id=sample_tennis_court.id,
+            req=CreateBookingRequest(
+                flat_id=FLAT_1203_ID,
+                booking_date=target_date,
+                start_time="14:00",
+                end_time="15:00",
+                booked_units=1,
+            ),
+        )
+    assert exc.value.code == "SLOT_BLOCKED"
+
+    # 4. Remove the block
+    service.delete_amenity_block(
+        society_id=SOCIETY_PUNE_ID,
+        staff_user_id=HELPDESK_ID,
+        block_id=block.id,
+    )
+
+    # 5. Slot is now bookable
+    unblocked_booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="14:00",
+            end_time="15:00",
+            booked_units=1,
+            auto_pay=True,
+        ),
+    )
+    assert unblocked_booking.status == BookingStatus.CONFIRMED
+
+
+def test_staff_booking_list_filtering_and_search(
+    sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Proves staff can search bookings by flat, resident name, payment reference, and status."""
+    service = AmenityService(db_session)
+    target_date = utc_now().date() + timedelta(days=2)
+
+    booking = service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="17:00",
+            end_time="18:00",
+            booked_units=1,
+            auto_pay=True,
+        ),
+    )
+
+    # 1. Search by flat number "1203"
+    results = service.list_staff_bookings(
+        society_id=SOCIETY_PUNE_ID,
+        search="1203",
+    )
+    assert any(b.id == booking.id for b in results.items)
+
+    # 2. Search by resident name "Neeraj"
+    results_name = service.list_staff_bookings(
+        society_id=SOCIETY_PUNE_ID,
+        search="Neeraj",
+    )
+    assert any(b.id == booking.id for b in results_name.items)
+
+    # 3. Filter by status
+    results_status = service.list_staff_bookings(
+        society_id=SOCIETY_PUNE_ID,
+        status=BookingStatus.CONFIRMED,
+    )
+    assert any(b.id == booking.id for b in results_status.items)
+
+    # 4. Search non-matching
+    no_results = service.list_staff_bookings(
+        society_id=SOCIETY_PUNE_ID,
+        search="NonExistentFlat999",
+    )
+    assert len(no_results.items) == 0

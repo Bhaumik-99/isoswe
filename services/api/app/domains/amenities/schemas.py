@@ -115,6 +115,8 @@ class TimeSlotAvailability(BaseModel):
     is_available: bool
     is_past: bool
     user_booked: bool = False
+    is_blocked: bool = False
+    block_reason: str | None = None
 
 
 class AmenitySlotsResponse(BaseModel):
@@ -130,6 +132,7 @@ class CreateBookingRequest(BaseModel):
     end_time: str = Field(..., pattern=r"^\d{2}:\d{2}$")
     booked_units: int = Field(default=1, ge=1, le=50)
     notes: str | None = Field(default=None, max_length=500)
+    auto_pay: bool = False
 
     @field_validator("end_time")
     @classmethod
@@ -167,6 +170,8 @@ class BookingResponse(BaseModel):
     booking_fee_paise: int
     payment_status: BookingPaymentStatus
     payment_reference: str | None = None
+    payment_id: uuid.UUID | None = None
+    payment_expires_at: datetime | None = None
     refund_status: RefundStatus
     refund_amount_paise: int
     cancellation_reason: str | None = None
@@ -184,3 +189,38 @@ class PaginatedBookingsResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class PayBookingRequest(BaseModel):
+    simulate_failure: bool = False
+    idempotency_key: str | None = None
+
+
+class AmenityBlockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    society_id: uuid.UUID
+    amenity_id: uuid.UUID
+    block_date: date
+    start_time: str | None = None
+    end_time: str | None = None
+    reason: str
+    blocked_by_user_id: uuid.UUID | None = None
+    created_at: datetime
+
+
+class CreateAmenityBlockRequest(BaseModel):
+    block_date: date
+    start_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    end_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    reason: str = Field(..., min_length=3, max_length=255)
+
+    @field_validator("end_time")
+    @classmethod
+    def validate_block_time_order(cls, v: str | None, info: Any) -> str | None:
+        start = info.data.get("start_time")
+        if start and v and v <= start:
+            raise ValueError("end_time must be later than start_time")
+        return v
+

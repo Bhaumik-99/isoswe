@@ -18,14 +18,15 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.errors import AuthorizationError
 from app.core.security import require_roles
-from app.domains.amenities.models import AmenityType, BookingStatus
+from app.domains.amenities.models import AmenityType, BookingPaymentStatus, BookingStatus
 from app.domains.amenities.schemas import (
+    AmenityBlockResponse,
     AmenityCreateRequest,
     AmenityListResponse,
     AmenityResponse,
@@ -34,8 +35,10 @@ from app.domains.amenities.schemas import (
     AmenityUpdateRequest,
     BookingResponse,
     CancelBookingRequest,
+    CreateAmenityBlockRequest,
     CreateBookingRequest,
     PaginatedBookingsResponse,
+    PayBookingRequest,
     StaffCancelBookingRequest,
 )
 from app.domains.amenities.service import AmenityService
@@ -133,6 +136,74 @@ def set_amenity_status(
     return AmenityResponse.model_validate(amenity)
 
 
+@router.post(
+    "/staff/{amenity_id}/blocks",
+    response_model=AmenityBlockResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Temporarily block dates or slots for an amenity (Staff only)",
+)
+def create_amenity_block(
+    amenity_id: UUID,
+    req: CreateAmenityBlockRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Society ID"),
+    db: Session = Depends(get_db),
+) -> AmenityBlockResponse:
+    soc_id = _resolve_society_id(claims, society_id)
+    svc = AmenityService(db)
+    block = svc.create_amenity_block(
+        society_id=soc_id,
+        staff_user_id=claims.user_id,
+        amenity_id=amenity_id,
+        req=req,
+    )
+    db.commit()
+    return AmenityBlockResponse.model_validate(block)
+
+
+@router.get(
+    "/staff/{amenity_id}/blocks",
+    response_model=list[AmenityBlockResponse],
+    summary="List active temporary blocks for an amenity (Staff only)",
+)
+def list_amenity_blocks(
+    amenity_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    block_date: date | None = Query(None, description="Filter by date"),
+    society_id: UUID | None = Query(None, description="Society ID"),
+    db: Session = Depends(get_db),
+) -> list[AmenityBlockResponse]:
+    soc_id = _resolve_society_id(claims, society_id)
+    svc = AmenityService(db)
+    blocks = svc.list_amenity_blocks(
+        society_id=soc_id,
+        amenity_id=amenity_id,
+        block_date=block_date,
+    )
+    return [AmenityBlockResponse.model_validate(b) for b in blocks]
+
+
+@router.delete(
+    "/staff/blocks/{block_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a temporary amenity block (Staff only)",
+)
+def delete_amenity_block(
+    block_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Society ID"),
+    db: Session = Depends(get_db),
+) -> None:
+    soc_id = _resolve_society_id(claims, society_id)
+    svc = AmenityService(db)
+    svc.delete_amenity_block(
+        society_id=soc_id,
+        staff_user_id=claims.user_id,
+        block_id=block_id,
+    )
+    db.commit()
+
+
 @router.get(
     "/staff/bookings",
     response_model=PaginatedBookingsResponse,
@@ -146,6 +217,10 @@ def list_staff_bookings(
         None, alias="status", description="Filter by status"
     ),
     flat_id: UUID | None = Query(None, description="Filter by flat ID"),
+    payment_status: BookingPaymentStatus | None = Query(
+        None, description="Filter by payment status"
+    ),
+    search: str | None = Query(None, description="Search resident name, flat number, or reference"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Page size"),
     society_id: UUID | None = Query(None, description="Society ID"),
@@ -161,6 +236,8 @@ def list_staff_bookings(
         booking_date=booking_date,
         status=booking_status,
         flat_id=flat_id,
+        payment_status=payment_status,
+        search=search,
     )
 
 
@@ -264,6 +341,33 @@ def cancel_my_booking(
     )
     db.commit()
     return svc._to_booking_response(booking)
+
+
+@router.post(
+    "/bookings/{booking_id}/pay",
+    response_model=BookingResponse,
+    summary="Process simulated payment for an amenity booking (Resident only)",
+)
+def pay_booking(
+    booking_id: UUID,
+    req: PayBookingRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.RESIDENT))],
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    society_id: UUID | None = Query(None, description="Society ID"),
+    db: Session = Depends(get_db),
+) -> BookingResponse:
+    soc_id = _resolve_society_id(claims, society_id)
+    svc = AmenityService(db)
+    key = idempotency_key or req.idempotency_key
+    resp = svc.pay_booking(
+        society_id=soc_id,
+        user_id=claims.user_id,
+        booking_id=booking_id,
+        idempotency_key=key,
+        simulate_failure=req.simulate_failure,
+    )
+    db.commit()
+    return resp
 
 
 # =============================================================================

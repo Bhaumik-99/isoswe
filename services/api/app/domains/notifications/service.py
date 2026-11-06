@@ -968,6 +968,82 @@ class NotificationService:
                     )
                     created_count += 1
 
+        # --- E. AMENITY BOOKING EVENTS ---
+        elif event_type == "amenity.booking_confirmed":
+            user_id_raw = payload.get("user_id")
+            amenity_name = payload.get("amenity_name", "Amenity")
+            b_date = payload.get("booking_date", "")
+            s_time = payload.get("start_time", "")
+            e_time = payload.get("end_time", "")
+            fee_paise = payload.get("booking_fee_paise", 0)
+            fee_str = f" (Fee: ₹{fee_paise / 100:,.2f})" if fee_paise > 0 else " (Free)"
+            if user_id_raw:
+                user = self.get_user_by_id(society_id, uuid.UUID(str(user_id_raw)))
+                if user:
+                    self.create_in_app_notification(
+                        society_id=society_id,
+                        recipient=user,
+                        event_type=event_type,
+                        title="Amenity Booking Confirmed",
+                        body=f"Your booking for {amenity_name} on {b_date} ({s_time}-{e_time}) has been confirmed{fee_str}.",
+                        priority=NotificationPriority.NORMAL,
+                        aggregate_type="amenity_booking",
+                        aggregate_id=str(envelope.aggregate_id),
+                        action_url="/resident/amenities",
+                        base_event_id=envelope.event_id,
+                    )
+                    created_count += 1
+
+        elif event_type == "amenity.booking_payment_failed":
+            user_id_raw = payload.get("user_id")
+            amenity_name = payload.get("amenity_name", "Amenity")
+            err = payload.get("error_message", "Payment transaction declined or timed out.")
+            if user_id_raw:
+                user = self.get_user_by_id(society_id, uuid.UUID(str(user_id_raw)))
+                if user:
+                    self.create_in_app_notification(
+                        society_id=society_id,
+                        recipient=user,
+                        event_type=event_type,
+                        title="Amenity Booking Payment Failed",
+                        body=f"Payment for your booking of {amenity_name} failed: {err}. Please retry your booking.",
+                        priority=NotificationPriority.HIGH,
+                        aggregate_type="amenity_booking",
+                        aggregate_id=str(envelope.aggregate_id),
+                        action_url="/resident/amenities",
+                        base_event_id=envelope.event_id,
+                    )
+                    created_count += 1
+
+        elif event_type == "amenity.booking_cancelled":
+            user_id_raw = payload.get("user_id")
+            amenity_name = payload.get("amenity_name", "Amenity")
+            refund_amount = payload.get("refund_amount_paise", 0)
+            refund_status = payload.get("refund_status", "NOT_APPLICABLE")
+            refund_msg = (
+                f" Refund: ₹{refund_amount / 100:,.2f} ({refund_status})."
+                if refund_amount > 0
+                else ""
+            )
+            cancelled_by = payload.get("cancelled_by", "RESIDENT")
+            by_str = "management" if cancelled_by == "STAFF" else "you"
+            if user_id_raw:
+                user = self.get_user_by_id(society_id, uuid.UUID(str(user_id_raw)))
+                if user:
+                    self.create_in_app_notification(
+                        society_id=society_id,
+                        recipient=user,
+                        event_type=event_type,
+                        title="Amenity Booking Cancelled",
+                        body=f"Your booking for {amenity_name} was cancelled by {by_str}.{refund_msg}",
+                        priority=NotificationPriority.NORMAL,
+                        aggregate_type="amenity_booking",
+                        aggregate_id=str(envelope.aggregate_id),
+                        action_url="/resident/amenities",
+                        base_event_id=envelope.event_id,
+                    )
+                    created_count += 1
+
         return created_count
 
     # -------------------------------------------------------------------------

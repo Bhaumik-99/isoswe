@@ -13,6 +13,7 @@ import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { ResidentVisitorsPage } from '../features/resident/ResidentVisitorsPage';
 import { ResidentNotificationsPage } from '../features/resident/notifications/ResidentNotificationsPage';
 import { ResidentAmenitiesPage } from '../features/resident/amenities/ResidentAmenitiesPage';
+import { StaffAmenitiesPage } from '../features/staff/amenities/StaffAmenitiesPage';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
@@ -144,6 +145,7 @@ export const AppRoutes: React.FC = () => {
             </ProtectedRoute>
           }
         />
+        <Route path="amenities" element={<StaffAmenitiesPage />} />
         <Route path="residents" element={<ResidentsDirectory />} />
         <Route path="notifications" element={<StaffNotificationsPage />} />
         <Route

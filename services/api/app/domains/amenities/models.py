@@ -49,9 +49,11 @@ class AmenityType(str, enum.Enum):
 
 
 class BookingStatus(str, enum.Enum):
+    PENDING_PAYMENT = "PENDING_PAYMENT"
     CONFIRMED = "CONFIRMED"
     CANCELLED = "CANCELLED"
     COMPLETED = "COMPLETED"
+    PAYMENT_FAILED = "PAYMENT_FAILED"
 
 
 class BookingPaymentStatus(str, enum.Enum):
@@ -125,6 +127,9 @@ class Amenity(Base):
     bookings: Mapped[list["AmenityBooking"]] = relationship(
         "AmenityBooking", back_populates="amenity", cascade="all, delete-orphan"
     )
+    blocks: Mapped[list["AmenityBlock"]] = relationship(
+        "AmenityBlock", back_populates="amenity", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         CheckConstraint("capacity > 0", name="chk_amenity_capacity_positive"),
@@ -187,6 +192,21 @@ class AmenityBooking(Base):
         default=BookingPaymentStatus.FREE,
     )
     payment_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "payments.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_amenity_bookings_payment_id",
+        ),
+        nullable=True,
+        index=True,
+    )
+    payment_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     refund_status: Mapped[RefundStatus] = mapped_column(
         SAEnum(RefundStatus, native_enum=False),
         nullable=False,
@@ -223,6 +243,9 @@ class AmenityBooking(Base):
         "User", foreign_keys=[cancelled_by_user_id]
     )
     flat: Mapped["Flat"] = relationship("Flat")  # type: ignore[name-defined] # noqa: F821
+    payment: Mapped["Payment | None"] = relationship(  # type: ignore[name-defined] # noqa: F821
+        "Payment", foreign_keys=[payment_id]
+    )
 
     __table_args__ = (
         CheckConstraint("booked_units > 0", name="chk_booking_units_positive"),
@@ -234,3 +257,48 @@ class AmenityBooking(Base):
         Index("ix_amenity_bookings_society_created", "society_id", "created_at"),
         Index("ix_amenity_bookings_flat", "flat_id"),
     )
+
+
+class AmenityBlock(Base):
+    """Temporary maintenance or administrative block of an amenity for a date or slot."""
+
+    __tablename__ = "amenity_blocks"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amenity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("amenities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    block_date: Mapped[date] = mapped_column(Date, nullable=False)
+    start_time: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    end_time: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    blocked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    # Relationships
+    amenity: Mapped["Amenity"] = relationship("Amenity", back_populates="blocks")
+    society: Mapped["Society"] = relationship("Society")  # type: ignore[name-defined] # noqa: F821
+    blocked_by: Mapped["User | None"] = relationship("User")  # type: ignore[name-defined] # noqa: F821
+
+    __table_args__ = (
+        Index("ix_amenity_blocks_society_amenity_date", "society_id", "amenity_id", "block_date"),
+    )
+

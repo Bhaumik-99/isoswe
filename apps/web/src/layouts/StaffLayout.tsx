@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   Bell,
+  Building2,
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
@@ -47,6 +48,7 @@ export const StaffLayout: React.FC = () => {
     ...(canViewCommitteeReport
       ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }]
       : []),
+    { name: 'Amenity Operations', path: '/staff/amenities', icon: Building2 },
     { name: 'Residents Directory', path: '/staff/residents', icon: Users },
     { name: 'Notification Deliveries', path: '/staff/notifications', icon: Bell },
   ];
