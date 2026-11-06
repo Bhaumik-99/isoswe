@@ -373,14 +373,21 @@ def get_committee_overview(
 
     for tw in towers_db:
         # Flat count
-        flat_count = db.scalar(select(func.count(Flat.id)).where(Flat.tower_id == tw.id)) or 0
+        flat_count = (
+            db.scalar(
+                select(func.count(Flat.id)).where(
+                    Flat.tower_id == tw.id, Flat.society_id == target_soc
+                )
+            )
+            or 0
+        )
 
         # Tower billed
         tw_billed = (
             db.scalar(
                 select(func.coalesce(func.sum(Invoice.total_paise), 0))
                 .join(Flat, Flat.id == Invoice.flat_id)
-                .where(Flat.tower_id == tw.id)
+                .where(Flat.tower_id == tw.id, Flat.society_id == target_soc)
             )
             or 0
         )
@@ -392,7 +399,11 @@ def get_committee_overview(
                 .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
                 .join(Flat, Flat.id == Invoice.flat_id)
                 .join(Payment, Payment.id == PaymentAllocation.payment_id)
-                .where(Flat.tower_id == tw.id, Payment.status == PaymentStatus.SUCCESS)
+                .where(
+                    Flat.tower_id == tw.id,
+                    Flat.society_id == target_soc,
+                    Payment.status == PaymentStatus.SUCCESS,
+                )
             )
             or 0
         )
@@ -404,6 +415,7 @@ def get_committee_overview(
                 .join(Flat, Flat.id == Complaint.flat_id)
                 .where(
                     Flat.tower_id == tw.id,
+                    Flat.society_id == target_soc,
                     Complaint.status.notin_(
                         [
                             ComplaintStatus.RESOLVED,

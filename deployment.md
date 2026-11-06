@@ -56,9 +56,11 @@ flowchart TD
 - **PostgreSQL Client**: `psql` (libpq 16+)
 
 ### 2.2 Repository Checkout
+All deployment commands assume `REPO_ROOT` is set to the cloned repository root so sections can be executed sequentially or independently without working-directory drift:
 ```bash
 git clone https://github.com/Bhaumik-99/isoswe.git
 cd isoswe
+export REPO_ROOT="$(pwd)"
 ```
 
 ---
@@ -114,20 +116,25 @@ The database utilizes **PostgreSQL 16** with **Row Level Security (RLS)** strict
 Run Alembic migrations up to head to create tables, triggers, indexes, and RLS policies:
 
 ```bash
-cd services/api
+cd "$REPO_ROOT/services/api"
 python -m venv .venv
 source .venv/bin/activate  # Or on Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # Run migrations to head
 python -m alembic upgrade head
+cd "$REPO_ROOT"
 ```
 
 ### 4.2 Seed Baseline Demographics & Society Data
-Seed the Pune township demo data (Marvel Greenfield Residences: 3 Towers, Sample Flats, Resident Accounts, and Authorized Helpdesk/Committee staff):
+From the repository root, seed the Pune township baseline data (Marvel Greenfield Residences: 3 Towers, Sample Flats, Resident Accounts, and Authorized Helpdesk/Committee staff) and optionally populate the full 2,400-flat / 28-tower / 180-staff target-scale dataset:
 
 ```bash
-python scripts/seed.py
+cd "$REPO_ROOT"
+PYTHONPATH=services/api python scripts/seed.py
+
+# Optional: Populate full target-scale township population (28 towers, 2,400 flats, 180 staff)
+PYTHONPATH=services/api python scripts/generate_sample_data.py
 ```
 
 ### 4.3 Database Verification Commands
@@ -146,22 +153,23 @@ SELECT version_num FROM alembic_version;
 
 ## 5. Infrastructure as Code (AWS CDK) Deployment
 
-The infrastructure is defined under `infra/cdk` supporting `dev`, `staging`, and `production` environments in AWS Region `ap-south-1` (Mumbai).
+The infrastructure is defined under `infra/cdk` (`infra/cdk/app.py` reads context key `-c env=<dev|staging|prod>`) in AWS Region `ap-south-1` (Mumbai).
 
 ```bash
-cd infra/cdk
+cd "$REPO_ROOT/infra/cdk"
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Synthesize CloudFormation templates
-cdk synth --context environment=production
+# Synthesize CloudFormation templates (valid env values: dev, staging, prod)
+cdk synth -c env=prod
 
 # Bootstrap CDK environment (first-time deployment only)
 cdk bootstrap aws://123456789012/ap-south-1
 
-# Deploy Network, Database, Compute, and Frontend Stacks
-cdk deploy --all --context environment=production --require-approval never
+# Deploy TownshipOps-Prod stack
+cdk deploy --all -c env=prod --require-approval never
+cd "$REPO_ROOT"
 ```
 
 The CDK deploys:
@@ -177,10 +185,11 @@ The CDK deploys:
 The frontend Progressive Web Application (PWA) is built and uploaded to Amazon S3:
 
 ```bash
-cd apps/web
+cd "$REPO_ROOT/apps/web"
 npm ci
 
-# Run test suite
+# Run ESLint and Vitest unit test suite
+npm run lint
 npm test -- --run
 
 # Compile TypeScript and Vite production bundle
@@ -205,6 +214,7 @@ aws s3 cp dist/manifest.webmanifest s3://township-ops-frontend-prod/manifest.web
 aws cloudfront create-invalidation \
   --distribution-id E12345EXAMPLE \
   --paths "/*"
+cd "$REPO_ROOT"
 ```
 
 ---
@@ -238,9 +248,10 @@ aws ecs update-service \
 ### 8.2 Database Rollback Strategy
 Database migrations are written with clean, reversible `downgrade()` routines:
 ```bash
-cd services/api
+cd "$REPO_ROOT/services/api"
 # Revert the latest migration
 python -m alembic downgrade -1
+cd "$REPO_ROOT"
 ```
 
 For major state recovery:

@@ -174,4 +174,5 @@ class MeResponse(BaseModel):
 
     user: UserProfileSchema
     roles: list[UserRoleSchema]
+    permissions: list[Permission] = Field(default_factory=list)
     memberships: list[FlatMembershipSchema]

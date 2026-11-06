@@ -135,6 +135,7 @@ class IdentityRepository:
             select(User)
             .options(
                 joinedload(User.roles),
+                joinedload(User.permissions),
                 joinedload(User.memberships).joinedload(FlatMembership.flat).joinedload(Flat.tower),
             )
             .where(User.id == user_id)

@@ -15,7 +15,7 @@ import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
 
 export const StaffLayout: React.FC = () => {
-  const { user, roles, logout } = useAuth();
+  const { user, roles, permissions, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -25,6 +25,7 @@ export const StaffLayout: React.FC = () => {
   };
 
   const isHelpdesk = roles.includes('HELPDESK');
+  const canViewCommitteeReport = isHelpdesk && permissions.includes('COMMITTEE_REPORT_READ');
 
   const navItems = [
     { name: 'Operations Overview', path: '/staff/overview', icon: Cpu, exact: true },
@@ -32,7 +33,9 @@ export const StaffLayout: React.FC = () => {
       ? [{ name: 'Helpdesk Tickets', path: '/staff/helpdesk', icon: Headphones }]
       : []),
     ...(isHelpdesk ? [{ name: 'Bank Reconciliation', path: '/staff/reconciliation', icon: Scale }] : []),
-    ...(isHelpdesk ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }] : []),
+    ...(canViewCommitteeReport
+      ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }]
+      : []),
     { name: 'Residents Directory', path: '/staff/residents', icon: Users },
   ];
 

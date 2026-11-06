@@ -20,6 +20,7 @@ from app.domains.identity.models import (
     FlatMembership,
     MembershipStatus,
     MembershipType,
+    Permission,
     RoleType,
     User,
     UserRole,
@@ -68,6 +69,27 @@ class IdentityService:
             UserRoleSchema(id=r.id, society_id=r.society_id, role=r.role) for r in user.roles
         ]
 
+        role_types = [r.role for r in user.roles]
+        society_ids = list(
+            {r.society_id for r in user.roles} | {m.society_id for m in valid_memberships}
+        )
+
+        user_permissions: list[Permission] = []
+        if RoleType.HELPDESK in role_types:
+            user_permissions.extend(
+                [
+                    Permission.COMPLAINT_MANAGE,
+                    Permission.BANK_IMPORT,
+                    Permission.RECONCILIATION_REVIEW,
+                    Permission.BILLING_MANAGE,
+                ]
+            )
+        for perm_record in getattr(user, "permissions", []):
+            if (
+                not society_ids or perm_record.society_id in society_ids
+            ) and perm_record.permission not in user_permissions:
+                user_permissions.append(perm_record.permission)
+
         memberships_schemas = [
             FlatMembershipSchema(
                 id=m.id,
@@ -88,6 +110,7 @@ class IdentityService:
         return MeResponse(
             user=user_profile,
             roles=roles_schemas,
+            permissions=user_permissions,
             memberships=memberships_schemas,
         )
 

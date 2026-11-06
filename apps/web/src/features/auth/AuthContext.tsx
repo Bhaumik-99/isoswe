@@ -2,11 +2,12 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { apiClient } from '../../services/apiClient';
 import { sessionManager } from '../../services/sessionManager';
 import { supabaseAuth } from '../../services/supabaseAuth';
-import { FlatMembership, MeResponse, RoleType, UserProfile } from '../../types';
+import { FlatMembership, MeResponse, PermissionType, RoleType, UserProfile } from '../../types';
 
 interface AuthContextType {
   user: UserProfile | null;
   roles: RoleType[];
+  permissions: PermissionType[];
   memberships: FlatMembership[];
   selectedFlat: FlatMembership | null;
   setSelectedFlat: (flat: FlatMembership | null) => void;
@@ -24,6 +25,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [roles, setRoles] = useState<RoleType[]>([]);
+  const [permissions, setPermissions] = useState<PermissionType[]>([]);
   const [memberships, setMemberships] = useState<FlatMembership[]>([]);
   const [selectedFlat, setSelectedFlat] = useState<FlatMembership | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -35,6 +37,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(data.user);
       const userRoles = data.roles.map((r) => r.role);
       setRoles(userRoles);
+      setPermissions(data.permissions ?? []);
       setMemberships(data.memberships);
 
       // Auto-select primary or first flat
@@ -49,6 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       apiClient.setToken(null);
       setUser(null);
       setRoles([]);
+      setPermissions([]);
       setMemberships([]);
       setSelectedFlat(null);
       return [];
@@ -62,6 +66,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribeSession = sessionManager.onSessionExpired(() => {
       setUser(null);
       setRoles([]);
+      setPermissions([]);
       setMemberships([]);
       setSelectedFlat(null);
       setIsSessionExpired(true);
@@ -75,6 +80,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         apiClient.setToken(null);
         setUser(null);
         setRoles([]);
+        setPermissions([]);
         setMemberships([]);
         setSelectedFlat(null);
       }
@@ -127,6 +133,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     apiClient.setToken(null);
     setUser(null);
     setRoles([]);
+    setPermissions([]);
     setMemberships([]);
     setSelectedFlat(null);
     setIsSessionExpired(false);
@@ -141,6 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         roles,
+        permissions,
         memberships,
         selectedFlat,
         setSelectedFlat,

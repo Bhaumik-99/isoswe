@@ -138,6 +138,11 @@ jobs:
           cd apps/web
           npm ci
 
+      - name: Frontend Linting (ESLint)
+        run: |
+          cd apps/web
+          npm run lint
+
       - name: Run Frontend Tests (Vitest)
         run: |
           cd apps/web

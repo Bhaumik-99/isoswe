@@ -2,6 +2,13 @@ export type RoleType =
   | 'RESIDENT'
   | 'HELPDESK';
 
+export type PermissionType =
+  | 'COMPLAINT_MANAGE'
+  | 'BANK_IMPORT'
+  | 'RECONCILIATION_REVIEW'
+  | 'COMMITTEE_REPORT_READ'
+  | 'BILLING_MANAGE';
+
 export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
 
 export type MembershipType = 'OWNER' | 'TENANT' | 'FAMILY_MEMBER';
@@ -43,6 +50,7 @@ export interface FlatMembership {
 export interface MeResponse {
   user: UserProfile;
   roles: UserRole[];
+  permissions?: PermissionType[];
   memberships: FlatMembership[];
 }
 

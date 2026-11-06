@@ -97,7 +97,14 @@ export const AppRoutes: React.FC = () => {
         <Route path="billing" element={<StaffBilling />} />
         <Route path="reconciliation" element={<StaffReconciliation />} />
         <Route path="residents" element={<ResidentsDirectory />} />
-        <Route path="committee" element={<CommitteeOverview />} />
+        <Route
+          path="committee"
+          element={
+            <ProtectedRoute requiredPermissions={['COMMITTEE_REPORT_READ']}>
+              <CommitteeOverview />
+            </ProtectedRoute>
+          }
+        />
       </Route>
 
       <Route path="/committee" element={<Navigate to="/staff/committee" replace />} />
