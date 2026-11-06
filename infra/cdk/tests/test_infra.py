@@ -254,3 +254,124 @@ def test_lambda_asset_packaging_and_bundler(tmp_path) -> None:
     assert os.path.exists(os.path.join(out_dir, "requirements.txt"))
     # Verify tests and local caches are cleanly excluded
     assert not os.path.exists(os.path.join(out_dir, "tests"))
+
+
+def test_lambda_guest_pass_secret_isolation_and_least_privilege(
+    prod_template: Template,
+) -> None:
+    """Verifies that GUEST_PASS_SECRET environment variables and IAM read permissions
+
+    are strictly isolated to the API Lambda, enforcing the Principle of Least Privilege
+    and preventing cold-start runtime errors in Worker, Outbox, and Retention Lambdas.
+    """
+    functions = prod_template.find_resources("AWS::Lambda::Function")
+    funcs_by_name = {}
+    for defn in functions.values():
+        fname = defn.get("Properties", {}).get("FunctionName")
+        if fname:
+            funcs_by_name[fname] = defn
+
+    # 1. Environment Variables Isolation
+    api_fn = funcs_by_name["township-api-prod"]
+    worker_fn = funcs_by_name["township-worker-prod"]
+    outbox_fn = funcs_by_name["township-outbox-prod"]
+    retention_fn = funcs_by_name["township-retention-prod"]
+
+    api_env = api_fn["Properties"]["Environment"]["Variables"]
+    worker_env = worker_fn["Properties"]["Environment"]["Variables"]
+    outbox_env = outbox_fn["Properties"]["Environment"]["Variables"]
+    retention_env = retention_fn["Properties"]["Environment"]["Variables"]
+
+    # API Lambda MUST have both secrets configured
+    assert "DATABASE_SECRET_NAME" in api_env
+    assert "DATABASE_SECRET_ARN" in api_env
+    assert "GUEST_PASS_SECRET_NAME" in api_env
+    assert "GUEST_PASS_SECRET_ARN" in api_env
+
+    # Worker, Outbox, and Retention Lambdas MUST NOT receive guest-pass secret environment variables
+    for name, env in [
+        ("Worker", worker_env),
+        ("Outbox", outbox_env),
+        ("Retention", retention_env),
+    ]:
+        assert "DATABASE_SECRET_NAME" in env, f"{name} must have DATABASE_SECRET_NAME"
+        assert "GUEST_PASS_SECRET_NAME" not in env, (
+            f"{name} must NOT have GUEST_PASS_SECRET_NAME"
+        )
+        assert "GUEST_PASS_SECRET_ARN" not in env, (
+            f"{name} must NOT have GUEST_PASS_SECRET_ARN"
+        )
+
+    # 2. IAM Role Least-Privilege Verification
+    secrets = prod_template.find_resources("AWS::SecretsManager::Secret")
+    guest_pass_secret_id = next(
+        k
+        for k, v in secrets.items()
+        if "Guest Pass" in v.get("Properties", {}).get("Description", "")
+    )
+    db_secret_id = next(
+        k
+        for k, v in secrets.items()
+        if "Supabase" in v.get("Properties", {}).get("Description", "")
+    )
+
+    api_role_ref = api_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    worker_role_ref = worker_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    outbox_role_ref = outbox_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+    retention_role_ref = retention_fn["Properties"]["Role"]["Fn::GetAtt"][0]
+
+    policies = prod_template.find_resources("AWS::IAM::Policy")
+
+    def role_has_secret_access(role_ref: str, secret_id: str) -> bool:
+        for p in policies.values():
+            roles = [
+                r.get("Ref")
+                for r in p.get("Properties", {}).get("Roles", [])
+                if isinstance(r, dict)
+            ]
+            if role_ref in roles:
+                for statement in (
+                    p.get("Properties", {})
+                    .get("PolicyDocument", {})
+                    .get("Statement", [])
+                ):
+                    action = statement.get("Action", [])
+                    if isinstance(action, str):
+                        action = [action]
+                    res = statement.get("Resource", {})
+                    res_ref = res.get("Ref") if isinstance(res, dict) else None
+                    if res_ref == secret_id and any(
+                        "secretsmanager:GetSecretValue" in a for a in action
+                    ):
+                        return True
+        return False
+
+    # API role must have access to both secrets
+    assert role_has_secret_access(api_role_ref, guest_pass_secret_id), (
+        "API role must have access to guest pass secret"
+    )
+    assert role_has_secret_access(api_role_ref, db_secret_id), (
+        "API role must have access to database secret"
+    )
+
+    # Worker, Outbox, and Retention must NOT have access to guest pass secret
+    assert not role_has_secret_access(worker_role_ref, guest_pass_secret_id), (
+        "Worker role must NOT have access to guest pass secret"
+    )
+    assert not role_has_secret_access(outbox_role_ref, guest_pass_secret_id), (
+        "Outbox role must NOT have access to guest pass secret"
+    )
+    assert not role_has_secret_access(retention_role_ref, guest_pass_secret_id), (
+        "Retention role must NOT have access to guest pass secret"
+    )
+
+    # But all three roles must have access to the database secret
+    assert role_has_secret_access(worker_role_ref, db_secret_id), (
+        "Worker role must have access to database secret"
+    )
+    assert role_has_secret_access(outbox_role_ref, db_secret_id), (
+        "Outbox role must have access to database secret"
+    )
+    assert role_has_secret_access(retention_role_ref, db_secret_id), (
+        "Retention role must have access to database secret"
+    )

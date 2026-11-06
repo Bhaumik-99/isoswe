@@ -167,10 +167,6 @@ class ComputeConstruct(Construct):
             ].main_queue.queue_url,
         }
 
-        if guest_pass_secret:
-            lambda_environment["GUEST_PASS_SECRET_NAME"] = guest_pass_secret.secret_name
-            lambda_environment["GUEST_PASS_SECRET_ARN"] = guest_pass_secret.secret_arn
-
         if frontend_origins:
             lambda_environment["CORS_ALLOWED_ORIGINS"] = ",".join(frontend_origins)
 
@@ -179,6 +175,14 @@ class ComputeConstruct(Construct):
             lambda_environment["S3_ATTACHMENTS_BUCKET_NAME"] = (
                 documents_bucket.bucket_name
             )
+
+        # Scoped environment variables for API Lambda:
+        # Only API Lambda performs Guest Pass HMAC signature generation & verification.
+        # Worker, Outbox, and Retention Lambdas do not need guest-pass secrets (Principle of Least Privilege).
+        api_environment = dict(lambda_environment)
+        if guest_pass_secret:
+            api_environment["GUEST_PASS_SECRET_NAME"] = guest_pass_secret.secret_name
+            api_environment["GUEST_PASS_SECRET_ARN"] = guest_pass_secret.secret_arn
 
         # Production Lambda asset with Amazon Linux Python 3.11 Docker bundling and local test fallback
         api_dir = os.path.abspath(
@@ -213,7 +217,7 @@ class ComputeConstruct(Construct):
             timeout=Duration.seconds(30),
             role=api_role,
             log_retention=log_retention,
-            environment=lambda_environment,
+            environment=api_environment,
         )
 
         # 3. SQS Asynchronous Worker Lambda
@@ -228,8 +232,6 @@ class ComputeConstruct(Construct):
             ],
         )
         db_secret.grant_read(worker_role)
-        if guest_pass_secret:
-            guest_pass_secret.grant_read(worker_role)
         kms_key.grant_encrypt_decrypt(worker_role)
         if documents_bucket:
             documents_bucket.grant_read_write(worker_role)
@@ -311,8 +313,6 @@ class ComputeConstruct(Construct):
             ],
         )
         db_secret.grant_read(retention_role)
-        if guest_pass_secret:
-            guest_pass_secret.grant_read(retention_role)
         kms_key.grant_encrypt_decrypt(retention_role)
         if documents_bucket:
             documents_bucket.grant_read_write(retention_role)

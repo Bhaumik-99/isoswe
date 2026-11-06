@@ -110,3 +110,4 @@ if __name__ == "__main__":
 
     success = verify_secrets_safety(args.env, args.region)
     sys.exit(0 if success else 1)
+
