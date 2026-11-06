@@ -10,6 +10,8 @@ Implements:
 """
 
 import base64
+import binascii
+import contextlib
 import hashlib
 import uuid
 from datetime import UTC, datetime
@@ -18,7 +20,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.errors import AuthorizationError, ValidationError
+from app.core.errors import AppException, AuthorizationError, ValidationError
 from app.domains.identity.models import Flat
 from app.domains.reliability.models import AuditEvent
 from app.domains.visitors.models import (
@@ -53,9 +55,79 @@ class OfflineSyncService:
         purpose = str(payload.get("purpose", "")).strip()
         flat_id = str(payload.get("destination_flat_id", "")).strip()
         notice_ver = str(payload.get("privacy_notice_version", "")).strip()
+        # The photo is bound to the event by its SHA-256 digest (and capture time) so a replay
+        # cannot swap or strip the photograph while keeping the same client_event_id.
+        photo_digest = str(payload.get("photo_sha256") or "").strip().lower()
+        if not photo_digest and payload.get("photo_base64"):
+            try:
+                raw_b64 = str(payload["photo_base64"])
+                if raw_b64.startswith("data:") and "," in raw_b64:
+                    raw_b64 = raw_b64.split(",", 1)[1]
+                photo_bytes = base64.b64decode(raw_b64, validate=True)
+                photo_digest = hashlib.sha256(photo_bytes).hexdigest()
+            except Exception:
+                pass
 
-        canonical_repr = f"name:{name}|phone:{phone}|vehicle:{vehicle}|purpose:{purpose}|flat:{flat_id}|notice:{notice_ver}"
+        captured_at = str(payload.get("photo_captured_at") or "").strip()
+
+        canonical_repr = (
+            f"name:{name}|phone:{phone}|vehicle:{vehicle}|purpose:{purpose}|flat:{flat_id}"
+            f"|notice:{notice_ver}|photo:{photo_digest}|captured:{captured_at}"
+        )
         return hashlib.sha256(canonical_repr.encode()).hexdigest()
+
+    @staticmethod
+    def _decode_photo(payload: dict[str, Any]) -> tuple[bytes | None, str, str]:
+        """Validates the event photo and returns (bytes, content_type, sha256_hex).
+
+        A photo is mandatory once the event declares one: a declared digest without bytes,
+        undecodable base64 or a digest mismatch all reject the event.
+        """
+        declared_digest = str(payload.get("photo_sha256") or "").strip().lower()
+        photo_b64 = payload.get("photo_base64")
+
+        if not photo_b64:
+            if declared_digest:
+                raise ValidationError(
+                    code="PHOTO_MISSING",
+                    message="Event declares a photo digest but carries no photo data.",
+                )
+            return None, "image/jpeg", ""
+
+        content_type = "image/jpeg"
+        raw_b64 = str(photo_b64)
+        if raw_b64.startswith("data:") and "," in raw_b64:
+            header, raw_b64 = raw_b64.split(",", 1)
+            mime = header[5:].split(";", 1)[0].strip().lower()
+            if mime in ("image/jpeg", "image/png", "image/webp"):
+                content_type = mime
+        try:
+            photo_bytes = base64.b64decode(raw_b64, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValidationError(
+                code="INVALID_PHOTO_BASE64", message="Photo is not valid base64 data."
+            )
+
+        actual_digest = hashlib.sha256(photo_bytes).hexdigest()
+        if declared_digest and declared_digest != actual_digest:
+            raise ValidationError(
+                code="PHOTO_DIGEST_MISMATCH",
+                message="Photo data does not match its declared SHA-256 digest.",
+            )
+        return photo_bytes, content_type, actual_digest
+
+    @staticmethod
+    def _parse_captured_at(payload: dict[str, Any], now: datetime) -> datetime:
+        raw = str(payload.get("photo_captured_at") or "").strip()
+        if not raw:
+            return now
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return now
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return min(parsed, now)
 
     def process_sync_batch(
         self,
@@ -155,12 +227,14 @@ class OfflineSyncService:
 
             # Process new offline event in isolated nested savepoint (Feature 35)
             savepoint = self.db.begin_nested()
+            photo_s3_key: str | None = None
             try:
                 dest_flat_id_raw = payload.get("destination_flat_id")
                 dest_flat_id = uuid.UUID(str(dest_flat_id_raw)) if dest_flat_id_raw else None
 
                 flat = self.db.get(Flat, dest_flat_id) if dest_flat_id else None
                 if not flat or flat.society_id != society_id:
+                    savepoint.rollback()
                     results.append(
                         {
                             "client_event_id": str(client_event_id),
@@ -170,24 +244,25 @@ class OfflineSyncService:
                     )
                     continue
 
-                # Handle offline photo upload
-                photo_s3_key: str | None = None
-                photo_base64 = payload.get("photo_base64")
+                # Mandatory photo handling: never ACK an event whose declared photo was not stored.
+                photo_bytes, photo_content_type, photo_digest = self._decode_photo(payload)
                 visitor_id = uuid.uuid4()
-
-                if photo_base64:
+                if photo_bytes is not None:
                     try:
-                        raw_b64 = photo_base64
-                        if "," in raw_b64:
-                            raw_b64 = raw_b64.split(",", 1)[1]
-                        photo_bytes = base64.b64decode(raw_b64)
                         photo_s3_key = self.retention_service.save_photo_bytes(
                             society_id=society_id,
                             visitor_id=visitor_id,
                             photo_bytes=photo_bytes,
+                            content_type=photo_content_type,
                         )
-                    except Exception:
-                        pass
+                    except ValidationError:
+                        raise
+                    except Exception as exc:
+                        raise AppException(
+                            code="PHOTO_UPLOAD_FAILED",
+                            status_code=502,
+                            message="Visitor photograph could not be stored; event not acknowledged.",
+                        ) from exc
 
                 purpose_val = payload.get("purpose", "GUEST")
                 try:
@@ -210,7 +285,10 @@ class OfflineSyncService:
                     entry_status=EntryStatus.EXPECTED,
                     photo_s3_key=photo_s3_key,
                     photo_storage_key=photo_s3_key,
-                    photo_captured_at=now if photo_s3_key else None,
+                    photo_sha256=photo_digest or None,
+                    photo_captured_at=self._parse_captured_at(payload, now)
+                    if photo_s3_key
+                    else None,
                     privacy_notice_version=str(
                         payload.get("privacy_notice_version", "v1.0-2026-pune")
                     ),
@@ -266,11 +344,16 @@ class OfflineSyncService:
                 processed_count += 1
             except Exception as e:
                 savepoint.rollback()
+                if photo_s3_key:
+                    # Do not leave an orphaned object behind for an event that was not acknowledged.
+                    with contextlib.suppress(Exception):
+                        self.retention_service.storage_provider.delete_object(photo_s3_key)
+                error_code = getattr(e, "code", None)
                 results.append(
                     {
                         "client_event_id": str(client_event_id),
                         "status": "ERROR",
-                        "error_message": str(e),
+                        "error_message": f"{error_code}: {e}" if error_code else str(e),
                     }
                 )
 

@@ -100,9 +100,9 @@ export const hiDictionary: TranslationDictionary = {
     },
     passVerification: {
       sectionTitle: 'पूर्व-स्वीकृत गेस्ट पास सत्यापन',
-      sectionSubtitle: 'एकल या बहु-उपयोग निवासी गेस्ट कोड (GP-XXXX) सत्यापित करें',
+      sectionSubtitle: 'एकल या बहु-उपयोग निवासी गेस्ट कोड (GP-XXXX-XXXX-XXXX) सत्यापित करें',
       passCodeLabel: 'गेस्ट पास कोड',
-      passCodePlaceholder: 'GP-XXXX-XXXX',
+      passCodePlaceholder: 'GP-XXXX-XXXX-XXXX',
       verifyBtn: 'गेस्ट पास सत्यापित और रिडीम करें',
       offlineDisabledTitle: 'ऑफ़लाइन मोड में गेस्ट पास सत्यापन बंद है (सुरक्षा नियम)',
       offlineDisabledBody:

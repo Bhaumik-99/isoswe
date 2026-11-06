@@ -160,6 +160,8 @@ export interface OfflineVisitorQueueItem {
   destination_flat_id: string;
   flat_label?: string;
   photo_base64: string | null;
+  photo_sha256?: string | null;
+  photo_captured_at?: string | null;
   privacy_notice_version: string;
   payload_hash: string;
   sync_status: OfflineSyncStatus;

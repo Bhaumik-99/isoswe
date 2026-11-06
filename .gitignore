@@ -65,3 +65,6 @@ cdk.out/
 # Local database volumes
 postgres_data/
 local_sqs_data/
+
+# Agent scratch / teamwork state
+.agents/

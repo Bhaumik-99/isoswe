@@ -11,7 +11,6 @@ Adversarial stress-testing of Phase 6 Milestone 2 implementations:
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -23,7 +22,6 @@ from app.domains.visitors.models import (
     OfflineSyncEvent,
     VisitorRecord,
 )
-from app.domains.visitors.pass_service import pass_rate_limiter
 from tests.e2e.conftest import (
     FLAT_0408_ID,
     FLAT_1203_ID,
@@ -31,13 +29,6 @@ from tests.e2e.conftest import (
     GATE_GUARD_HEADERS,
     NEERAJ_HEADERS,
 )
-
-
-@pytest.fixture(autouse=True)
-def clean_rate_limiter():
-    pass_rate_limiter._failures.clear()
-    yield
-    pass_rate_limiter._failures.clear()
 
 
 def test_stress_concurrency_race_condition_multithreaded(
@@ -71,9 +62,6 @@ def test_stress_concurrency_race_condition_multithreaded(
     pass_data = pass_res.json()
     pass_code = pass_data["pass_code"]
     pass_id = uuid.UUID(pass_data["pass_id"])
-
-    # Reset rate limiter for clean gate state
-    pass_rate_limiter.record_success(GATE_1_ID)
 
     # First attempt: succeeds
     r1 = client.post(
@@ -127,11 +115,9 @@ def test_stress_brute_force_lockout_exact_boundary(
     Attempt 6: MUST be 429 RATE_LIMIT_EXCEEDED.
     Attempt 7: MUST be 429 RATE_LIMIT_EXCEEDED.
     """
-    pass_rate_limiter.record_success(GATE_1_ID)
-
     responses = []
     for i in range(7):
-        fake_code = f"GP-FAK{i}"
+        fake_code = f"GP-FAKE-{i:04d}-ZZZZ"
         res = client.post(
             "/api/v1/gate/pass/verify",
             json={"pass_code": fake_code, "gate_id": str(GATE_1_ID)},

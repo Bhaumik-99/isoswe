@@ -174,6 +174,8 @@ export const gateService = {
         purpose: string;
         destination_flat_id: string;
         photo_base64: string | null;
+        photo_sha256?: string | null;
+        photo_captured_at?: string | null;
         privacy_notice_version: string;
       };
     }>

@@ -24,11 +24,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
 )
 from sqlalchemy import (
     Enum as SAEnum,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import expression
 
 from app.core.database import Base
 
@@ -203,10 +205,10 @@ class GuestPass(Base):
         nullable=False,
         index=True,
     )
-    destination_flat_id: Mapped[uuid.UUID | None] = mapped_column(
+    destination_flat_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("flats.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     flat_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -364,8 +366,8 @@ class VisitorRecord(Base):
     photo_deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    privacy_notice_version: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, default="v1.0-2026-pune", server_default="v1.0-2026-pune"
+    privacy_notice_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="v1.0-2026-pune", server_default="v1.0-2026-pune"
     )
     guest_pass_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
@@ -375,8 +377,9 @@ class VisitorRecord(Base):
     )
     client_event_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    photo_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_offline_creation: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="0", nullable=False
+        Boolean, default=False, server_default=expression.false(), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -502,10 +505,10 @@ class GuestPassRedemption(Base):
         nullable=False,
         index=True,
     )
-    redeemed_by_guard_id: Mapped[uuid.UUID | None] = mapped_column(
+    redeemed_by_guard_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
     redeemed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -601,3 +604,83 @@ class OfflineSyncEvent(Base):
         foreign_keys=[visitor_record_id],
         back_populates="sync_events",
     )
+
+
+class GuestPassFailedAttempt(Base):
+    """Durable record of failed guest-pass verification attempts.
+
+    Backs the distributed brute-force limiter so that lockouts are enforced consistently across
+    AWS Lambda instances (an in-process dictionary cannot coordinate between containers).
+    """
+
+    __tablename__ = "guest_pass_failed_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    gate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("gates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    guard_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_pass_failed_gate_time", "gate_id", "attempted_at"),
+        Index("ix_pass_failed_guard_time", "guard_user_id", "attempted_at"),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Compatibility column synchronisation
+#
+# GuestPass and GuestPassRedemption carry paired columns (destination_flat_id/flat_id,
+# visitor_record_id/visitor_id, redeemed_by_guard_id/redeemed_by_user_id). Keep each pair
+# consistent on insert so that writers may populate either side.
+# -----------------------------------------------------------------------------
+
+
+@event.listens_for(GuestPass, "before_insert")
+def _sync_guest_pass_flat_columns(mapper: object, connection: object, target: GuestPass) -> None:
+    if target.destination_flat_id is None and target.flat_id is not None:
+        target.destination_flat_id = target.flat_id
+    if target.flat_id is None and target.destination_flat_id is not None:
+        target.flat_id = target.destination_flat_id
+    if target.pass_code_prefix is None:
+        target.pass_code_prefix = "GP-"
+
+
+@event.listens_for(GuestPassRedemption, "before_insert")
+def _sync_redemption_columns(
+    mapper: object, connection: object, target: GuestPassRedemption
+) -> None:
+    if target.visitor_record_id is None and target.visitor_id is not None:
+        target.visitor_record_id = target.visitor_id
+    if target.visitor_id is None and target.visitor_record_id is not None:
+        target.visitor_id = target.visitor_record_id
+    if target.redeemed_by_guard_id is None and target.redeemed_by_user_id is not None:
+        target.redeemed_by_guard_id = target.redeemed_by_user_id
+    if target.redeemed_by_user_id is None and target.redeemed_by_guard_id is not None:
+        target.redeemed_by_user_id = target.redeemed_by_guard_id
+
+
+@event.listens_for(OfflineSyncEvent, "before_insert")
+def _sync_offline_event_columns(
+    mapper: object, connection: object, target: OfflineSyncEvent
+) -> None:
+    if target.visitor_record_id is None and target.visitor_id is not None:
+        target.visitor_record_id = target.visitor_id
+    if target.visitor_id is None and target.visitor_record_id is not None:
+        target.visitor_id = target.visitor_record_id

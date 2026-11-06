@@ -3,9 +3,11 @@ import {
   buildCanonicalPayloadString,
   clearAllOfflineQueue,
   computePayloadHash,
+  computePhotoSha256,
   enqueueOfflineVisitor,
   evaluateOfflineGuestPassPolicy,
   generateClientEventId,
+  getRawEncryptedRecords,
   listOfflineQueue,
   removeSyncedOfflineItems,
 } from './gateIndexedDB';
@@ -39,7 +41,7 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
 
     const canonical = buildCanonicalPayloadString(baseInput);
     expect(canonical).toBe(
-      'name:Ramesh Pawar|phone:+919823011223|vehicle:MH-12-AB-1234|purpose:DELIVERY|flat:70000000-0000-4000-a000-000000000701|notice:v1.0-2026-pune'
+      'name:Ramesh Pawar|phone:+919823011223|vehicle:MH-12-AB-1234|purpose:DELIVERY|flat:70000000-0000-4000-a000-000000000701|notice:v1.0-2026-pune|photo:|captured:'
     );
 
     const hash1 = await computePayloadHash(baseInput);
@@ -56,7 +58,26 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
     expect(tamperedFlatHash).not.toBe(hash1);
   });
 
-  it('enqueues offline visitor strictly with PENDING approval and survives reload reads', async () => {
+  it('computes binary SHA-256 for offline photos and binds digest to canonical payload', async () => {
+    // b64 representing b"test_jpeg_bytes_12345"
+    const photoBase64 = 'data:image/jpeg;base64,dGVzdF9qcGVnX2J5dGVzXzEyMzQ1';
+    const photoSha = await computePhotoSha256(photoBase64);
+    expect(photoSha).toBe('ffc33203974fa792b54250be3c955f720d941dd940168bd6ed0e03ab645904d9');
+
+    const canonicalWithPhoto = buildCanonicalPayloadString({
+      visitor_name: 'Anand Shinde',
+      phone_number: '+919823055443',
+      purpose: 'GUEST',
+      destination_flat_id: '70000000-0000-4000-a000-000000000701',
+      privacy_notice_version: 'v1.0-2026-pune',
+      photo_sha256: photoSha,
+      photo_captured_at: '2026-11-06T12:00:00Z',
+    });
+    expect(canonicalWithPhoto).toContain(`photo:${photoSha}`);
+    expect(canonicalWithPhoto).toContain('captured:2026-11-06T12:00:00Z');
+  });
+
+  it('encrypts sensitive visitor PII using Web Crypto AES-GCM and verifies zero plaintext in raw storage', async () => {
     const gateId = '60000000-0000-4000-a000-000000000001';
     const flatId = '70000000-0000-4000-a000-000000000701';
 
@@ -68,7 +89,7 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
       purpose: 'GUEST',
       destination_flat_id: flatId,
       flat_label: 'T07-1203',
-      photo_base64: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==',
+      photo_base64: 'data:image/jpeg;base64,dGVzdF9qcGVnX2J5dGVzXzEyMzQ1',
       privacy_notice_version: 'v1.0-2026-pune',
     });
 
@@ -76,11 +97,40 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
     expect(item.entry_status).toBe('EXPECTED');
     expect(item.sync_status).toBe('QUEUED');
     expect(item.phone_number).toBe('+919823099887');
+    expect(item.photo_sha256).toBe('ffc33203974fa792b54250be3c955f720d941dd940168bd6ed0e03ab645904d9');
+    expect(item.photo_captured_at).toBeTruthy();
 
+    // Verify raw storage contains ONLY ciphertext, no plaintext PII or photos
+    const rawRecords = await getRawEncryptedRecords();
+    expect(rawRecords).toHaveLength(1);
+    const raw = rawRecords[0];
+
+    // Assert raw storage record does NOT have plaintext sensitive fields
+    expect(raw).not.toHaveProperty('visitor_name');
+    expect(raw).not.toHaveProperty('phone_number');
+    expect(raw).not.toHaveProperty('vehicle_number');
+    expect(raw).not.toHaveProperty('photo_base64');
+
+    // Assert ciphertext and IV exist
+    expect(raw.ciphertext).toBeTruthy();
+    expect(raw.iv).toBeTruthy();
+
+    // Raw serialized object must NOT contain substrings of PII or photo bytes
+    const serializedRaw = JSON.stringify(raw);
+    expect(serializedRaw).not.toContain('Suresh');
+    expect(serializedRaw).not.toContain('Kulkarni');
+    expect(serializedRaw).not.toContain('9823099887');
+    expect(serializedRaw).not.toContain('MH12XY9999');
+    expect(serializedRaw).not.toContain('dGVzdF9qcGVnX2J5dGVzXzEyMzQ1');
+
+    // listOfflineQueue decodes correctly
     const persisted = await listOfflineQueue(gateId);
     expect(persisted).toHaveLength(1);
     expect(persisted[0].client_event_id).toBe(item.client_event_id);
-    expect(persisted[0].approval_status).toBe('PENDING');
+    expect(persisted[0].visitor_name).toBe('Suresh Kulkarni');
+    expect(persisted[0].phone_number).toBe('+919823099887');
+    expect(persisted[0].vehicle_number).toBe('MH12XY9999');
+    expect(persisted[0].photo_sha256).toBe('ffc33203974fa792b54250be3c955f720d941dd940168bd6ed0e03ab645904d9');
   });
 
   it('enforces fail-closed policy on guest pass verification when tablet is offline', () => {
@@ -148,4 +198,3 @@ describe('Gate Offline IndexedDB & Replay-Protected Sync Engine', () => {
     expect(remaining[0].sync_status).toBe('CONFLICT');
   });
 });
-

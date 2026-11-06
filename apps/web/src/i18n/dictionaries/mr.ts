@@ -100,9 +100,9 @@ export const mrDictionary: TranslationDictionary = {
     },
     passVerification: {
       sectionTitle: 'पूर्व-मंजूर गेस्ट पास पडताळणी',
-      sectionSubtitle: 'एकदा किंवा अनेकदा वापरता येणारा गेस्ट पास कोड (GP-XXXX) तपासा',
+      sectionSubtitle: 'एकदा किंवा अनेकदा वापरता येणारा गेस्ट पास कोड (GP-XXXX-XXXX-XXXX) तपासा',
       passCodeLabel: 'गेस्ट पास कोड',
-      passCodePlaceholder: 'GP-XXXX-XXXX',
+      passCodePlaceholder: 'GP-XXXX-XXXX-XXXX',
       verifyBtn: 'गेस्ट पास तपासा आणि रिडीम करा',
       offlineDisabledTitle: 'ऑफलाइन मोडमध्ये गेस्ट पास पडताळणी बंद आहे (सुरक्षा नियम)',
       offlineDisabledBody:

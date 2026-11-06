@@ -365,20 +365,20 @@ def test_chal_10_expired_guest_pass_redemption(
     now = datetime.now(UTC)
     # Create pass that expired 1 hour ago
     pass_id = str(uuid.uuid4())
-    pass_code = "GP-EXPD"
-    import hashlib
+    from app.domains.visitors.pass_service import GuestPassService
 
-    pass_hash = hashlib.sha256(f"salt_{pass_code}".encode()).hexdigest()
+    pass_code = "GP-2345-6789-ABCD"
+    pass_hash = GuestPassService.hash_pass_code(pass_code, SOCIETY_PUNE_ID)
 
     db_session.execute(
         text(
             """
             INSERT INTO guest_passes (
-                id, society_id, flat_id, created_by_user_id, pass_type, guest_name,
+                id, society_id, flat_id, destination_flat_id, created_by_user_id, pass_type, guest_name,
                 pass_code_prefix, pass_code_hash, valid_from, valid_until, max_uses,
                 used_count, status, purpose, created_at, updated_at
             ) VALUES (
-                :id, :sid, :fid, :uid, 'SINGLE_USE', 'Expired Passholder',
+                :id, :sid, :fid, :fid, :uid, 'SINGLE_USE', 'Expired Passholder',
                 'GP-EX', :phash, :vfrom, :vuntil, 1, 0, 'EXPIRED', 'Guest', :cat, :cat
             )
             """
@@ -465,7 +465,7 @@ def test_chal_12_guest_code_brute_force_lockout(
     """
     results = []
     for i in range(7):
-        fake_code = f"GP-{1000 + i}"
+        fake_code = f"GP-2345-6789-A{i:03d}"
         res = client.post(
             "/api/v1/gate/pass/verify",
             json={"pass_code": fake_code, "gate_id": str(GATE_1_ID)},

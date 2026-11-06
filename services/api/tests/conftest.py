@@ -361,13 +361,3 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_pass_rate_limiter() -> Generator[None, None, None]:
-    """Reset the in-memory guest pass rate limiter before and after each test."""
-    from app.domains.visitors.pass_service import pass_rate_limiter
-
-    pass_rate_limiter.reset()
-    yield
-    pass_rate_limiter.reset()

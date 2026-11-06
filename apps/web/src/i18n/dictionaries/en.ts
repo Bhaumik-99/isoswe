@@ -338,9 +338,9 @@ export const enDictionary: TranslationDictionary = {
     },
     passVerification: {
       sectionTitle: 'Pre-Approved Guest Pass Verification',
-      sectionSubtitle: 'Redeem single-use or multi-use resident guest code (GP-XXXX)',
+      sectionSubtitle: 'Redeem single-use or multi-use resident guest code (GP-XXXX-XXXX-XXXX)',
       passCodeLabel: 'Guest Pass Code',
-      passCodePlaceholder: 'GP-XXXX-XXXX',
+      passCodePlaceholder: 'GP-XXXX-XXXX-XXXX',
       verifyBtn: 'Verify & Redeem Guest Pass',
       offlineDisabledTitle: 'Guest Pass Verification Unavailable Offline (Fail-Closed)',
       offlineDisabledBody:

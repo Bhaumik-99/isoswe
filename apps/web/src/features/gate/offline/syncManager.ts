@@ -65,6 +65,8 @@ class GateOfflineSyncManager {
           purpose: item.purpose,
           destination_flat_id: item.destination_flat_id,
           photo_base64: item.photo_base64,
+          photo_sha256: item.photo_sha256 || null,
+          photo_captured_at: item.photo_captured_at || null,
           privacy_notice_version: item.privacy_notice_version,
         },
       }));

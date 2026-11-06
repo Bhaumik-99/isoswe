@@ -177,6 +177,8 @@ class OfflineSyncEventPayload(BaseModel):
     purpose: VisitorPurpose
     destination_flat_id: UUID
     photo_base64: str | None = None
+    photo_sha256: str | None = None
+    photo_captured_at: datetime | None = None
     privacy_notice_version: str = "v1.0-2026-pune"
 
 

@@ -42,6 +42,10 @@ class Settings(BaseSettings):
 
     # Security & CORS
     SECRET_KEY: str = Field(default="dev-secret-key-change-in-production-must-be-32-bytes-long!")
+    # Server-side secret (pepper) keying the HMAC-SHA256 digest of guest pass codes. Required (>= 32
+    # characters) in staging/production; supplied via Secrets Manager alongside DATABASE_URL.
+    # Development/test fall back to SECRET_KEY so local setups work without extra configuration.
+    GUEST_PASS_HMAC_SECRET: str = ""
     CORS_ALLOWED_ORIGINS: list[str] | str = [
         "http://localhost:5173",
         "http://localhost:3000",
