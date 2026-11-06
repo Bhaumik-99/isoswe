@@ -5,15 +5,16 @@ Provides versioned REST endpoints for:
 - Staff society-wide billing overview, invoice search, previews, and batch billing generation
 """
 
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, status
+from fastapi import APIRouter, Body, Depends, Header, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.errors import AuthorizationError, NotFoundError
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_permissions, require_roles
 from app.domains.billing.models import InvoiceStatus
 from app.domains.billing.schemas import (
     ApplyLateFeesRequest,
@@ -33,7 +34,7 @@ from app.domains.billing.schemas import (
     StaffBillingOverviewResponse,
 )
 from app.domains.billing.service import BillingService
-from app.domains.identity.models import RoleType
+from app.domains.identity.models import Permission, RoleType
 from app.domains.identity.schemas import CurrentUserClaims
 
 router = APIRouter(prefix="/billing", tags=["Billing & Payments"])
@@ -335,7 +336,7 @@ def get_payment_detail(
     summary="Get society-wide billing overview",
 )
 def get_staff_overview(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
     db: Session = Depends(get_db),
 ) -> StaffBillingOverviewResponse:
     """Returns society-wide billing totals, collection metrics, and overdue tracking."""
@@ -351,7 +352,7 @@ def get_staff_overview(
     summary="Search and filter society invoices",
 )
 def list_staff_invoices(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
     billing_period: str | None = Query(None, description="Filter by YYYY-MM (e.g. '2026-11')"),
     tower_number: str | None = Query(None, description="Filter by tower (e.g. 'T07')"),
     flat_number: str | None = Query(None, description="Filter by unit (e.g. '1203')"),
@@ -383,7 +384,7 @@ def list_staff_invoices(
 )
 def preview_monthly_billing(
     payload: ExecuteBillingRunRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
     db: Session = Depends(get_db),
 ) -> BillingRunPreviewResponse:
     """Previews eligible flats, expected charges, and exclusions before running batch billing."""
@@ -404,7 +405,7 @@ def preview_monthly_billing(
 )
 def execute_monthly_billing(
     payload: ExecuteBillingRunRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
     db: Session = Depends(get_db),
 ) -> BillingRunResponse:
     """Executes monthly maintenance billing run across society units.
@@ -437,6 +438,43 @@ def execute_monthly_billing(
     )
 
 
+@router.post(
+    "/invoices/generate",
+    response_model=BillingRunResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate monthly maintenance invoices for society",
+)
+def generate_society_invoices(
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
+    payload: dict[str, Any] | None = Body(default=None),
+    db: Session = Depends(get_db),
+) -> BillingRunResponse:
+    """Executes monthly maintenance invoice generation for the staff member's society."""
+    if not claims.society_ids:
+        raise AuthorizationError("No authorized society associated with your staff account")
+    body = payload or {}
+    billing_period = str(body.get("billing_period") or datetime.now(UTC).strftime("%Y-%m"))
+    service = BillingService(db)
+    run = service.execute_billing_run(
+        society_id=claims.society_ids[0],
+        billing_period=billing_period,
+        actor_id=claims.user_id,
+    )
+    return BillingRunResponse(
+        id=run.id,
+        society_id=run.society_id,
+        billing_period=run.billing_period,
+        total_eligible_flats=run.total_eligible_flats,
+        total_invoiced_flats=run.total_invoiced_flats,
+        total_skipped_flats=run.total_skipped_flats,
+        total_charges_paise=run.total_charges_paise,
+        status=run.status,
+        initiated_by=run.initiated_by,
+        run_metadata=run.run_metadata,
+        created_at=run.created_at,
+    )
+
+
 @router.get(
     "/staff/runs/{run_id}",
     response_model=BillingRunResponse,
@@ -444,7 +482,7 @@ def execute_monthly_billing(
 )
 def get_billing_run_detail(
     run_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.BILLING_MANAGE))],
     db: Session = Depends(get_db),
 ) -> BillingRunResponse:
     """Retrieves log details of a specific monthly billing run."""
@@ -479,7 +517,7 @@ def get_billing_run_detail(
 )
 def list_late_fee_policies(
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.BILLING_MANAGE)),
     db: Session = Depends(get_db),
 ) -> list[LateFeePolicyResponse]:
     """Retrieves all configured late-fee policies for a society."""
@@ -499,7 +537,7 @@ def list_late_fee_policies(
 def create_late_fee_policy(
     request: CreateLateFeePolicyRequest,
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.BILLING_MANAGE)),
     db: Session = Depends(get_db),
 ) -> LateFeePolicyResponse:
     """Configures a society late-fee policy following bye-laws."""
@@ -518,7 +556,7 @@ def create_late_fee_policy(
 def preview_late_fees(
     request: ApplyLateFeesRequest | None = None,
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.BILLING_MANAGE)),
     db: Session = Depends(get_db),
 ) -> LateFeePreviewResponse:
     """Calculates proposed late fees on overdue invoices without mutating state."""
@@ -539,7 +577,7 @@ def apply_late_fees(
     request: ApplyLateFeesRequest | None = None,
     society_id: UUID | None = Query(None),
     correlation_id: str | None = Header(None, alias="X-Correlation-ID"),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.BILLING_MANAGE)),
     db: Session = Depends(get_db),
 ) -> ApplyLateFeesResponse:
     """Atomically assesses and posts late fees following society bye-laws."""

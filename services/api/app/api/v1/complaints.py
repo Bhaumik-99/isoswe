@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_permissions, require_roles
 from app.domains.complaints.models import ComplaintCategory, ComplaintPriority, ComplaintStatus
 from app.domains.complaints.schemas import (
     AcknowledgeSafetyAlertRequest,
@@ -34,7 +34,7 @@ from app.domains.complaints.schemas import (
     UpdateComplaintStatusRequest,
 )
 from app.domains.complaints.service import ComplaintService
-from app.domains.identity.models import RoleType
+from app.domains.identity.models import Permission, RoleType
 from app.domains.identity.schemas import CurrentUserClaims
 
 router = APIRouter(prefix="/complaints", tags=["Complaints & Helpdesk"])
@@ -187,7 +187,7 @@ def rate_resident_complaint(
     summary="List persistent safety alerts for duty manager emergency queue",
 )
 def list_safety_alerts(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     society_id: UUID | None = Query(None),
     unacknowledged_only: bool = Query(True),
     unread_only: bool | None = Query(None),
@@ -208,7 +208,7 @@ def list_safety_alerts(
 def acknowledge_safety_alert(
     alert_id: UUID,
     payload: AcknowledgeSafetyAlertRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> SafetyAlertResponse:
     service = ComplaintService(db)
@@ -225,8 +225,13 @@ def acknowledge_safety_alert(
     response_model=HelpdeskDashboardMetricsResponse,
     summary="Get helpdesk operational KPI metrics",
 )
+@router.get(
+    "/dashboard",
+    response_model=HelpdeskDashboardMetricsResponse,
+    include_in_schema=False,
+)
 def get_helpdesk_dashboard_metrics(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     society_id: UUID | None = Query(None),
     db: Session = Depends(get_db),
 ) -> HelpdeskDashboardMetricsResponse:
@@ -241,7 +246,7 @@ def get_helpdesk_dashboard_metrics(
     summary="List society complaints for helpdesk operations",
 )
 def list_helpdesk_complaints(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     response: Response,
     society_id: UUID | None = Query(None),
     assigned_to: UUID | None = Query(None),
@@ -283,7 +288,7 @@ def list_helpdesk_complaints(
 )
 def get_helpdesk_complaint(
     complaint_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -298,7 +303,7 @@ def get_helpdesk_complaint(
 def update_helpdesk_complaint_status(
     complaint_id: UUID,
     payload: UpdateComplaintStatusRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -313,7 +318,7 @@ def update_helpdesk_complaint_status(
 def assign_helpdesk_complaint(
     complaint_id: UUID,
     payload: AssignComplaintRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -328,7 +333,7 @@ def assign_helpdesk_complaint(
 def update_helpdesk_complaint_priority(
     complaint_id: UUID,
     payload: UpdateComplaintPriorityRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -348,7 +353,7 @@ def update_helpdesk_complaint_priority(
 def correct_complaint_category(
     complaint_id: UUID,
     payload: UpdateComplaintCategoryRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -368,7 +373,7 @@ def correct_complaint_category(
 def link_duplicate_complaint(
     complaint_id: UUID,
     payload: LinkDuplicateComplaintRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -387,7 +392,7 @@ def link_duplicate_complaint(
 )
 def unlink_duplicate_complaint(
     complaint_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> ComplaintResponse:
     service = ComplaintService(db)
@@ -422,7 +427,7 @@ def list_linked_duplicates(
 def add_helpdesk_comment(
     complaint_id: UUID,
     payload: CreateCommentRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> CommentResponse:
     service = ComplaintService(db)
@@ -438,7 +443,7 @@ def add_helpdesk_comment(
 def initiate_helpdesk_attachment(
     complaint_id: UUID,
     payload: InitiateAttachmentUploadRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> PresignedUploadResponse:
     service = ComplaintService(db)
@@ -453,7 +458,7 @@ def initiate_helpdesk_attachment(
 def complete_helpdesk_attachment(
     complaint_id: UUID,
     attachment_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[CurrentUserClaims, Depends(require_permissions(Permission.COMPLAINT_MANAGE))],
     db: Session = Depends(get_db),
 ) -> AttachmentResponse:
     service = ComplaintService(db)

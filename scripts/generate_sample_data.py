@@ -16,10 +16,12 @@ from app.core.logging import logger
 from app.domains.identity.models import (
     Flat,
     FlatStatus,
+    Permission,
     RoleType,
     Society,
     Tower,
     User,
+    UserPermission,
     UserRole,
     UserStatus,
 )
@@ -133,9 +135,16 @@ def _populate_scale_data(
     staff_needed = max(0, total_staff - existing_staff_count)
     new_users: list[User] = []
     new_roles: list[UserRole] = []
+    new_perms: list[UserPermission] = []
 
     staff_idx = 1
     created_staff = 0
+    operational_perms = [
+        Permission.COMPLAINT_MANAGE,
+        Permission.BANK_IMPORT,
+        Permission.RECONCILIATION_REVIEW,
+        Permission.BILLING_MANAGE,
+    ]
     while created_staff < staff_needed:
         email = f"staff.{staff_idx:03d}@example.com"
         phone = f"+91-98111-{staff_idx:05d}"
@@ -160,6 +169,17 @@ def _populate_scale_data(
                     role=RoleType.HELPDESK,
                 )
             )
+            for perm in operational_perms:
+                new_perms.append(
+                    UserPermission(
+                        id=uuid.uuid5(
+                            SOCIETY_PUNE_ID, f"staff-perm-{staff_idx:03d}-{perm.value}"
+                        ),
+                        user_id=user_id,
+                        society_id=SOCIETY_PUNE_ID,
+                        permission=perm,
+                    )
+                )
             created_staff += 1
         staff_idx += 1
 
@@ -168,6 +188,9 @@ def _populate_scale_data(
         db.flush()
     if new_roles:
         db.add_all(new_roles)
+        db.flush()
+    if new_perms:
+        db.add_all(new_perms)
         db.flush()
 
     db.commit()

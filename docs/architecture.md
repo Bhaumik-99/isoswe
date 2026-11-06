@@ -33,7 +33,7 @@ The township operations platform adheres to a strict architectural principle:
 
 ### ADR 005: Two-Role Application Model with Granular Permissions
 - **Context**: The township operations platform specification identifies two primary application roles: `RESIDENT` and `HELPDESK`. Managing committee members require governance visibility into society metrics, billing totals, and audit trails without requiring a separate user role.
-- **Decision**: Maintain strictly two application roles: `RESIDENT` and `HELPDESK`. Granular permissions within `HELPDESK` (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`) govern operational actions. The Committee Dashboard is exposed inside the authorized helpdesk portal with read-only reporting capabilities.
+- **Decision**: Maintain strictly two application roles: `RESIDENT` and `HELPDESK`. Granular permissions within `HELPDESK` (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`, `BILLING_MANAGE`, `GATE_OPERATIONS`) govern operational actions. The Committee Dashboard is exposed inside the authorized helpdesk portal with read-only reporting capabilities, and Gate Tablet Operations (`/gate`) are restricted to staff with `GATE_OPERATIONS` and an active temporal gate assignment.
 - **Consequences**: Prevents role explosion while ensuring complete auditability, role-aware routing, and strict tenant isolation.
 
 ### ADR 006: Strict Integer Paise Monetary Representation
@@ -162,4 +162,28 @@ All five core asynchronous flows run over dedicated Amazon SQS queues with paire
    - Every invoice generation appends a `CHARGE` entry to `financial_ledger_entries`.
    - Every successful payment appends `PAYMENT_RECEIVED` and `PAYMENT_ALLOCATED` entries.
    - No financial records are ever edited or deleted. Reversals or adjustments must be recorded as explicit compensating entries referencing original records.
+
+---
+
+## 6. Phase 6 — Gate Visitor Management, Offline Operations & 90-Day Photo Retention
+
+### 6.1 Decoupled Approval & Entry State Machines
+- **Approval State (`ApprovalStatus`)**: `PENDING` -> `APPROVED` | `REJECTED`, or `AUTO_APPROVED` (via verified Guest Pass redemption).
+- **Physical Entry State (`EntryStatus`)**: `EXPECTED` -> `CHECKED_IN` -> `CHECKED_OUT`.
+- **Invariant**: A gate guard cannot transition a visitor to `CHECKED_IN` unless `approval_status` is `APPROVED` or `AUTO_APPROVED`.
+
+### 6.2 Offline-First Tablet Operation & Replay-Protected Synchronization
+- **IndexedDB Queue (`TownshipGateDB`)**: When gate tablets lose network connectivity, walk-in visitor registrations and captured JPEG photographs are persisted locally in IndexedDB with stable UUIDv4 `client_event_id`s and canonical SHA-256 payload hashes.
+- **Fail-Closed Offline Invariants**:
+  - Offline visitor registrations always enter `PENDING` approval and `EXPECTED` entry status; offline capture never grants automatic entry.
+  - Pre-approved guest pass (`GP-XXXX`) verification fails closed while offline to prevent replay of revoked or exhausted passes.
+- **Batch Sync (`POST /api/v1/gate/sync`)**: Processes reconnection batches using nested database savepoints so a single malformed or tampered event (`409 CONFLICT_EVENT_PAYLOAD_MODIFIED`) never aborts valid events in the same batch.
+
+### 6.3 Visitor Photo Privacy & Mandatory 90-Day Retention
+- **Private Storage & Short-Lived Presigned URLs**: Visitor photos are stored under `visitor-photos/{society_id}/{year}/{month}/{visitor_id}.jpg` in the private KMS-encrypted S3 bucket and served exclusively via 15-minute presigned URLs to authorized flat residents or on-duty gate staff.
+- **Defense-in-Depth 90-Day Retention**:
+  1. Logical 90-day cutoff in `PhotoRetentionService` immediately blocks expired photo access with `410 PHOTO_EXPIRED`.
+  2. Daily batch worker (`purge_expired_photos`) deletes expired S3 objects and scrubs `photo_s3_key` in PostgreSQL.
+  3. AWS CDK S3 lifecycle rule (`VisitorPhotos90DayRetention`) enforces a hard 90-day storage expiration on `visitor-photos/`.
+
 

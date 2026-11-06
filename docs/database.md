@@ -259,6 +259,30 @@ erDiagram
 - Immutable audit log of operator review actions (`SUGGESTED`, `APPROVED`, `REJECTED`, `UNIDENTIFIED`) capturing staff identity and reconciliation rationale notes.
 - Fields: `id` (UUID PK), `transaction_id` (UUID FK), `reviewed_by` (UUID FK), `action` (VARCHAR 32), `notes` (TEXT, nullable), `created_at`.
 
+---
+
+### 4.5 Gate Visitor Management & Offline Operations Domain (Phase 6)
+
+#### `gates`
+- Physical entrance gates configured per society (4 entrance gates for Marvel Greenfield Township).
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `gate_number` (INTEGER, 1–4), `code` (VARCHAR 32), `name` (VARCHAR 128), `status` (ACTIVE, INACTIVE, MAINTENANCE), `is_active` (BOOLEAN), `created_at`, `updated_at`.
+- Unique Constraints: `(society_id, gate_number)` and `(society_id, code)`.
+
+#### `gate_assignments`
+- Temporal shift assignments binding `HELPDESK` staff with `GATE_OPERATIONS` permission to specific entrance gates.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `user_id` (UUID FK), `gate_id` (UUID FK), `assigned_from` (TIMESTAMPTZ), `assigned_until` (TIMESTAMPTZ, nullable), `is_active` (BOOLEAN), `created_at`, `updated_at`.
+
+#### `visitors`
+- Walk-in and pre-approved visitor records with decoupled approval and physical entry/exit state machines.
+- Fields: `id` (UUID PK), `society_id` (UUID FK), `gate_id` (UUID FK), `destination_flat_id` (UUID FK), `visitor_name` (VARCHAR 255), `phone_number` (VARCHAR 32), `vehicle_number` (VARCHAR 32, nullable), `purpose` (GUEST, DELIVERY, CAB, SERVICE_MAINTENANCE, EMERGENCY, OTHER), `approval_status` (PENDING, APPROVED, REJECTED, AUTO_APPROVED), `entry_status` (EXPECTED, CHECKED_IN, CHECKED_OUT), `photo_s3_key` (VARCHAR 512, nullable), `photo_captured_at` (TIMESTAMPTZ, nullable), `photo_purged_at` (TIMESTAMPTZ, nullable), `privacy_notice_version` (VARCHAR 32), `client_event_id` (UUID, nullable), `payload_hash` (VARCHAR 64, nullable), `entry_time` (TIMESTAMPTZ, nullable), `exit_time` (TIMESTAMPTZ, nullable), `exit_gate_id` (UUID FK, nullable), `created_at`, `updated_at`.
+
+#### `guest_passes` & `guest_pass_redemptions`
+- Pre-approved single-use (`max_uses = 1`) and multi-use (`max_uses = 2..10`) guest passes storing only salted SHA-256 hashes (`code_salt`, `code_hash`) and immutable redemption logs (`guest_pass_redemptions`).
+
+#### `offline_sync_events`
+- Idempotent synchronization registry tracking tablet `client_event_id` UUIDs and canonical SHA-256 `payload_hash` values to deduplicate retries (`ACK`) and detect modified payload replays (`CONFLICT`).
+
+
 
 ---
 

@@ -69,21 +69,12 @@ class IdentityService:
             UserRoleSchema(id=r.id, society_id=r.society_id, role=r.role) for r in user.roles
         ]
 
-        role_types = [r.role for r in user.roles]
         society_ids = list(
             {r.society_id for r in user.roles} | {m.society_id for m in valid_memberships}
         )
 
+        # Derive permissions strictly from explicitly assigned database records
         user_permissions: list[Permission] = []
-        if RoleType.HELPDESK in role_types:
-            user_permissions.extend(
-                [
-                    Permission.COMPLAINT_MANAGE,
-                    Permission.BANK_IMPORT,
-                    Permission.RECONCILIATION_REVIEW,
-                    Permission.BILLING_MANAGE,
-                ]
-            )
         for perm_record in getattr(user, "permissions", []):
             if (
                 not society_ids or perm_record.society_id in society_ids

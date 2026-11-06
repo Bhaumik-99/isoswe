@@ -37,7 +37,12 @@
 | `RESIDENT` | Flat Memberships | View assigned unit details, view maintenance invoices, make payments, lodge complaints | Cannot access other resident units or administrative operations |
 | `HELPDESK` | Assigned Society | Complaint assignment and status, bank statement import, reconciliation review, read-only committee reporting | Cannot access another society; committee reporting is strictly read-only |
 
-The demo authorization model maintains strictly two application roles: `RESIDENT` and `HELPDESK`. Operational capabilities are enforced through granular permissions (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`). The Committee Dashboard is exposed within the authorized helpdesk portal with read-only reporting access.
+The demo authorization model maintains strictly two application roles: `RESIDENT` and `HELPDESK`. Operational capabilities are enforced through granular permissions (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`, `BILLING_MANAGE`, `GATE_OPERATIONS`) stored explicitly in `user_permissions`. Gate operators holding only `GATE_OPERATIONS` are blocked from accessing billing, bank reconciliation, or helpdesk ticket management APIs (`403 INSUFFICIENT_PERMISSIONS`), and must additionally hold an active temporal `gate_assignments` record for the target gate.
+
+### 2.4 Gate Operations, Guest Pass Cryptography & Visitor Photo Privacy (Phase 6)
+- **Guest Pass Salted Hashing & Row Locking**: Plaintext guest pass codes (`GP-XXXX`) are generated via `secrets` CSPRNG and returned only once at creation. Only a per-pass salt and SHA-256 hash (`salt_<code>`) are persisted. Redemptions execute inside `SELECT ... FOR UPDATE` row locks with per-gate brute-force rate limiting (5 failed attempts per 10-minute window -> `429 RATE_LIMIT_EXCEEDED`).
+- **Offline Sync Replay & Tamper Protection**: Offline tablet events carry a UUIDv4 `client_event_id` and canonical SHA-256 payload digest. Identical replays return idempotent `ACK`, while modified payload replays are rejected with `CONFLICT_EVENT_PAYLOAD_MODIFIED`. Offline events always enter `PENDING` approval state.
+- **90-Day Visitor Photo Retention & Log Redaction**: Visitor photos are validated via magic bytes (JPEG/PNG/WebP), stored in private S3, served via 15-minute presigned URLs scoped strictly to destination flat residents and assigned gate guards, logically expired at 90 days (`410 PHOTO_EXPIRED`), and purged by both a daily worker and S3 lifecycle policy. Structured logs mask visitor phone numbers and never log base64 or binary image payloads.
 
 ### 2.2 Flat-Level Access Control for Residents
 Residents can only query flat-level resources if:

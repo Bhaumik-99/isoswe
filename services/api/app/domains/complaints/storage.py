@@ -76,6 +76,17 @@ class StorageProvider(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    def put_object_bytes(
+        self, storage_key: str, data: bytes, content_type: str = "image/jpeg"
+    ) -> str:
+        """Uploads raw bytes directly to storage and returns the storage key or URL."""
+        ...
+
+    def delete_file(self, storage_key: str) -> bool:
+        """Convenience alias for delete_object."""
+        return self.delete_object(storage_key)
+
 
 class MockStorageProvider(StorageProvider):
     """Local mock storage provider for deterministic local testing."""
@@ -158,6 +169,16 @@ class MockStorageProvider(StorageProvider):
         if storage_key not in self._stored_keys:
             return False, "Object not found in mock storage"
         return True, None
+
+    def put_object_bytes(
+        self, storage_key: str, data: bytes, content_type: str = "image/jpeg"
+    ) -> str:
+        self._stored_keys.add(storage_key)
+        self._stored_metadata[storage_key] = {
+            "size": len(data),
+            "content_type": content_type,
+        }
+        return f"https://mock-storage.local/download/{storage_key}"
 
 
 _default_mock_storage = MockStorageProvider()
@@ -338,6 +359,24 @@ class S3StorageProvider(StorageProvider):
                 )
         return True, None
 
+    def put_object_bytes(
+        self, storage_key: str, data: bytes, content_type: str = "image/jpeg"
+    ) -> str:
+        if not self.s3_client:
+            if settings.ENVIRONMENT in ("production", "staging"):
+                raise RuntimeError("CRITICAL: S3 client is uninitialized; cannot put object bytes.")
+            return f"https://mock-storage.local/download/{storage_key}"
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=storage_key,
+                Body=data,
+                ContentType=content_type,
+            )
+            return storage_key
+        except Exception as exc:
+            raise ValidationError(f"Failed to upload object bytes to S3: {exc}")
+
 
 def get_storage_provider() -> StorageProvider:
     if settings.ENVIRONMENT in ("production", "staging"):
@@ -384,3 +423,32 @@ def generate_storage_key(society_id: uuid.UUID, complaint_id: uuid.UUID, extensi
     clean_ext = extension.lstrip(".")
     unique_token = uuid.uuid4().hex
     return f"attachments/{society_id}/{complaint_id}/{unique_token}.{clean_ext}"
+
+
+def validate_photo_bytes(
+    data: bytes, expected_content_type: str | None = None
+) -> tuple[bool, str | None]:
+    """Validates that image bytes conform to magic byte signatures for JPEG, PNG, or WebP and <= 5MB."""
+    if not data:
+        return False, "Photo payload is empty (0 bytes)"
+    if len(data) > MAX_FILE_SIZE_BYTES:
+        return False, f"Photo size ({len(data)} bytes) exceeds maximum limit of 5MB"
+
+    # Check magic bytes
+    is_jpeg = data.startswith(b"\xff\xd8\xff")
+    is_png = data.startswith(b"\x89PNG\r\n\x1a\n")
+    is_webp = data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"
+
+    if not (is_jpeg or is_png or is_webp):
+        return False, "File bytes do not match supported formats (JPEG, PNG, WebP)"
+
+    if expected_content_type:
+        clean_exp = expected_content_type.strip().lower()
+        if clean_exp in ("image/jpeg", "image/jpg") and not is_jpeg:
+            return False, "Payload does not match declared JPEG content type"
+        if clean_exp == "image/png" and not is_png:
+            return False, "Payload does not match declared PNG content type"
+        if clean_exp == "image/webp" and not is_webp:
+            return False, "Payload does not match declared WebP content type"
+
+    return True, None

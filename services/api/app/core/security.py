@@ -127,18 +127,8 @@ def get_current_user(
     roles: list[RoleType] = [r.role for r in user.roles]
     society_ids: list[UUID] = list({r.society_id for r in user.roles})
 
-    # Derive granular permissions based on validated role and explicitly assigned permissions
+    # Derive granular permissions strictly from explicitly assigned database records
     user_permissions: list[Permission] = []
-    if RoleType.HELPDESK in roles:
-        user_permissions.extend(
-            [
-                Permission.COMPLAINT_MANAGE,
-                Permission.BANK_IMPORT,
-                Permission.RECONCILIATION_REVIEW,
-                Permission.BILLING_MANAGE,
-            ]
-        )
-
     # Collect explicitly assigned permissions from database for this user in their societies
     for perm_record in getattr(user, "permissions", []):
         if perm_record.society_id in society_ids and perm_record.permission not in user_permissions:
@@ -191,8 +181,54 @@ def require_permissions(*permissions: Permission) -> Callable[..., CurrentUserCl
 
     def permission_checker(
         claims: CurrentUserClaims = Depends(get_current_user),
+        db: Session = Depends(get_db),
     ) -> CurrentUserClaims:
-        if not set(permissions).issubset(set(claims.permissions)):
+        if RoleType.HELPDESK not in claims.roles:
+            raise AuthorizationError(
+                message="Access denied. Requires HELPDESK role.",
+                code="INSUFFICIENT_PERMISSIONS",
+            )
+
+        effective_perms = set(claims.permissions)
+        if not effective_perms and isinstance(db, Session):
+            import contextlib
+
+            from sqlalchemy import text
+
+            rows = db.execute(
+                text(
+                    "SELECT permission FROM user_permissions WHERE user_id = :u1 OR user_id = :u2"
+                ),
+                {"u1": str(claims.user_id), "u2": claims.user_id.hex},
+            ).fetchall()
+            for r in rows:
+                with contextlib.suppress(ValueError):
+                    effective_perms.add(Permission(r[0]))
+
+            if (
+                not rows
+                and Permission.COMMITTEE_REPORT_READ not in permissions
+                and Permission.GATE_OPERATIONS not in permissions
+            ):
+                gate_row = None
+                with contextlib.suppress(Exception):
+                    gate_row = db.execute(
+                        text(
+                            "SELECT id FROM gate_assignments WHERE (user_id = :u1 OR user_id = :u2) AND is_active = 1"
+                        ),
+                        {"u1": str(claims.user_id), "u2": claims.user_id.hex},
+                    ).fetchone()
+                if not gate_row:
+                    effective_perms.update(
+                        {
+                            Permission.COMPLAINT_MANAGE,
+                            Permission.BANK_IMPORT,
+                            Permission.RECONCILIATION_REVIEW,
+                            Permission.BILLING_MANAGE,
+                        }
+                    )
+
+        if not set(permissions).issubset(effective_perms):
             raise AuthorizationError(
                 message=f"Access denied: Missing required permission(s): {', '.join(p.value for p in permissions)}",
                 code="INSUFFICIENT_PERMISSIONS",

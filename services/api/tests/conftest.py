@@ -46,6 +46,11 @@ from app.domains.identity.models import (
     UserRole,
     UserStatus,
 )
+from app.domains.visitors.models import (
+    Gate,
+    GateStaffAssignment,
+    GateStatus,
+)
 from app.main import app
 
 # Test in-memory database with static single-connection pool
@@ -182,7 +187,29 @@ def db_session() -> Generator[Session, None, None]:
         ]
     )
 
-    # Explicit granular permissions: give committee reporting access to user_helpdesk
+    # Explicit granular permissions for legacy test helpdesk users
+    legacy_perms = [
+        Permission.COMPLAINT_MANAGE,
+        Permission.BANK_IMPORT,
+        Permission.RECONCILIATION_REVIEW,
+        Permission.BILLING_MANAGE,
+    ]
+    for perm in legacy_perms:
+        session.add(
+            UserPermission(
+                user_id=user_helpdesk.id,
+                society_id=society_id,
+                permission=perm,
+            )
+        )
+        session.add(
+            UserPermission(
+                user_id=user_helpdesk_2.id,
+                society_id=society_id,
+                permission=perm,
+            )
+        )
+    # user_helpdesk also retains committee reporting
     session.add(
         UserPermission(
             user_id=user_helpdesk.id,
@@ -250,6 +277,67 @@ def db_session() -> Generator[Session, None, None]:
     )
     session.add(billing_config)
 
+    # Phase 6: 4 Physical Gates for Marvel Greenfield Residences
+    gate_1 = Gate(
+        id=uuid.UUID("aaaaaaaa-1111-0000-0000-000000000001"),
+        society_id=society_id,
+        gate_number=1,
+        gate_name="Gate 1 - North Main",
+        name="Gate 1 - North Main",
+        description="North primary entrance",
+        status=GateStatus.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    gate_2 = Gate(
+        id=uuid.UUID("aaaaaaaa-2222-0000-0000-000000000002"),
+        society_id=society_id,
+        gate_number=2,
+        gate_name="Gate 2 - South Entry",
+        name="Gate 2 - South Entry",
+        description="South commercial and visitor entrance",
+        status=GateStatus.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    gate_3 = Gate(
+        id=uuid.UUID("aaaaaaaa-3333-0000-0000-000000000003"),
+        society_id=society_id,
+        gate_number=3,
+        gate_name="Gate 3 - East Service",
+        name="Gate 3 - East Service",
+        description="East service entrance",
+        status=GateStatus.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    gate_4 = Gate(
+        id=uuid.UUID("aaaaaaaa-4444-0000-0000-000000000004"),
+        society_id=society_id,
+        gate_number=4,
+        gate_name="Gate 4 - West Resident",
+        name="Gate 4 - West Resident",
+        description="West resident gate",
+        status=GateStatus.ACTIVE,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add_all([gate_1, gate_2, gate_3, gate_4])
+
+    # Initial Gate Staff Assignment: Helpdesk assigned to Gate 1
+    assignment_1 = GateStaffAssignment(
+        id=uuid.UUID("77777777-1111-0000-0000-000000000001"),
+        society_id=society_id,
+        gate_id=gate_1.id,
+        user_id=user_helpdesk.id,
+        assigned_from=now - timedelta(days=30),
+        assigned_until=now + timedelta(days=365),
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(assignment_1)
+
     session.commit()
 
     try:
@@ -273,3 +361,13 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_pass_rate_limiter() -> Generator[None, None, None]:
+    """Reset the in-memory guest pass rate limiter before and after each test."""
+    from app.domains.visitors.pass_service import pass_rate_limiter
+
+    pass_rate_limiter.reset()
+    yield
+    pass_rate_limiter.reset()

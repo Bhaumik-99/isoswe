@@ -72,6 +72,18 @@ class WorkerRunner:
                         f"[WorkerRunner] Consumed and processed {processed} messages from {queue}."
                     )
 
+            # Pass 3: Visitor photo retention cleanup (90-day statutory expiry)
+            try:
+                from app.domains.visitors.retention_service import PhotoRetentionService
+
+                purged = PhotoRetentionService(db).purge_expired_photos(batch_size=100)
+                if purged > 0:
+                    logger.info(
+                        f"[WorkerRunner] Purged {purged} expired visitor photos past 90-day retention."
+                    )
+            except Exception as e:
+                logger.error(f"[WorkerRunner] Error purging expired photos: {e}")
+
     def start(self) -> None:
         logger.info("[WorkerRunner] Background outbox publisher and queue worker started.")
         while self.running:

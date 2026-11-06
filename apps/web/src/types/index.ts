@@ -7,7 +7,8 @@ export type PermissionType =
   | 'BANK_IMPORT'
   | 'RECONCILIATION_REVIEW'
   | 'COMMITTEE_REPORT_READ'
-  | 'BILLING_MANAGE';
+  | 'BILLING_MANAGE'
+  | 'GATE_OPERATIONS';
 
 export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
 
@@ -79,3 +80,4 @@ export interface ApiErrorResponse {
 
 export * from './billing';
 export * from './complaints';
+export * from './visitors';

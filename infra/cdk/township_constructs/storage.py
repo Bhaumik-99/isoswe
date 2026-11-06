@@ -8,6 +8,7 @@ Configures:
 """
 
 from aws_cdk import (
+    Duration,
     RemovalPolicy,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
@@ -33,7 +34,7 @@ class StorageConstruct(Construct):
             RemovalPolicy.RETAIN if config.is_production else RemovalPolicy.DESTROY
         )
 
-        # 1. Documents Private Bucket (Statements, Invoices, Receipts)
+        # 1. Documents Private Bucket (Statements, Invoices, Receipts, Visitor Photos)
         self.documents_bucket = s3.Bucket(
             self,
             "DocumentsBucket",
@@ -45,6 +46,13 @@ class StorageConstruct(Construct):
             versioned=True,
             removal_policy=removal_policy,
             auto_delete_objects=not config.is_production,
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="VisitorPhotos90DayRetention",
+                    prefix="visitor-photos/",
+                    expiration=Duration.days(90),
+                )
+            ],
         )
 
         # 2. Frontend SPA Web Hosting Bucket (Private)

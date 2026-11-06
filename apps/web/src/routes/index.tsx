@@ -10,18 +10,20 @@ import { ResidentOverview } from '../features/resident/ResidentOverview';
 import { ResidentBilling } from '../features/resident/ResidentBilling';
 import { ResidentPayments } from '../features/resident/ResidentPayments';
 import { ResidentComplaints } from '../features/resident/ResidentComplaints';
+import { ResidentVisitorsPage } from '../features/resident/ResidentVisitorsPage';
 import { StaffOverview } from '../features/staff/StaffOverview';
 import { StaffBilling } from '../features/staff/StaffBilling';
 import { StaffHelpdesk } from '../features/staff/StaffHelpdesk';
 import { StaffReconciliation } from '../features/staff/reconciliation/StaffReconciliation';
 import { ResidentsDirectory } from '../features/staff/residents/ResidentsDirectory';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
+import { GateTabletPage } from '../features/gate/GateTabletPage';
 import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
 import { NotFound } from '../components/NotFound';
 import { LoadingScreen } from '../components/LoadingScreen';
 
 const RootRedirect: React.FC = () => {
-  const { isAuthenticated, isLoading, roles } = useAuth();
+  const { isAuthenticated, isLoading, roles, permissions } = useAuth();
 
   if (isLoading) {
     return <LoadingScreen />;
@@ -34,6 +36,15 @@ const RootRedirect: React.FC = () => {
   if (roles.includes('RESIDENT')) {
     return <Navigate to="/resident/overview" replace />;
   }
+
+  if (
+    roles.includes('HELPDESK') &&
+    permissions.includes('GATE_OPERATIONS') &&
+    !permissions.includes('COMPLAINT_MANAGE')
+  ) {
+    return <Navigate to="/gate" replace />;
+  }
+
   return <Navigate to="/staff/overview" replace />;
 };
 
@@ -52,6 +63,16 @@ export const AppRoutes: React.FC = () => {
         }
       />
 
+      {/* Gate Tablet Security Operations Console */}
+      <Route
+        path="/gate"
+        element={
+          <ProtectedRoute allowedRoles={['HELPDESK']} requiredPermissions={['GATE_OPERATIONS']}>
+            <GateTabletPage />
+          </ProtectedRoute>
+        }
+      />
+
       {/* Resident Portal */}
       <Route
         path="/resident"
@@ -63,6 +84,7 @@ export const AppRoutes: React.FC = () => {
       >
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<ResidentOverview />} />
+        <Route path="visitors" element={<ResidentVisitorsPage />} />
         <Route path="billing" element={<ResidentBilling />} />
         <Route path="payments" element={<ResidentPayments />} />
         <Route path="complaints" element={<ResidentComplaints />} />
@@ -93,9 +115,30 @@ export const AppRoutes: React.FC = () => {
       >
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<StaffOverview />} />
-        <Route path="helpdesk" element={<StaffHelpdesk />} />
-        <Route path="billing" element={<StaffBilling />} />
-        <Route path="reconciliation" element={<StaffReconciliation />} />
+        <Route
+          path="helpdesk"
+          element={
+            <ProtectedRoute requiredPermissions={['COMPLAINT_MANAGE']}>
+              <StaffHelpdesk />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="billing"
+          element={
+            <ProtectedRoute requiredPermissions={['BILLING_MANAGE']}>
+              <StaffBilling />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="reconciliation"
+          element={
+            <ProtectedRoute requiredPermissions={['RECONCILIATION_REVIEW']}>
+              <StaffReconciliation />
+            </ProtectedRoute>
+          }
+        />
         <Route path="residents" element={<ResidentsDirectory />} />
         <Route
           path="committee"

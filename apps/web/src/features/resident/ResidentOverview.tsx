@@ -12,12 +12,17 @@ import {
   PlusCircle,
   Smartphone,
   CheckCircle2,
+  UserCheck,
+  XCircle,
+  KeyRound,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient, ApiClientError } from '../../services/apiClient';
 import { billingService, formatINR, formatDateIST } from '../../services/billingService';
 import { complaintsService } from '../../services/complaintsService';
-import { FlatDetail, Complaint } from '../../types';
+import { residentVisitorService } from '../../services/residentVisitorService';
+import { FlatDetail, Complaint, VisitorRecord } from '../../types';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
@@ -32,11 +37,13 @@ interface BeforeInstallPromptEvent extends Event {
 export const ResidentOverview: React.FC = () => {
   const navigate = useNavigate();
   const { selectedFlat } = useAuth();
+  const { t } = useLanguage();
   const [flatDetail, setFlatDetail] = useState<FlatDetail | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstallDismissed, setIsInstallDismissed] = useState<boolean>(false);
+  const [actingVisitorId, setActingVisitorId] = useState<string | null>(null);
 
   const { data: billingSummary, isLoading: isBillingLoading } = useQuery({
     queryKey: ['billing-summary'],
@@ -47,6 +54,28 @@ export const ResidentOverview: React.FC = () => {
     queryKey: ['resident-complaints-summary'],
     queryFn: () => complaintsService.listResidentComplaints(),
   });
+
+  const {
+    data: pendingVisitors = [],
+    refetch: refetchPendingVisitors,
+  } = useQuery<VisitorRecord[]>({
+    queryKey: ['resident-pending-visitors', selectedFlat?.flat_id],
+    queryFn: () => residentVisitorService.listPendingVisitors(),
+    enabled: Boolean(selectedFlat?.flat_id),
+  });
+
+  const handleQuickVisitorAction = async (
+    visitorId: string,
+    action: 'APPROVE' | 'REJECT'
+  ) => {
+    setActingVisitorId(visitorId);
+    try {
+      await residentVisitorService.actOnVisitor(visitorId, action);
+      await refetchPendingVisitors();
+    } finally {
+      setActingVisitorId(null);
+    }
+  };
 
   useEffect(() => {
     const handleBeforeInstall = (e: Event) => {
@@ -233,6 +262,81 @@ export const ResidentOverview: React.FC = () => {
               </div>
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Gate Visitors & Pre-Approved Passes Card (1-Tap Approval & 2-Tap Hub) */}
+      <Card className="border-l-4 border-l-amber-500">
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <UserCheck className="h-4 w-4 text-amber-600" />
+              <span>{t.resident.homeCardTitle}</span>
+            </span>
+            <Badge variant={pendingVisitors.length > 0 ? 'warning' : 'success'}>
+              {pendingVisitors.length > 0
+                ? `${pendingVisitors.length} ${t.resident.homePendingBadge}`
+                : t.resident.homeNoPendingBadge}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-xs text-slate-600">
+          {pendingVisitors.length > 0 ? (
+            <div className="space-y-2">
+              {pendingVisitors.slice(0, 2).map((v) => (
+                <div
+                  key={v.visitor_id}
+                  className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="font-bold text-slate-900 text-xs">{v.visitor_name}</div>
+                    <div className="text-[11px] text-slate-600">
+                      {v.purpose} • {v.phone_masked}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isLoading={actingVisitorId === v.visitor_id}
+                      onClick={() => handleQuickVisitorAction(v.visitor_id, 'APPROVE')}
+                      className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                      {t.resident.pendingInbox.approveBtn}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={actingVisitorId === v.visitor_id}
+                      onClick={() => handleQuickVisitorAction(v.visitor_id, 'REJECT')}
+                      className="text-xs border-rose-300 text-rose-700 hover:bg-rose-50"
+                    >
+                      <XCircle className="h-3.5 w-3.5 mr-1" />
+                      {t.resident.pendingInbox.rejectBtn}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-between">
+              <span>{t.resident.homeCardSubtitle}</span>
+              <KeyRound className="h-4 w-4 text-indigo-500" />
+            </div>
+          )}
+
+          <div className="pt-1">
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => navigate('/resident/visitors')}
+              className="w-full text-xs font-semibold flex items-center justify-center gap-1.5"
+            >
+              <span>{t.resident.homeManageCta}</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

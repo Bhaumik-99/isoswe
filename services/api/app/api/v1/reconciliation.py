@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.errors import AuthorizationError, ValidationError
-from app.core.security import require_roles
-from app.domains.identity.models import RoleType
+from app.core.security import require_permissions
+from app.domains.identity.models import Permission
 from app.domains.identity.schemas import CurrentUserClaims
 from app.domains.reconciliation.models import (
     TransactionReconciliationStatus,
@@ -82,7 +82,7 @@ async def upload_bank_statement(
     bank_profile: str = Form("AUTO"),
     custom_mapping: str | None = Form(None),
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> StatementUploadPreviewResponse:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -130,7 +130,7 @@ def list_statement_imports(
     society_id: UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[BankStatementImportResponse]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -148,7 +148,7 @@ def list_statement_imports(
 )
 def get_statement_import(
     import_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankStatementImportResponse:
     service = ReconciliationService(db)
@@ -166,7 +166,7 @@ def get_statement_import(
 )
 def confirm_statement_import(
     import_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankStatementImportResponse:
     service = ReconciliationService(db)
@@ -180,7 +180,7 @@ def confirm_statement_import(
 )
 def process_statement_import(
     import_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankStatementImportResponse:
     service = ReconciliationService(db)
@@ -194,7 +194,7 @@ def process_statement_import(
 )
 def cancel_statement_import(
     import_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> None:
     service = ReconciliationService(db)
@@ -219,7 +219,7 @@ def list_transactions(
     date_to: datetime | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[BankTransactionResponse]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -245,7 +245,7 @@ def list_transactions(
 )
 def get_transaction(
     transaction_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -267,7 +267,7 @@ def get_manual_review_queue(
     ),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[ManualReviewQueueItem]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -288,7 +288,7 @@ def get_manual_review_queue(
 )
 def get_queue_summary(
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> QueueSummaryResponse:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -313,7 +313,7 @@ def get_queue_summary(
 )
 def get_transaction_matches(
     transaction_id: UUID,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[ReconciliationMatchResponse]:
     service = ReconciliationService(db)
@@ -329,7 +329,7 @@ def get_transaction_matches(
 def match_transaction(
     transaction_id: UUID,
     payload: SuggestMatchRequest,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -350,7 +350,7 @@ def match_transaction(
 def suggest_manual_match(
     transaction_id: UUID,
     payload: SuggestMatchRequest,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -371,7 +371,7 @@ def suggest_manual_match(
 def submit_for_approval(
     transaction_id: UUID,
     payload: SubmitForApprovalRequest,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -393,7 +393,7 @@ def approve_and_allocate(
     payload: ApproveReconciliationRequest,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     x_correlation_id: str | None = Header(None, alias="X-Correlation-Id"),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -415,7 +415,7 @@ def approve_and_allocate(
 def reject_match(
     transaction_id: UUID,
     payload: RejectReconciliationRequest,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -434,7 +434,7 @@ def reject_match(
 def mark_unidentified(
     transaction_id: UUID,
     payload: MarkUnidentifiedRequest,
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> BankTransactionResponse:
     service = ReconciliationService(db)
@@ -455,7 +455,7 @@ def mark_unidentified(
 )
 def get_reconciliation_summary(
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -470,7 +470,7 @@ def get_reconciliation_summary(
 )
 def get_reports_summary(
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> ReconciliationSummaryResponse:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -487,7 +487,7 @@ def get_unmatched_report(
     society_id: UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[BankTransactionResponse]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -510,7 +510,7 @@ def get_reconciled_report(
     society_id: UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[BankTransactionResponse]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -531,7 +531,7 @@ def get_reconciled_report(
 def export_reconciliation_report_csv(
     society_id: UUID | None = Query(None),
     status: TransactionReconciliationStatus | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> Response:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -556,7 +556,7 @@ def export_reconciliation_report_csv(
 )
 def list_resident_upi_mappings(
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> list[ResidentUPIMappingResponse]:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -573,7 +573,7 @@ def list_resident_upi_mappings(
 def create_resident_upi_mapping(
     payload: CreateResidentUPIMappingRequest,
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> ResidentUPIMappingResponse:
     target_society_id = _resolve_society_id(claims, society_id)
@@ -591,7 +591,7 @@ def create_resident_upi_mapping(
 def delete_resident_upi_mapping(
     mapping_id: UUID,
     society_id: UUID | None = Query(None),
-    claims: CurrentUserClaims = Depends(require_roles(RoleType.HELPDESK)),
+    claims: CurrentUserClaims = Depends(require_permissions(Permission.RECONCILIATION_REVIEW)),
     db: Session = Depends(get_db),
 ) -> None:
     target_society_id = _resolve_society_id(claims, society_id)

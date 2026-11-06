@@ -47,6 +47,11 @@ from app.domains.identity.models import (
     UserRole,
     UserStatus,
 )
+from app.domains.visitors.models import (
+    Gate,
+    GateStaffAssignment,
+    GateStatus,
+)
 from sqlalchemy import select
 
 # Fixed deterministic UUIDs for seed records so they are easily referenceable in tests
@@ -73,6 +78,13 @@ INVOICE_SWATI_ID = uuid.UUID("77777777-7777-7777-7777-777777770002")
 INVOICE_AAMIR_ID = uuid.UUID("77777777-7777-7777-7777-777777770003")
 PAYMENT_AAMIR_ID = uuid.UUID("88888888-8888-8888-8888-888888880001")
 ALLOCATION_AAMIR_ID = uuid.UUID("99999999-9999-9999-9999-999999990001")
+
+# 4 Gates for Marvel Greenfield Residences (Phase 6)
+GATE_1_ID = uuid.UUID("aaaaaaaa-1111-0000-0000-000000000001")
+GATE_2_ID = uuid.UUID("aaaaaaaa-2222-0000-0000-000000000002")
+GATE_3_ID = uuid.UUID("aaaaaaaa-3333-0000-0000-000000000003")
+GATE_4_ID = uuid.UUID("aaaaaaaa-4444-0000-0000-000000000004")
+GATE_ASSIGNMENT_1_ID = uuid.UUID("77777777-1111-0000-0000-000000000001")
 
 
 def seed_database() -> None:
@@ -216,6 +228,11 @@ def seed_database() -> None:
 
         # 4b. Explicit Granular User Permissions
         permissions_data = [
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.COMPLAINT_MANAGE),
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.BANK_IMPORT),
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.RECONCILIATION_REVIEW),
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.BILLING_MANAGE),
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.GATE_OPERATIONS),
             (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
             (USER_COMMITTEE_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
         ]
@@ -235,6 +252,69 @@ def seed_database() -> None:
                 db.add(new_perm)
                 db.flush()
                 logger.info(f"Assigned permission {perm.value} to user {u_id}")
+
+        # 4c. Physical Gates (Phase 6)
+        gates_data = [
+            (
+                GATE_1_ID,
+                1,
+                "Gate 1 - North Main",
+                "North primary visitor and residential entrance",
+            ),
+            (
+                GATE_2_ID,
+                2,
+                "Gate 2 - South Entry",
+                "South commercial and visitor entrance",
+            ),
+            (
+                GATE_3_ID,
+                3,
+                "Gate 3 - East Service",
+                "East service and delivery vehicle entrance",
+            ),
+            (
+                GATE_4_ID,
+                4,
+                "Gate 4 - West Resident",
+                "West resident RFID and pedestrian gate",
+            ),
+        ]
+        for g_id, g_num, g_name, g_desc in gates_data:
+            existing_gate = db.get(Gate, g_id)
+            if not existing_gate:
+                new_gate = Gate(
+                    id=g_id,
+                    society_id=SOCIETY_PUNE_ID,
+                    gate_number=g_num,
+                    gate_name=g_name,
+                    name=g_name,
+                    description=g_desc,
+                    status=GateStatus.ACTIVE,
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(new_gate)
+                db.flush()
+                logger.info(f"Created Gate: {g_name} (#{g_num})")
+
+        # 4d. Gate Staff Assignment for Rajesh Shinde (Helpdesk) to Gate 1
+        existing_assignment = db.get(GateStaffAssignment, GATE_ASSIGNMENT_1_ID)
+        if not existing_assignment:
+            new_assignment = GateStaffAssignment(
+                id=GATE_ASSIGNMENT_1_ID,
+                society_id=SOCIETY_PUNE_ID,
+                gate_id=GATE_1_ID,
+                user_id=USER_HELPDESK_ID,
+                is_active=True,
+                assigned_from=now - timedelta(days=30),
+                assigned_until=now + timedelta(days=365),
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(new_assignment)
+            db.flush()
+            logger.info("Assigned Rajesh Shinde to Gate 1 (North Main)")
 
         # 5. Flat Memberships
         memberships_data = [

@@ -7,6 +7,7 @@ import {
   Scale,
   Users,
   Cpu,
+  ShieldCheck,
   LogOut,
   Menu,
   X,
@@ -25,14 +26,22 @@ export const StaffLayout: React.FC = () => {
   };
 
   const isHelpdesk = roles.includes('HELPDESK');
+  const canManageComplaints = isHelpdesk && permissions.includes('COMPLAINT_MANAGE');
+  const canReviewReconciliation = isHelpdesk && permissions.includes('RECONCILIATION_REVIEW');
   const canViewCommitteeReport = isHelpdesk && permissions.includes('COMMITTEE_REPORT_READ');
+  const canOperateGate = isHelpdesk && permissions.includes('GATE_OPERATIONS');
 
   const navItems = [
     { name: 'Operations Overview', path: '/staff/overview', icon: Cpu, exact: true },
-    ...(isHelpdesk
+    ...(canOperateGate
+      ? [{ name: 'Gate Operations Console', path: '/gate', icon: ShieldCheck }]
+      : []),
+    ...(canManageComplaints
       ? [{ name: 'Helpdesk Tickets', path: '/staff/helpdesk', icon: Headphones }]
       : []),
-    ...(isHelpdesk ? [{ name: 'Bank Reconciliation', path: '/staff/reconciliation', icon: Scale }] : []),
+    ...(canReviewReconciliation
+      ? [{ name: 'Bank Reconciliation', path: '/staff/reconciliation', icon: Scale }]
+      : []),
     ...(canViewCommitteeReport
       ? [{ name: 'Committee Dashboard', path: '/staff/committee', icon: CircleDollarSign }]
       : []),
