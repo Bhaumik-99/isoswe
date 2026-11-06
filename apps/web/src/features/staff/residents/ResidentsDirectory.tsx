@@ -25,6 +25,7 @@ export const ResidentsDirectory: React.FC = () => {
 
   // Search and Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [flatSearch, setFlatSearch] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedType, setSelectedType] = useState<string>('ALL');
 
@@ -57,10 +58,11 @@ export const ResidentsDirectory: React.FC = () => {
     isLoading,
     error,
   } = useQuery<ResidentDirectoryItem[]>({
-    queryKey: ['staff-residents', searchQuery, selectedStatus, selectedType],
+    queryKey: ['staff-residents', searchQuery, flatSearch, selectedStatus, selectedType],
     queryFn: () =>
       registryService.listResidents({
         query: searchQuery || undefined,
+        flat_number: flatSearch || undefined,
         status: selectedStatus,
         membership_type: selectedType,
       }),
@@ -180,8 +182,17 @@ export const ResidentsDirectory: React.FC = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by resident name, phone, email, tower, flat..."
+                placeholder="Search by resident name, phone, or email..."
                 className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            <div className="w-full md:w-44">
+              <input
+                type="text"
+                value={flatSearch}
+                onChange={(e) => setFlatSearch(e.target.value)}
+                placeholder="Flat No. (e.g. 1203)"
+                className="w-full px-3 py-2 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -443,15 +454,21 @@ export const ResidentsDirectory: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Phone Number
+                    Phone Number * <span className="text-rose-500 font-normal text-[10px]">(Mandatory)</span>
                   </label>
                   <input
                     type="tel"
+                    required
                     value={newResident.phone}
                     onChange={(e) => setNewResident({ ...newResident, phone: e.target.value })}
                     placeholder="e.g. +91 9876543210"
                     className="w-full text-xs border border-slate-200 rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
+                  {!newResident.phone.trim() && (
+                    <span className="text-[10px] text-rose-500 mt-0.5 block">
+                      Phone is required for identity & flat verification
+                    </span>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -564,7 +581,13 @@ export const ResidentsDirectory: React.FC = () => {
                   type="submit"
                   size="sm"
                   variant="primary"
-                  disabled={registerMutation.isPending}
+                  disabled={
+                    !newResident.full_name.trim() ||
+                    !newResident.phone.trim() ||
+                    newResident.phone.trim().length < 10 ||
+                    !newResident.flat_id.trim() ||
+                    registerMutation.isPending
+                  }
                   className="text-xs"
                 >
                   {registerMutation.isPending ? 'Registering...' : 'Register Resident'}

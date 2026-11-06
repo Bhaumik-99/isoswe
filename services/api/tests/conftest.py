@@ -176,6 +176,7 @@ def db_session() -> Generator[Session, None, None]:
             UserRole(user_id=user_swati.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_aamir.id, society_id=society_id, role=RoleType.RESIDENT),
             UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.HELPDESK),
+            UserRole(user_id=user_helpdesk.id, society_id=society_id, role=RoleType.COMMITTEE),
             UserRole(user_id=user_helpdesk_2.id, society_id=society_id, role=RoleType.HELPDESK),
         ]
     )

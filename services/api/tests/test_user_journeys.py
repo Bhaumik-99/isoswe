@@ -57,8 +57,9 @@ def test_helpdesk_user_journey(client: TestClient) -> None:
     assert me_res.status_code == 200
     me_data = me_res.json()
     assert me_data["user"]["full_name"] == "Rajesh Shinde"
-    assert len(me_data["roles"]) == 1
-    assert me_data["roles"][0]["role"] == "HELPDESK"
+    roles = [r["role"] for r in me_data["roles"]]
+    assert "HELPDESK" in roles
+    assert "COMMITTEE" in roles
 
     # 2. Inspect flats within assigned society (Marvel Greenfield)
     flat_res = client.get(f"/api/v1/flats/{FLAT_1203_ID}", headers=headers)

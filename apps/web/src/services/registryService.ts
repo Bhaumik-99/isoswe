@@ -53,6 +53,7 @@ export const registryService = {
     query?: string;
     society_id?: string;
     tower_id?: string;
+    flat_number?: string;
     status?: string;
     membership_type?: string;
     limit?: number;
@@ -62,6 +63,7 @@ export const registryService = {
     if (params.query) searchParams.append('query', params.query);
     if (params.society_id) searchParams.append('society_id', params.society_id);
     if (params.tower_id) searchParams.append('tower_id', params.tower_id);
+    if (params.flat_number) searchParams.append('flat_number', params.flat_number);
     if (params.status && params.status !== 'ALL') searchParams.append('status', params.status);
     if (params.membership_type && params.membership_type !== 'ALL') {
       searchParams.append('membership_type', params.membership_type);

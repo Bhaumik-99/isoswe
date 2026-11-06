@@ -59,16 +59,16 @@ export const StaffBilling: React.FC = () => {
     policy_name: string;
     calculation_method: 'FLAT_FEE' | 'PERCENTAGE_PER_MONTH' | 'DAILY_INTEREST_PAISE';
     rate_or_amount: string;
-    grace_period_days: number;
+    grace_period_days: string;
     min_charge_inr: string;
     max_charge_inr: string;
   }>({
-    policy_name: 'Standard Society Bye-Law Late Fee',
+    policy_name: '',
     calculation_method: 'PERCENTAGE_PER_MONTH',
-    rate_or_amount: '2.0',
-    grace_period_days: 15,
-    min_charge_inr: '100',
-    max_charge_inr: '1000',
+    rate_or_amount: '',
+    grace_period_days: '',
+    min_charge_inr: '0',
+    max_charge_inr: '0',
   });
   const [lateFeePreview, setLateFeePreview] = useState<LateFeePreviewResponse | null>(null);
   const [lateFeeResult, setLateFeeResult] = useState<ApplyLateFeesResponse | null>(null);
@@ -111,15 +111,17 @@ export const StaffBilling: React.FC = () => {
 
   const createPolicyMutation = useMutation({
     mutationFn: () => {
-      const isPercent = newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH';
-      const bpsOrPaise = isPercent
+      const isRateBps =
+        newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH' ||
+        newPolicy.calculation_method === 'DAILY_INTEREST_PAISE';
+      const bpsOrPaise = isRateBps
         ? Math.round(parseFloat(newPolicy.rate_or_amount) * 100)
         : Math.round(parseFloat(newPolicy.rate_or_amount) * 100);
       return billingService.createLateFeePolicy({
-        policy_name: newPolicy.policy_name,
+        policy_name: newPolicy.policy_name.trim(),
         calculation_method: newPolicy.calculation_method,
         amount_or_rate_bps: bpsOrPaise,
-        grace_period_days: Number(newPolicy.grace_period_days),
+        grace_period_days: parseInt(newPolicy.grace_period_days, 10),
         min_charge_paise: Math.round((parseFloat(newPolicy.min_charge_inr) || 0) * 100),
         max_charge_paise: Math.round((parseFloat(newPolicy.max_charge_inr) || 0) * 100),
         is_active: true,
@@ -626,11 +628,19 @@ export const StaffBilling: React.FC = () => {
                         <tr key={pol.id} className="hover:bg-slate-50">
                           <td className="py-3 px-3 font-semibold text-slate-900 font-sans">{pol.policy_name}</td>
                           <td className="py-3 px-3 font-sans">
-                            <Badge variant="neutral">{pol.calculation_method}</Badge>
+                            <Badge variant="neutral">
+                              {pol.calculation_method === 'DAILY_INTEREST_PAISE'
+                                ? 'Daily Accrual (% p.a.)'
+                                : pol.calculation_method === 'PERCENTAGE_PER_MONTH'
+                                ? 'Monthly %'
+                                : 'Flat Fee'}
+                            </Badge>
                           </td>
                           <td className="py-3 px-3">
                             {pol.calculation_method === 'PERCENTAGE_PER_MONTH'
                               ? `${(pol.amount_or_rate_bps / 100).toFixed(2)}% / month`
+                              : pol.calculation_method === 'DAILY_INTEREST_PAISE'
+                              ? `${(pol.amount_or_rate_bps / 100).toFixed(2)}% p.a.`
                               : formatINR(pol.amount_or_rate_bps)}
                           </td>
                           <td className="py-3 px-3 font-sans">
@@ -780,9 +790,10 @@ export const StaffBilling: React.FC = () => {
               )}
 
               <div className="space-y-1">
-                <label className="block font-semibold text-slate-700">Policy Name</label>
+                <label className="block font-semibold text-slate-700">Policy Name *</label>
                 <input
                   type="text"
+                  placeholder="e.g. Society Bye-Law Late Fee"
                   value={newPolicy.policy_name}
                   onChange={(e) => setNewPolicy((p) => ({ ...p, policy_name: e.target.value }))}
                   className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
@@ -802,41 +813,58 @@ export const StaffBilling: React.FC = () => {
                     }
                     className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
                   >
-                    <option value="PERCENTAGE_PER_MONTH">Percentage per Month</option>
+                    <option value="PERCENTAGE_PER_MONTH">Percentage per Month (% / mo)</option>
+                    <option value="DAILY_INTEREST_PAISE">Daily Interest (% p.a.)</option>
                     <option value="FLAT_FEE">Flat Fee (₹)</option>
-                    <option value="DAILY_INTEREST_PAISE">Daily Interest (paise)</option>
                   </select>
                 </div>
 
                 <div className="space-y-1">
                   <label className="block font-semibold text-slate-700">
                     {newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH'
-                      ? 'Rate (% per month)'
-                      : 'Fixed Amount (₹)'}
+                      ? 'Monthly Rate (% per month) *'
+                      : newPolicy.calculation_method === 'DAILY_INTEREST_PAISE'
+                      ? 'Annual Interest Rate (% p.a.) *'
+                      : 'Fixed Surcharge Fee (₹) *'}
                   </label>
                   <input
                     type="number"
                     step="0.01"
+                    placeholder={
+                      newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH'
+                        ? 'e.g. 2.0'
+                        : newPolicy.calculation_method === 'DAILY_INTEREST_PAISE'
+                        ? 'e.g. 18.0'
+                        : 'e.g. 250'
+                    }
                     value={newPolicy.rate_or_amount}
                     onChange={(e) => setNewPolicy((p) => ({ ...p, rate_or_amount: e.target.value }))}
                     className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
                   />
+                  <p className="text-[10px] text-slate-500">
+                    {newPolicy.calculation_method === 'PERCENTAGE_PER_MONTH'
+                      ? 'Calculated monthly on overdue balance after grace period.'
+                      : newPolicy.calculation_method === 'DAILY_INTEREST_PAISE'
+                      ? 'Annual simple interest rate accruing daily on overdue balance.'
+                      : 'Fixed one-time penalty charged after grace period expires.'}
+                  </p>
                 </div>
               </div>
 
               <div className="space-y-1">
                 <label className="block font-semibold text-slate-700">
-                  Explicit Grace Period (Days from Due Date)
+                  Explicit Grace Period (Days from Due Date) *
                 </label>
                 <input
                   type="number"
                   min="0"
                   max="90"
+                  placeholder="e.g. 15 (explicit bye-law grace days)"
                   value={newPolicy.grace_period_days}
                   onChange={(e) =>
                     setNewPolicy((p) => ({
                       ...p,
-                      grace_period_days: parseInt(e.target.value, 10) || 0,
+                      grace_period_days: e.target.value,
                     }))
                   }
                   className="w-full px-3 py-1.5 border border-slate-300 rounded text-xs"
@@ -875,7 +903,16 @@ export const StaffBilling: React.FC = () => {
                   size="sm"
                   variant="primary"
                   onClick={() => createPolicyMutation.mutate()}
-                  disabled={createPolicyMutation.isPending}
+                  disabled={
+                    !newPolicy.policy_name.trim() ||
+                    !newPolicy.rate_or_amount.trim() ||
+                    isNaN(parseFloat(newPolicy.rate_or_amount)) ||
+                    parseFloat(newPolicy.rate_or_amount) <= 0 ||
+                    newPolicy.grace_period_days.trim() === '' ||
+                    isNaN(parseInt(newPolicy.grace_period_days, 10)) ||
+                    parseInt(newPolicy.grace_period_days, 10) < 0 ||
+                    createPolicyMutation.isPending
+                  }
                 >
                   {createPolicyMutation.isPending ? 'Saving...' : 'Save & Activate Policy'}
                 </Button>

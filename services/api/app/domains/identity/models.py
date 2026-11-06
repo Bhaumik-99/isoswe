@@ -66,6 +66,7 @@ class MembershipStatus(str, enum.Enum):
 class RoleType(str, enum.Enum):
     RESIDENT = "RESIDENT"
     HELPDESK = "HELPDESK"
+    COMMITTEE = "COMMITTEE"
 
 
 class Permission(str, enum.Enum):

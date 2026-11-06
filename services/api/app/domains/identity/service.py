@@ -97,11 +97,12 @@ class IdentityService:
         if not flat:
             raise ResourceNotFoundError(message=f"Flat {flat_id} not found", code="FLAT_NOT_FOUND")
 
-        # Society helpdesk can access flats within its assigned society
+        # Society helpdesk and committee members can access flats within assigned society
         is_staff_or_admin = any(
             role
             in [
                 RoleType.HELPDESK,
+                RoleType.COMMITTEE,
             ]
             for role in claims.roles
         )
@@ -273,85 +274,86 @@ class IdentityService:
         if not flat or flat.society_id != society_id:
             raise ResourceNotFoundError(f"Flat {req.flat_id} not found in society {society_id}")
 
-        # Find or create user by phone
-        clean_phone = req.phone.strip()
-        user = self.repo.get_user_by_phone(clean_phone)
-        if not user:
-            user = User(
-                id=uuid.uuid4(),
-                supabase_uid=uuid.uuid4(),
-                phone=clean_phone,
-                full_name=req.full_name or f"Resident {clean_phone[-4:]}",
-                status=UserStatus.ACTIVE,
+        try:
+            # Find or create user by phone
+            clean_phone = req.phone.strip()
+            user = self.repo.get_user_by_phone(clean_phone)
+            if not user:
+                user = User(
+                    id=uuid.uuid4(),
+                    supabase_uid=uuid.uuid4(),
+                    phone=clean_phone,
+                    full_name=req.full_name or f"Resident {clean_phone[-4:]}",
+                    status=UserStatus.ACTIVE,
+                )
+                self.db.add(user)
+                self.db.flush()
+
+            existing = (
+                self.db.query(FlatMembership)
+                .filter(FlatMembership.flat_id == flat.id, FlatMembership.user_id == user.id)
+                .first()
             )
-            self.db.add(user)
+            if existing:
+                existing.membership_type = req.membership_type
+                existing.valid_from = v_from
+                existing.valid_until = v_until
+                existing.is_primary = req.is_primary
+                existing.status = MembershipStatus.APPROVED
+                m = existing
+            else:
+                m = FlatMembership(
+                    id=uuid.uuid4(),
+                    society_id=society_id,
+                    flat_id=flat.id,
+                    user_id=user.id,
+                    membership_type=req.membership_type,
+                    valid_from=v_from,
+                    valid_until=v_until,
+                    is_primary=req.is_primary,
+                    status=MembershipStatus.APPROVED,
+                )
+                self.db.add(m)
             self.db.flush()
 
-        existing = (
-            self.db.query(FlatMembership)
-            .filter(FlatMembership.flat_id == flat.id, FlatMembership.user_id == user.id)
-            .first()
-        )
-        if existing:
-            existing.membership_type = req.membership_type
-            existing.valid_from = v_from
-            existing.valid_until = v_until
-            existing.is_primary = req.is_primary
-            existing.status = MembershipStatus.APPROVED
-            self.db.commit()
-            self.db.refresh(existing)
-            m = existing
-        else:
-            m = FlatMembership(
-                id=uuid.uuid4(),
-                society_id=society_id,
-                flat_id=flat.id,
-                user_id=user.id,
-                membership_type=req.membership_type,
-                valid_from=v_from,
-                valid_until=v_until,
-                is_primary=req.is_primary,
-                status=MembershipStatus.APPROVED,
+            has_role = (
+                self.db.query(UserRole)
+                .filter(
+                    UserRole.user_id == user.id,
+                    UserRole.society_id == society_id,
+                    UserRole.role == RoleType.RESIDENT,
+                )
+                .first()
             )
-            self.db.add(m)
+            if not has_role:
+                self.db.add(
+                    UserRole(
+                        id=uuid.uuid4(),
+                        user_id=user.id,
+                        society_id=society_id,
+                        role=RoleType.RESIDENT,
+                    )
+                )
+
+            self.record_audit(
+                action="identity.membership.created",
+                resource_type="flat_membership",
+                resource_id=str(m.id),
+                correlation_id=str(uuid.uuid4()),
+                actor_id=claims.user_id,
+                society_id=society_id,
+                metadata={
+                    "flat_id": str(flat.id),
+                    "user_id": str(user.id),
+                    "membership_type": m.membership_type.value,
+                    "status": m.status.value,
+                },
+            )
             self.db.commit()
             self.db.refresh(m)
-
-        has_role = (
-            self.db.query(UserRole)
-            .filter(
-                UserRole.user_id == user.id,
-                UserRole.society_id == society_id,
-                UserRole.role == RoleType.RESIDENT,
-            )
-            .first()
-        )
-        if not has_role:
-            self.db.add(
-                UserRole(
-                    id=uuid.uuid4(),
-                    user_id=user.id,
-                    society_id=society_id,
-                    role=RoleType.RESIDENT,
-                )
-            )
-            self.db.commit()
-
-        self.record_audit(
-            action="identity.membership.created",
-            resource_type="flat_membership",
-            resource_id=str(m.id),
-            correlation_id=str(uuid.uuid4()),
-            actor_id=claims.user_id,
-            society_id=society_id,
-            metadata={
-                "flat_id": str(flat.id),
-                "user_id": str(user.id),
-                "membership_type": m.membership_type.value,
-                "status": m.status.value,
-            },
-        )
-        self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
 
         return FlatMembershipSchema(
             id=m.id,
@@ -381,24 +383,29 @@ class IdentityService:
         if RoleType.HELPDESK not in claims.roles:
             raise AuthorizationError("Only helpdesk staff can update membership status")
 
-        prev_status = m.status
-        m.status = req.status
-        notes = req.notes or req.rejection_reason
-        self.record_audit(
-            action=f"identity.membership.{req.status.value.lower()}",
-            resource_type="flat_membership",
-            resource_id=str(m.id),
-            correlation_id=str(uuid.uuid4()),
-            actor_id=claims.user_id,
-            society_id=m.society_id,
-            metadata={
-                "previous_status": prev_status.value,
-                "new_status": req.status.value,
-                "notes": notes,
-            },
-        )
-        self.db.commit()
-        self.db.refresh(m)
+        try:
+            prev_status = m.status
+            m.status = req.status
+            notes = req.notes or req.rejection_reason
+            self.record_audit(
+                action=f"identity.membership.{req.status.value.lower()}",
+                resource_type="flat_membership",
+                resource_id=str(m.id),
+                correlation_id=str(uuid.uuid4()),
+                actor_id=claims.user_id,
+                society_id=m.society_id,
+                metadata={
+                    "previous_status": prev_status.value,
+                    "new_status": req.status.value,
+                    "notes": notes,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(m)
+        except Exception:
+            self.db.rollback()
+            raise
+
         return FlatMembershipSchema(
             id=m.id,
             society_id=m.society_id,
@@ -439,35 +446,39 @@ class IdentityService:
                 f"You already have an active or pending membership for this flat ({existing.status.value})"
             )
 
-        m = FlatMembership(
-            id=uuid.uuid4(),
-            society_id=flat.society_id,
-            flat_id=flat.id,
-            user_id=claims.user_id,
-            membership_type=req.membership_type,
-            valid_from=v_from,
-            valid_until=v_until,
-            is_primary=False,
-            status=MembershipStatus.PENDING,
-        )
-        self.db.add(m)
-        self.db.commit()
-        self.db.refresh(m)
+        try:
+            m = FlatMembership(
+                id=uuid.uuid4(),
+                society_id=flat.society_id,
+                flat_id=flat.id,
+                user_id=claims.user_id,
+                membership_type=req.membership_type,
+                valid_from=v_from,
+                valid_until=v_until,
+                is_primary=False,
+                status=MembershipStatus.PENDING,
+            )
+            self.db.add(m)
+            self.db.flush()
 
-        self.record_audit(
-            action="identity.membership.join_requested",
-            resource_type="flat_membership",
-            resource_id=str(m.id),
-            correlation_id=str(uuid.uuid4()),
-            actor_id=claims.user_id,
-            society_id=flat.society_id,
-            metadata={
-                "flat_id": str(flat.id),
-                "membership_type": req.membership_type.value,
-                "status": m.status.value,
-            },
-        )
-        self.db.commit()
+            self.record_audit(
+                action="identity.membership.join_requested",
+                resource_type="flat_membership",
+                resource_id=str(m.id),
+                correlation_id=str(uuid.uuid4()),
+                actor_id=claims.user_id,
+                society_id=flat.society_id,
+                metadata={
+                    "flat_id": str(flat.id),
+                    "membership_type": req.membership_type.value,
+                    "status": m.status.value,
+                },
+            )
+            self.db.commit()
+            self.db.refresh(m)
+        except Exception:
+            self.db.rollback()
+            raise
 
         return FlatMembershipSchema(
             id=m.id,
