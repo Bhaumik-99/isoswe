@@ -29,7 +29,7 @@ from typing import Any
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, pool, select, text
+from sqlalchemy import create_engine, func, pool, select, text
 from sqlalchemy.orm import Session
 
 from app.core.database import Base
@@ -56,6 +56,7 @@ from app.domains.identity.models import (
     User,
     UserStatus,
 )
+from app.domains.reliability.models import AuditEvent
 from app.main import app  # noqa: F401 Ensure all model tables are registered in Base.metadata
 
 # Fixed deterministic IDs & Dev User Auth Headers
@@ -894,3 +895,130 @@ def test_scenario_j_unauthorized_resident_attempts_staff_actions_rbac(
         },
     )
     assert r5.status_code == 403
+
+
+def test_scenario_k_refund_verification_idempotency_auditability_and_duplicate_prevention(
+    client: TestClient, e2e_badminton_amenity: Amenity, db_session: Session
+) -> None:
+    """Scenario K: Explicit end-to-end verification of simulated refunds.
+    1. Validates that cancellation cannot create duplicate refunds.
+    2. Validates that payment and refund records remain fully auditable.
+    3. Validates that refund state changes are strictly idempotent on retries.
+    4. Validates that the response clearly identifies simulated test refunds.
+    """
+    target_date = str(datetime.now(UTC).date() + timedelta(days=2))
+
+    # 1. Neeraj books badminton court with auto_pay=True (fee = 15000 paise)
+    book_res = client.post(
+        f"/api/v1/amenities/{e2e_badminton_amenity.id}/bookings",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={
+            "flat_id": FLAT_1203_ID,
+            "booking_date": target_date,
+            "start_time": "18:00",
+            "end_time": "19:00",
+            "booked_units": 1,
+            "auto_pay": True,
+        },
+    )
+    assert book_res.status_code == 201
+    booking_data = book_res.json()
+    booking_id = booking_data["id"]
+    payment_id = booking_data["payment_id"]
+    assert booking_data["status"] == "CONFIRMED"
+    assert booking_data["payment_status"] == "PAID"
+    assert payment_id is not None
+
+    # Verify original Payment record in database
+    payment = db_session.get(Payment, uuid.UUID(payment_id))
+    assert payment is not None
+    assert payment.amount_paise == 15000
+    assert payment.provider == "SIMULATED"
+
+    # 2. Neeraj cancels booking with Idempotency-Key
+    idemp_key = f"e2e-cancel-key-{uuid.uuid4().hex}"
+    cancel_res1 = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/cancel",
+        headers={**RESIDENT_NEERAJ_HEADERS, "Idempotency-Key": idemp_key},
+        json={"reason": "Emergency travel"},
+    )
+    assert cancel_res1.status_code == 200
+    cancel_data1 = cancel_res1.json()
+    assert cancel_data1["status"] == "CANCELLED"
+    assert cancel_data1["payment_status"] == "REFUNDED"
+    assert cancel_data1["refund_status"] == "REFUNDED"
+    # 80% refund on 15000 paise = 12000 paise (₹120.00)
+    assert cancel_data1["refund_amount_paise"] == 12000
+
+    # 3. Verify simulated refund metadata in booking_metadata
+    sim_refund = cancel_data1["booking_metadata"]["simulated_refund"]
+    assert sim_refund["is_simulated"] is True
+    assert sim_refund["refund_reference"].startswith("SIM-REF-")
+    assert sim_refund["refund_amount_paise"] == 12000
+    assert sim_refund["original_payment_id"] == payment_id
+    assert "ledger_impact" in sim_refund
+
+    # 4. Verify explicit Payment AuditEvent linking original payment to simulated refund
+    payment_audit = db_session.scalars(
+        select(AuditEvent).where(
+            AuditEvent.resource_type == "payment",
+            AuditEvent.action == "AMENITY_BOOKING_REFUND_SIMULATED",
+            AuditEvent.resource_id == payment_id,
+        )
+    ).first()
+    assert payment_audit is not None
+    assert payment_audit.event_metadata["refund_amount_paise"] == 12000
+    assert payment_audit.event_metadata["refund_reference"] == sim_refund["refund_reference"]
+    assert payment_audit.event_metadata["is_simulated"] is True
+
+    # Capture audit event count for this booking
+    audit_count_before = db_session.scalar(
+        select(func.count(AuditEvent.id)).where(
+            AuditEvent.resource_type == "amenity_booking",
+            AuditEvent.resource_id == booking_id,
+        )
+    )
+
+    # 5. Neeraj submits duplicate cancellation with identical payload (Idempotency check)
+    cancel_res2 = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/cancel",
+        headers={**RESIDENT_NEERAJ_HEADERS, "Idempotency-Key": idemp_key},
+        json={"reason": "Emergency travel"},
+    )
+    assert cancel_res2.status_code == 200
+    cancel_data2 = cancel_res2.json()
+    assert cancel_data2["status"] == "CANCELLED"
+    assert cancel_data2["refund_amount_paise"] == 12000  # Strictly NOT duplicated to 24000!
+
+    # 6. Neeraj submits repeated cancellation WITHOUT idempotency key (double click resilience)
+    cancel_res3 = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/cancel",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={"reason": "Emergency travel"},
+    )
+    assert cancel_res3.status_code == 200
+    cancel_data3 = cancel_res3.json()
+    assert cancel_data3["status"] == "CANCELLED"
+    assert cancel_data3["refund_amount_paise"] == 12000  # Strictly unchanged!
+
+    # Verify ZERO duplicate audit events created
+    audit_count_after = db_session.scalar(
+        select(func.count(AuditEvent.id)).where(
+            AuditEvent.resource_type == "amenity_booking",
+            AuditEvent.resource_id == booking_id,
+        )
+    )
+    assert audit_count_after == audit_count_before
+
+    # 7. Staff verifies the cancelled booking via staff booking query
+    staff_view_res = client.get(
+        "/api/v1/amenities/staff/bookings",
+        headers=STAFF_HELPDESK_HEADERS,
+        params={"search": cancel_data1["payment_reference"]},
+    )
+    assert staff_view_res.status_code == 200
+    staff_items = staff_view_res.json()["items"]
+    assert len(staff_items) == 1
+    assert staff_items[0]["status"] == "CANCELLED"
+    assert staff_items[0]["refund_amount_paise"] == 12000
+    assert staff_items[0]["refund_status"] == "REFUNDED"

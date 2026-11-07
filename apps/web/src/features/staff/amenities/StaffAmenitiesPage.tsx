@@ -638,9 +638,9 @@ export const StaffAmenitiesPage: React.FC = () => {
             </div>
 
             <div className="p-3 bg-rose-50/70 rounded-xl border border-rose-200 text-xs text-rose-800 space-y-1">
-              <span className="font-bold block">100% Full Refund Policy Override</span>
+              <span className="font-bold block">100% Full Refund Policy Override (Simulated)</span>
               <p className="text-[11px] leading-relaxed">
-                Staff cancellations automatically override cutoff deadlines and refund 100% of any paid booking fee ({formatAmenityFee(cancellingBooking.booking_fee_paise)}).
+                Staff cancellations automatically override cutoff deadlines and record a 100% simulated refund of any paid booking fee ({formatAmenityFee(cancellingBooking.booking_fee_paise)}). Note: Test mode simulation — no live banking debit or credit occurs, and maintenance ledger balances remain unaffected.
               </p>
             </div>
 
@@ -789,9 +789,14 @@ export const StaffAmenitiesPage: React.FC = () => {
                 </div>
               )}
               {inspectingBooking.refund_amount_paise > 0 && (
-                <div className="flex justify-between text-rose-700 font-medium">
-                  <span>Refund Issued</span>
-                  <span>{formatINR(inspectingBooking.refund_amount_paise)} ({inspectingBooking.refund_status})</span>
+                <div className="space-y-0.5">
+                  <div className="flex justify-between text-rose-700 font-medium">
+                    <span>Simulated Refund (Test Mode)</span>
+                    <span>{formatINR(inspectingBooking.refund_amount_paise)} ({inspectingBooking.refund_status})</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 italic">
+                    Simulated test refund recorded in amenity audit log; zero impact on society financial ledger.
+                  </p>
                 </div>
               )}
               {inspectingBooking.cancellation_reason && (

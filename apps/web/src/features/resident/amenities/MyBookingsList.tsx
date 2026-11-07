@@ -300,12 +300,19 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
 
                     {/* Refund or Cancellation details */}
                     {isCancelled && (
-                      <div className="text-xs text-rose-700 bg-rose-50/70 px-3 py-1.5 rounded-lg border border-rose-100 flex items-center justify-between gap-2 flex-wrap">
-                        <span>Reason: {booking.cancellation_reason || 'Cancelled'}</span>
+                      <div className="text-xs text-rose-800 bg-rose-50/80 p-2.5 rounded-lg border border-rose-200 space-y-1">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span>Reason: {booking.cancellation_reason || 'Cancelled'}</span>
+                          {booking.refund_amount_paise > 0 && (
+                            <span className="font-semibold text-rose-700 bg-white px-2 py-0.5 rounded border border-rose-200">
+                              Simulated Refund: {formatINR(booking.refund_amount_paise)}
+                            </span>
+                          )}
+                        </div>
                         {booking.refund_amount_paise > 0 && (
-                          <span className="font-semibold">
-                            Refund: {formatINR(booking.refund_amount_paise)}
-                          </span>
+                          <p className="text-[11px] text-rose-600 font-medium">
+                            * Simulated Test Refund: Recorded for test and facility audit purposes only; no actual bank funds were transferred.
+                          </p>
                         )}
                       </div>
                     )}
@@ -377,8 +384,13 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Are you sure you want to cancel this booking? If the slot falls within the cancellation policy window, eligible refunds will be issued automatically.
+              Are you sure you want to cancel this booking? If the slot falls within the cancellation policy window, an eligible refund will be calculated and recorded.
             </p>
+
+            <div className="p-2.5 bg-blue-50/80 rounded-xl border border-blue-200 text-[11px] text-blue-800 space-y-0.5">
+              <span className="font-semibold block">Simulated Refund (Test Mode)</span>
+              <p>In this environment, amenity payments and refunds are simulated. Any refund issued is recorded for testing and facility audit purposes only; no real money is debited or credited to your bank account.</p>
+            </div>
 
             <div>
               <label htmlFor="cancel-reason" className="block text-xs font-semibold text-slate-700 mb-1">

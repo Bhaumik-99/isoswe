@@ -196,6 +196,21 @@ def test_resident_create_and_view_booking(client: TestClient, test_amenity: Amen
     # 90% of 15000 paise = 13500 paise
     assert cancel_data["refund_status"] == "REFUNDED"
     assert cancel_data["refund_amount_paise"] == 13500
+    assert cancel_data["booking_metadata"]["simulated_refund"]["is_simulated"] is True
+    assert cancel_data["booking_metadata"]["simulated_refund"]["refund_reference"].startswith(
+        "SIM-REF-"
+    )
+
+    # 7. Neeraj calls cancel a SECOND time (idempotency check) -> 200 with unchanged refund
+    cancel_retry_resp = client.post(
+        f"/api/v1/amenities/bookings/{booking_id}/cancel",
+        headers=RESIDENT_NEERAJ_HEADERS,
+        json={"reason": "Cannot attend"},
+    )
+    assert cancel_retry_resp.status_code == 200
+    retry_data = cancel_retry_resp.json()
+    assert retry_data["status"] == "CANCELLED"
+    assert retry_data["refund_amount_paise"] == 13500
 
 
 def test_booking_capacity_conflict(client: TestClient, test_amenity: Amenity) -> None:

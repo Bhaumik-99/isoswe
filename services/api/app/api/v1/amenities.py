@@ -250,6 +250,7 @@ def staff_cancel_booking(
     booking_id: UUID,
     req: StaffCancelBookingRequest,
     claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     society_id: UUID | None = Query(None, description="Society ID"),
     db: Session = Depends(get_db),
 ) -> BookingResponse:
@@ -260,6 +261,7 @@ def staff_cancel_booking(
         staff_user_id=claims.user_id,
         booking_id=booking_id,
         reason=req.reason,
+        idempotency_key=idempotency_key or req.idempotency_key,
     )
     db.commit()
     return svc._to_booking_response(booking)
@@ -328,6 +330,7 @@ def cancel_my_booking(
     booking_id: UUID,
     req: CancelBookingRequest,
     claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.RESIDENT))],
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     society_id: UUID | None = Query(None, description="Society ID"),
     db: Session = Depends(get_db),
 ) -> BookingResponse:
@@ -338,6 +341,7 @@ def cancel_my_booking(
         user_id=claims.user_id,
         booking_id=booking_id,
         reason=req.reason,
+        idempotency_key=idempotency_key or req.idempotency_key,
     )
     db.commit()
     return svc._to_booking_response(booking)

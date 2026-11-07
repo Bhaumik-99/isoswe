@@ -145,10 +145,12 @@ class CreateBookingRequest(BaseModel):
 
 class CancelBookingRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+    idempotency_key: str | None = None
 
 
 class StaffCancelBookingRequest(BaseModel):
     reason: str = Field(..., min_length=3, max_length=500)
+    idempotency_key: str | None = None
 
 
 class BookingResponse(BaseModel):

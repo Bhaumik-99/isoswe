@@ -897,9 +897,68 @@ class AmenityService:
         user_id: uuid.UUID,
         booking_id: uuid.UUID,
         reason: str | None = None,
+        idempotency_key: str | None = None,
     ) -> AmenityBooking:
-        """Cancels a booking by the resident, enforcing cancellation deadlines and calculating refunds."""
-        booking = self.get_booking_by_id(society_id, booking_id, user_id=user_id)
+        """Cancels a booking by the resident, enforcing cancellation deadlines, calculating refunds idempotently, and preventing race conditions."""
+        now_utc = utc_now()
+        req_hash = hashlib.sha256(f"{user_id}:{booking_id}:{reason or ''}".encode()).hexdigest()
+
+        # Step 1: Idempotency reservation if key provided
+        if idempotency_key:
+            idemp_record = self._reserve_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_cancellation",
+                req_hash=req_hash,
+            )
+            if idemp_record is not None:
+                if idemp_record.request_hash != req_hash:
+                    raise ConflictError(
+                        "Idempotency key reuse with differing request payload is prohibited."
+                    )
+                if idemp_record.response_body:
+                    data = json.loads(idemp_record.response_body)
+                    if idemp_record.response_status and idemp_record.response_status >= 400:
+                        raise ConflictError(data.get("message", "Cancellation failed"))
+                    return self.get_booking_by_id(society_id, booking_id, user_id=user_id)
+                raise ConflictError(
+                    "A cancellation with this idempotency key is currently being processed. Please retry in a moment."
+                )
+
+        # Step 2: Lock booking row with SELECT FOR UPDATE to serialize parallel cancellations
+        lock_stmt = (
+            select(AmenityBooking)
+            .options(
+                joinedload(AmenityBooking.amenity),
+                joinedload(AmenityBooking.flat),
+            )
+            .where(AmenityBooking.id == booking_id, AmenityBooking.society_id == society_id)
+            .with_for_update(of=AmenityBooking)
+        )
+        booking = self.db.execute(lock_stmt).scalar_one_or_none()
+        if not booking:
+            raise ResourceNotFoundError(
+                code="BOOKING_NOT_FOUND",
+                message=f"Booking {booking_id} not found in society {society_id}",
+            )
+        if booking.user_id != user_id:
+            raise ResourceNotFoundError(
+                code="BOOKING_NOT_FOUND",
+                message=f"Booking {booking_id} not found",
+            )
+
+        # Step 3: Idempotent short-circuit if ALREADY cancelled
+        if booking.status == BookingStatus.CANCELLED:
+            if idempotency_key:
+                resp = self._to_booking_response(booking)
+                self._complete_idempotency_key(
+                    idempotency_key=idempotency_key,
+                    scope="amenity_cancellation",
+                    req_hash=req_hash,
+                    status=200,
+                    body=json.dumps(resp.model_dump(mode="json")),
+                )
+            return booking
+
         if booking.status not in (BookingStatus.CONFIRMED, BookingStatus.PENDING_PAYMENT):
             raise ConflictError(
                 code="INVALID_BOOKING_STATUS",
@@ -907,7 +966,6 @@ class AmenityService:
             )
 
         amenity = booking.amenity
-        now_utc = utc_now()
 
         # Check cancellation deadline using facility-to-UTC converted slot start
         slot_start_utc = slot_to_utc(booking.booking_date, booking.start_time)
@@ -918,7 +976,8 @@ class AmenityService:
                 message=f"Cancellation window expired. Cancellations must be made at least {amenity.cancellation_deadline_hours} hours prior to slot start.",
             )
 
-        # Refund calculation
+        # Step 4: Refund calculation
+        refund_ref = None
         if booking.booking_fee_paise > 0 and booking.payment_status == BookingPaymentStatus.PAID:
             refund_amount = int(booking.booking_fee_paise * (amenity.refund_percentage / 100))
             refund_status = (
@@ -926,6 +985,7 @@ class AmenityService:
             )
             if refund_amount > 0:
                 booking.payment_status = BookingPaymentStatus.REFUNDED
+                refund_ref = f"SIM-REF-{uuid.uuid4().hex[:10].upper()}"
         else:
             refund_amount = 0
             refund_status = RefundStatus.NOT_APPLICABLE
@@ -937,9 +997,27 @@ class AmenityService:
         booking.refund_status = refund_status
         booking.refund_amount_paise = refund_amount
         booking.updated_at = now_utc
+
+        # Step 5: Record simulated refund metadata
+        meta = dict(booking.booking_metadata or {})
+        if refund_amount > 0:
+            meta["simulated_refund"] = {
+                "refund_reference": refund_ref,
+                "original_payment_id": str(booking.payment_id) if booking.payment_id else None,
+                "original_payment_reference": booking.payment_reference,
+                "refund_amount_paise": refund_amount,
+                "refund_status": refund_status.value,
+                "refund_percentage": amenity.refund_percentage,
+                "simulated_at": now_utc.isoformat(),
+                "is_simulated": True,
+                "provider": "SIMULATED",
+                "ledger_impact": "NONE (Amenity fee held outside maintenance ledger; simulated test mode)",
+                "disclaimer": "Test-mode simulated refund. No actual banking debit or credit occurred.",
+            }
+            booking.booking_metadata = meta
         self.db.flush()
 
-        # Audit Event
+        # Step 6: Audit Event for Amenity Booking
         audit = AuditEvent(
             id=uuid.uuid4(),
             society_id=society_id,
@@ -951,14 +1029,43 @@ class AmenityService:
             event_metadata={
                 "amenity_id": str(booking.amenity_id),
                 "booking_date": str(booking.booking_date),
+                "booking_fee_paise": booking.booking_fee_paise,
                 "refund_amount_paise": refund_amount,
                 "refund_status": refund_status.value,
+                "refund_reference": refund_ref,
+                "is_simulated_refund": refund_amount > 0,
+                "payment_id": str(booking.payment_id) if booking.payment_id else None,
+                "payment_reference": booking.payment_reference,
                 "reason": booking.cancellation_reason,
             },
         )
         self.db.add(audit)
 
-        # Outbox event
+        # Step 7: Explicit Payment Audit Event if payment was associated
+        if booking.payment_id and refund_amount > 0:
+            payment_audit = AuditEvent(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                actor_id=user_id,
+                action="AMENITY_BOOKING_REFUND_SIMULATED",
+                resource_type="payment",
+                resource_id=str(booking.payment_id),
+                correlation_id=str(uuid.uuid4()),
+                event_metadata={
+                    "booking_id": str(booking.id),
+                    "amenity_id": str(booking.amenity_id),
+                    "payment_id": str(booking.payment_id),
+                    "refund_amount_paise": refund_amount,
+                    "refund_status": refund_status.value,
+                    "refund_reference": refund_ref,
+                    "is_simulated": True,
+                    "cancelled_by": "RESIDENT",
+                    "reason": booking.cancellation_reason,
+                },
+            )
+            self.db.add(payment_audit)
+
+        # Step 8: Outbox event
         outbox = OutboxEvent(
             id=uuid.uuid4(),
             event_type="amenity.booking_cancelled",
@@ -972,11 +1079,24 @@ class AmenityService:
                 "cancelled_by": "RESIDENT",
                 "refund_amount_paise": refund_amount,
                 "refund_status": refund_status.value,
+                "refund_reference": refund_ref,
+                "is_simulated_refund": refund_amount > 0,
             },
             status=OutboxStatus.PENDING,
         )
         self.db.add(outbox)
         self.db.flush()
+
+        # Step 9: Complete idempotency record if key was provided
+        if idempotency_key:
+            resp = self._to_booking_response(booking)
+            self._complete_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_cancellation",
+                req_hash=req_hash,
+                status=200,
+                body=json.dumps(resp.model_dump(mode="json")),
+            )
 
         return booking
 
@@ -986,21 +1106,76 @@ class AmenityService:
         staff_user_id: uuid.UUID,
         booking_id: uuid.UUID,
         reason: str,
+        idempotency_key: str | None = None,
     ) -> AmenityBooking:
-        """Cancels a booking with administrative override and 100% refund."""
-        booking = self.get_booking_by_id(society_id, booking_id)
+        """Cancels a booking with administrative override, 100% refund, row locking, and idempotency protection."""
+        now = utc_now()
+        req_hash = hashlib.sha256(f"{staff_user_id}:{booking_id}:{reason}".encode()).hexdigest()
+
+        # Step 1: Idempotency reservation if key provided
+        if idempotency_key:
+            idemp_record = self._reserve_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_staff_cancellation",
+                req_hash=req_hash,
+            )
+            if idemp_record is not None:
+                if idemp_record.request_hash != req_hash:
+                    raise ConflictError(
+                        "Idempotency key reuse with differing request payload is prohibited."
+                    )
+                if idemp_record.response_body:
+                    data = json.loads(idemp_record.response_body)
+                    if idemp_record.response_status and idemp_record.response_status >= 400:
+                        raise ConflictError(data.get("message", "Cancellation failed"))
+                    return self.get_booking_by_id(society_id, booking_id)
+                raise ConflictError(
+                    "A staff cancellation with this idempotency key is currently being processed. Please retry in a moment."
+                )
+
+        # Step 2: Lock booking row with SELECT FOR UPDATE to serialize parallel cancellations
+        lock_stmt = (
+            select(AmenityBooking)
+            .options(
+                joinedload(AmenityBooking.amenity),
+                joinedload(AmenityBooking.flat),
+            )
+            .where(AmenityBooking.id == booking_id, AmenityBooking.society_id == society_id)
+            .with_for_update(of=AmenityBooking)
+        )
+        booking = self.db.execute(lock_stmt).scalar_one_or_none()
+        if not booking:
+            raise ResourceNotFoundError(
+                code="BOOKING_NOT_FOUND",
+                message=f"Booking {booking_id} not found in society {society_id}",
+            )
+
+        # Step 3: Idempotent short-circuit if ALREADY cancelled
+        if booking.status == BookingStatus.CANCELLED:
+            if idempotency_key:
+                resp = self._to_booking_response(booking)
+                self._complete_idempotency_key(
+                    idempotency_key=idempotency_key,
+                    scope="amenity_staff_cancellation",
+                    req_hash=req_hash,
+                    status=200,
+                    body=json.dumps(resp.model_dump(mode="json")),
+                )
+            return booking
+
         if booking.status not in (BookingStatus.CONFIRMED, BookingStatus.PENDING_PAYMENT):
             raise ConflictError(
                 code="INVALID_BOOKING_STATUS",
                 message=f"Cannot cancel a booking with status '{booking.status.value}'.",
             )
 
-        now = utc_now()
-        # Management/facility emergency cancellation provides 100% refund if paid
+        # Step 4: 100% full refund calculation for staff operational override
+        refund_ref = None
         if booking.booking_fee_paise > 0 and booking.payment_status == BookingPaymentStatus.PAID:
             refund_amount = booking.booking_fee_paise
             refund_status = RefundStatus.REFUNDED
             booking.payment_status = BookingPaymentStatus.REFUNDED
+            refund_ref = f"SIM-REF-{uuid.uuid4().hex[:10].upper()}"
         else:
             refund_amount = 0
             refund_status = RefundStatus.NOT_APPLICABLE
@@ -1012,9 +1187,27 @@ class AmenityService:
         booking.refund_status = refund_status
         booking.refund_amount_paise = refund_amount
         booking.updated_at = now
+
+        # Step 5: Record simulated refund metadata
+        meta = dict(booking.booking_metadata or {})
+        if refund_amount > 0:
+            meta["simulated_refund"] = {
+                "refund_reference": refund_ref,
+                "original_payment_id": str(booking.payment_id) if booking.payment_id else None,
+                "original_payment_reference": booking.payment_reference,
+                "refund_amount_paise": refund_amount,
+                "refund_status": refund_status.value,
+                "refund_percentage": 100,
+                "simulated_at": now.isoformat(),
+                "is_simulated": True,
+                "provider": "SIMULATED",
+                "ledger_impact": "NONE (Amenity fee held outside maintenance ledger; simulated test mode)",
+                "disclaimer": "Test-mode simulated refund. No actual banking debit or credit occurred.",
+            }
+            booking.booking_metadata = meta
         self.db.flush()
 
-        # Audit Event
+        # Step 6: Audit Event for Amenity Booking
         audit = AuditEvent(
             id=uuid.uuid4(),
             society_id=society_id,
@@ -1026,14 +1219,43 @@ class AmenityService:
             event_metadata={
                 "amenity_id": str(booking.amenity_id),
                 "booking_date": str(booking.booking_date),
+                "booking_fee_paise": booking.booking_fee_paise,
                 "refund_amount_paise": refund_amount,
                 "refund_status": refund_status.value,
+                "refund_reference": refund_ref,
+                "is_simulated_refund": refund_amount > 0,
+                "payment_id": str(booking.payment_id) if booking.payment_id else None,
+                "payment_reference": booking.payment_reference,
                 "reason": booking.cancellation_reason,
             },
         )
         self.db.add(audit)
 
-        # Outbox event
+        # Step 7: Explicit Payment Audit Event if payment was associated
+        if booking.payment_id and refund_amount > 0:
+            payment_audit = AuditEvent(
+                id=uuid.uuid4(),
+                society_id=society_id,
+                actor_id=staff_user_id,
+                action="AMENITY_BOOKING_REFUND_SIMULATED",
+                resource_type="payment",
+                resource_id=str(booking.payment_id),
+                correlation_id=str(uuid.uuid4()),
+                event_metadata={
+                    "booking_id": str(booking.id),
+                    "amenity_id": str(booking.amenity_id),
+                    "payment_id": str(booking.payment_id),
+                    "refund_amount_paise": refund_amount,
+                    "refund_status": refund_status.value,
+                    "refund_reference": refund_ref,
+                    "is_simulated": True,
+                    "cancelled_by": "STAFF",
+                    "reason": booking.cancellation_reason,
+                },
+            )
+            self.db.add(payment_audit)
+
+        # Step 8: Outbox event
         outbox = OutboxEvent(
             id=uuid.uuid4(),
             event_type="amenity.booking_cancelled",
@@ -1047,12 +1269,25 @@ class AmenityService:
                 "cancelled_by": "STAFF",
                 "refund_amount_paise": refund_amount,
                 "refund_status": refund_status.value,
+                "refund_reference": refund_ref,
+                "is_simulated_refund": refund_amount > 0,
                 "reason": booking.cancellation_reason,
             },
             status=OutboxStatus.PENDING,
         )
         self.db.add(outbox)
         self.db.flush()
+
+        # Step 9: Complete idempotency record if key was provided
+        if idempotency_key:
+            resp = self._to_booking_response(booking)
+            self._complete_idempotency_key(
+                idempotency_key=idempotency_key,
+                scope="amenity_staff_cancellation",
+                req_hash=req_hash,
+                status=200,
+                body=json.dumps(resp.model_dump(mode="json")),
+            )
 
         return booking
 

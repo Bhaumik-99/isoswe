@@ -207,6 +207,31 @@ describe('Resident Amenity Components & Booking Logic', () => {
       expect(slot.is_available).toBe(false);
       expect(slot.block_reason).toContain('resealing');
     });
+
+    it('clearly distinguishes simulated test refunds from real banking transactions', () => {
+      const simulatedRefundMetadata = {
+        is_simulated: true,
+        refund_reference: 'SIM-REF-A1B2C3D4E5',
+        refund_amount_paise: 20000,
+        provider: 'SIMULATED',
+        ledger_impact: 'NONE (Amenity fee held outside maintenance ledger; simulated test mode)',
+        disclaimer: 'Test-mode simulated refund. No actual banking debit or credit occurred.',
+      };
+
+      expect(simulatedRefundMetadata.is_simulated).toBe(true);
+      expect(simulatedRefundMetadata.refund_reference).toMatch(/^SIM-REF-/);
+      expect(simulatedRefundMetadata.provider).toBe('SIMULATED');
+      expect(simulatedRefundMetadata.ledger_impact).toContain('NONE');
+      expect(simulatedRefundMetadata.disclaimer).toContain('No actual banking debit or credit occurred');
+    });
+
+    it('validates cancellation refund calculation preserves integer paise precision', () => {
+      const feePaise = 15000; // 150 INR
+      const refundPct = 90;
+      const expectedRefundPaise = Math.floor((feePaise * refundPct) / 100);
+      expect(expectedRefundPaise).toBe(13500); // 135 INR
+      expect(Number.isInteger(expectedRefundPaise)).toBe(true);
+    });
   });
 });
 

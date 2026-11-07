@@ -14,7 +14,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import (
@@ -726,6 +726,198 @@ def test_staff_cancellation_overrides_deadline_with_full_refund(
     assert cancelled.refund_amount_paise == 25000
     assert cancelled.cancelled_by_user_id == HELPDESK_ID
     assert "waterlogging" in cancelled.cancellation_reason
+
+
+def test_resident_cancellation_is_idempotent_and_prevents_duplicate_refunds(
+    amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Verifies that repeat resident cancellation does NOT create duplicate refunds or duplicate audit events."""
+    target_date = utc_now().date() + timedelta(days=2)
+    booking = amenity_service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="11:00",
+            end_time="12:00",
+            booked_units=1,
+            auto_pay=True,
+        ),
+    )
+    assert booking.payment_id is not None
+    original_payment_id = booking.payment_id
+
+    # 1. First cancellation: 80% refund on 25000 paise = 20000 paise
+    cancelled1 = amenity_service.cancel_booking_by_resident(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        reason="Schedule conflict",
+    )
+    assert cancelled1.status == BookingStatus.CANCELLED
+    assert cancelled1.refund_status == RefundStatus.REFUNDED
+    assert cancelled1.refund_amount_paise == 20000
+    assert cancelled1.payment_status == BookingPaymentStatus.REFUNDED
+
+    # Verify simulated refund metadata
+    meta = cancelled1.booking_metadata.get("simulated_refund", {})
+    assert meta.get("is_simulated") is True
+    assert meta.get("refund_reference", "").startswith("SIM-REF-")
+    assert meta.get("refund_amount_paise") == 20000
+    assert meta.get("original_payment_id") == str(original_payment_id)
+    assert "ledger_impact" in meta
+
+    # Verify explicit Payment AuditEvent exists
+    payment_audit = db_session.scalars(
+        select(AuditEvent).where(
+            AuditEvent.resource_type == "payment",
+            AuditEvent.action == "AMENITY_BOOKING_REFUND_SIMULATED",
+            AuditEvent.resource_id == str(original_payment_id),
+        )
+    ).first()
+    assert payment_audit is not None
+    assert payment_audit.event_metadata["refund_amount_paise"] == 20000
+    assert payment_audit.event_metadata["is_simulated"] is True
+
+    # Count audit and outbox events for this booking
+    audit_count_before = db_session.scalar(
+        select(func.count(AuditEvent.id)).where(
+            AuditEvent.resource_type == "amenity_booking",
+            AuditEvent.resource_id == str(booking.id),
+        )
+    )
+    outbox_count_before = db_session.scalar(
+        select(func.count(OutboxEvent.id)).where(
+            OutboxEvent.aggregate_type == "amenity_booking",
+            OutboxEvent.aggregate_id == str(booking.id),
+        )
+    )
+
+    # 2. Second cancellation call (simulating network retry or repeated client submission)
+    cancelled2 = amenity_service.cancel_booking_by_resident(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        reason="Schedule conflict",
+    )
+    # Must return existing cancelled state idempotently
+    assert cancelled2.status == BookingStatus.CANCELLED
+    # Refund amount must strictly remain 20000 (NOT duplicated to 40000!)
+    assert cancelled2.refund_amount_paise == 20000
+    assert cancelled2.refund_status == RefundStatus.REFUNDED
+
+    # Verify ZERO duplicate audit or outbox events created on retry
+    audit_count_after = db_session.scalar(
+        select(func.count(AuditEvent.id)).where(
+            AuditEvent.resource_type == "amenity_booking",
+            AuditEvent.resource_id == str(booking.id),
+        )
+    )
+    outbox_count_after = db_session.scalar(
+        select(func.count(OutboxEvent.id)).where(
+            OutboxEvent.aggregate_type == "amenity_booking",
+            OutboxEvent.aggregate_id == str(booking.id),
+        )
+    )
+    assert audit_count_after == audit_count_before
+    assert outbox_count_after == outbox_count_before
+
+
+def test_staff_cancellation_is_idempotent_and_prevents_duplicate_refunds(
+    amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Verifies that staff override cancellation is strictly idempotent and prevents duplicate refunds."""
+    target_date = utc_now().date() + timedelta(days=2)
+    booking = amenity_service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="12:00",
+            end_time="13:00",
+            booked_units=1,
+            auto_pay=True,
+        ),
+    )
+
+    # 1. Staff cancels with 100% full refund
+    cancelled1 = amenity_service.cancel_booking_by_staff(
+        society_id=SOCIETY_PUNE_ID,
+        staff_user_id=HELPDESK_ID,
+        booking_id=booking.id,
+        reason="Floodlight maintenance",
+    )
+    assert cancelled1.status == BookingStatus.CANCELLED
+    assert cancelled1.refund_amount_paise == 25000  # 100% full refund
+
+    # 2. Repeat call to cancel by staff
+    cancelled2 = amenity_service.cancel_booking_by_staff(
+        society_id=SOCIETY_PUNE_ID,
+        staff_user_id=HELPDESK_ID,
+        booking_id=booking.id,
+        reason="Floodlight maintenance",
+    )
+    assert cancelled2.status == BookingStatus.CANCELLED
+    assert cancelled2.refund_amount_paise == 25000  # Strictly unchanged!
+
+
+def test_cancellation_idempotency_key_enforcement(
+    amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
+) -> None:
+    """Verifies that passing an Idempotency-Key reserves the key and detects payload mismatches on reuse."""
+    target_date = utc_now().date() + timedelta(days=2)
+    booking = amenity_service.create_booking(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        amenity_id=sample_tennis_court.id,
+        req=CreateBookingRequest(
+            flat_id=FLAT_1203_ID,
+            booking_date=target_date,
+            start_time="13:00",
+            end_time="14:00",
+            booked_units=1,
+            auto_pay=True,
+        ),
+    )
+
+    idemp_key = f"cancel-idemp-{uuid.uuid4().hex}"
+
+    # 1. First cancellation with idempotency key
+    res1 = amenity_service.cancel_booking_by_resident(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        reason="Dentist appointment",
+        idempotency_key=idemp_key,
+    )
+    assert res1.status == BookingStatus.CANCELLED
+    assert res1.refund_amount_paise == 20000
+
+    # 2. Retry with identical payload & key -> Success (idempotent response)
+    res2 = amenity_service.cancel_booking_by_resident(
+        society_id=SOCIETY_PUNE_ID,
+        user_id=NEERAJ_ID,
+        booking_id=booking.id,
+        reason="Dentist appointment",
+        idempotency_key=idemp_key,
+    )
+    assert res2.status == BookingStatus.CANCELLED
+    assert res2.refund_amount_paise == 20000
+
+    # 3. Reuse same idempotency key with differing payload -> 409 ConflictError
+    with pytest.raises(ConflictError) as exc:
+        amenity_service.cancel_booking_by_resident(
+            society_id=SOCIETY_PUNE_ID,
+            user_id=NEERAJ_ID,
+            booking_id=booking.id,
+            reason="Different reason entirely",
+            idempotency_key=idemp_key,
+        )
+    assert "differing request payload is prohibited" in str(exc.value)
 
 
 # -----------------------------------------------------------------------------
