@@ -8,7 +8,8 @@ export type PermissionType =
   | 'RECONCILIATION_REVIEW'
   | 'COMMITTEE_REPORT_READ'
   | 'BILLING_MANAGE'
-  | 'GATE_OPERATIONS';
+  | 'GATE_OPERATIONS'
+  | 'COMMUNICATIONS_MANAGE';
 
 export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
 

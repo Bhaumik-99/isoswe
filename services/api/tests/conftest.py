@@ -193,6 +193,7 @@ def db_session() -> Generator[Session, None, None]:
         Permission.BANK_IMPORT,
         Permission.RECONCILIATION_REVIEW,
         Permission.BILLING_MANAGE,
+        Permission.COMMUNICATIONS_MANAGE,
     ]
     for perm in legacy_perms:
         session.add(

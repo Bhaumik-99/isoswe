@@ -27,6 +27,7 @@ from app.domains.identity.models import (
     UserStatus,
 )
 from app.domains.notifications.models import (
+    DeliveryStatus,
     Notice,
     NoticeCategory,
     NoticePriority,
@@ -35,6 +36,7 @@ from app.domains.notifications.models import (
     NoticeTargetType,
     Notification,
     NotificationChannel,
+    NotificationDelivery,
     NotificationPriority,
 )
 from app.domains.notifications.schemas import (
@@ -203,6 +205,22 @@ class NoticeService:
                 updated_at=now,
             )
             self.db.add(in_app)
+            self.db.flush()
+
+            deliv = NotificationDelivery(
+                id=uuid.uuid4(),
+                notification_id=in_app.id,
+                society_id=notice.society_id,
+                recipient_user_id=resident.id,
+                channel=NotificationChannel.IN_APP,
+                provider="in_app",
+                status=DeliveryStatus.DELIVERED,
+                idempotency_key=f"in_app:{notice.id}:{resident.id}",
+                delivered_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            self.db.add(deliv)
 
         self._enqueue_outbox(
             event_type="notice.emergency_broadcast",
@@ -297,19 +315,22 @@ class NoticeService:
         )
 
         if notice.status == NoticeStatus.PUBLISHED:
-            self._enqueue_outbox(
-                event_type="notice.published",
-                aggregate_id=str(notice.id),
-                payload={
-                    "notice_id": str(notice.id),
-                    "society_id": str(society_id),
-                    "title": notice.title,
-                    "category": notice.category.value,
-                    "status": notice.status.value,
-                },
-            )
             if is_emergency:
                 self._deliver_emergency_notice(notice)
+            else:
+                self._enqueue_outbox(
+                    event_type="notice.published",
+                    aggregate_id=str(notice.id),
+                    payload={
+                        "notice_id": str(notice.id),
+                        "society_id": str(society_id),
+                        "title": notice.title,
+                        "category": notice.category.value,
+                        "priority": notice.priority.value,
+                        "target_type": notice.target_type.value,
+                        "status": notice.status.value,
+                    },
+                )
 
         self.db.commit()
         self.db.refresh(notice)
@@ -408,18 +429,21 @@ class NoticeService:
                 resource_id=str(notice.id),
                 metadata={"title": notice.title, "published_at": str(notice.published_at)},
             )
-            self._enqueue_outbox(
-                event_type="notice.published",
-                aggregate_id=str(notice.id),
-                payload={
-                    "notice_id": str(notice.id),
-                    "society_id": str(society_id),
-                    "title": notice.title,
-                    "category": notice.category.value,
-                },
-            )
             if is_emergency:
                 self._deliver_emergency_notice(notice)
+            else:
+                self._enqueue_outbox(
+                    event_type="notice.published",
+                    aggregate_id=str(notice.id),
+                    payload={
+                        "notice_id": str(notice.id),
+                        "society_id": str(society_id),
+                        "title": notice.title,
+                        "category": notice.category.value,
+                        "priority": notice.priority.value,
+                        "target_type": notice.target_type.value,
+                    },
+                )
         elif is_emergency and req.deliver_emergency:
             self._deliver_emergency_notice(notice)
 
@@ -454,19 +478,21 @@ class NoticeService:
             metadata={"title": notice.title, "published_at": str(notice.published_at)},
         )
 
-        self._enqueue_outbox(
-            event_type="notice.published",
-            aggregate_id=str(notice.id),
-            payload={
-                "notice_id": str(notice.id),
-                "society_id": str(society_id),
-                "title": notice.title,
-                "category": notice.category.value,
-            },
-        )
-
         if notice.category == NoticeCategory.EMERGENCY or notice.priority == NoticePriority.URGENT:
             self._deliver_emergency_notice(notice)
+        else:
+            self._enqueue_outbox(
+                event_type="notice.published",
+                aggregate_id=str(notice.id),
+                payload={
+                    "notice_id": str(notice.id),
+                    "society_id": str(society_id),
+                    "title": notice.title,
+                    "category": notice.category.value,
+                    "priority": notice.priority.value,
+                    "target_type": notice.target_type.value,
+                },
+            )
 
         self.db.commit()
         self.db.refresh(notice)

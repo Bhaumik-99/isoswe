@@ -54,6 +54,12 @@ def test_gate_operations_permission_registered() -> None:
     assert Permission.GATE_OPERATIONS.value == "GATE_OPERATIONS"
 
 
+def test_communications_manage_permission_registered() -> None:
+    """Verifies that Permission.COMMUNICATIONS_MANAGE is registered with value 'COMMUNICATIONS_MANAGE'."""
+    assert hasattr(Permission, "COMMUNICATIONS_MANAGE")
+    assert Permission.COMMUNICATIONS_MANAGE.value == "COMMUNICATIONS_MANAGE"
+
+
 def test_helpdesk_role_no_longer_auto_grants_financial_permissions(
     db_session: Session,
 ) -> None:
@@ -152,6 +158,62 @@ def test_gate_staff_cannot_access_billing_or_reconciliation(
         app.dependency_overrides.pop(get_current_user, None)
 
 
+def test_gate_staff_cannot_manage_official_notices(client: TestClient, db_session: Session) -> None:
+    """Verifies that gate-only staff (GATE_OPERATIONS only) receive HTTP 403 on notice mutations."""
+    gate_guard_id = uuid.uuid4()
+    claims = CurrentUserClaims(
+        user_id=gate_guard_id,
+        supabase_uid=uuid.uuid4(),
+        email="gate.guard@example.com",
+        phone="+91-98765-22222",
+        full_name="Gate Guard Suresh",
+        roles=[RoleType.HELPDESK],
+        permissions=[Permission.GATE_OPERATIONS],
+        society_ids=[SOCIETY_PUNE_ID],
+        active_flat_ids=[],
+        is_mock=True,
+    )
+    app.dependency_overrides[get_current_user] = lambda: claims
+    try:
+        # 1. Create notice: must be 403 Forbidden
+        create_resp = client.post(
+            f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+            json={
+                "title": "Gate Operator Rogue Circular",
+                "body": "Should be rejected with 403.",
+                "category": "GENERAL",
+                "status": "DRAFT",
+            },
+        )
+        assert create_resp.status_code == 403
+        assert (
+            create_resp.json()["error"]["code"] == "INSUFFICIENT_PERMISSIONS"
+            or create_resp.status_code == 403
+        )
+
+        fake_notice_id = uuid.uuid4()
+        # 2. Update notice: must be 403 Forbidden
+        update_resp = client.put(
+            f"/api/v1/notifications/staff/notices/{fake_notice_id}?society_id={SOCIETY_PUNE_ID}",
+            json={"title": "Updated Title"},
+        )
+        assert update_resp.status_code == 403
+
+        # 3. Publish notice: must be 403 Forbidden
+        pub_resp = client.post(
+            f"/api/v1/notifications/staff/notices/{fake_notice_id}/publish?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert pub_resp.status_code == 403
+
+        # 4. Archive notice: must be 403 Forbidden
+        arch_resp = client.post(
+            f"/api/v1/notifications/staff/notices/{fake_notice_id}/archive?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert arch_resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
 def test_legacy_helpdesk_staff_retains_operational_access(
     client: TestClient, db_session: Session
 ) -> None:
@@ -169,6 +231,7 @@ def test_legacy_helpdesk_staff_retains_operational_access(
             Permission.RECONCILIATION_REVIEW,
             Permission.BILLING_MANAGE,
             Permission.COMMITTEE_REPORT_READ,
+            Permission.COMMUNICATIONS_MANAGE,
         ],
         society_ids=[SOCIETY_PUNE_ID],
         active_flat_ids=[],

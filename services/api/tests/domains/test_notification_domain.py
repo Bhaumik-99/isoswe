@@ -25,6 +25,11 @@ from app.domains.identity.models import (
 )
 from app.domains.notifications.models import (
     DeliveryStatus,
+    Notice,
+    NoticeCategory,
+    NoticePriority,
+    NoticeStatus,
+    NoticeTargetType,
     Notification,
     NotificationChannel,
     NotificationDelivery,
@@ -40,7 +45,9 @@ from app.domains.notifications.providers.base import (
 from app.domains.notifications.providers.mock import MockEmailProvider, MockSMSProvider
 from app.domains.notifications.providers.registry import provider_registry
 from app.domains.notifications.service import NotificationService
+from app.messaging.consumer import dispatcher
 from app.messaging.envelope import EventEnvelope, EventMetadata
+from app.workers.notification_worker import NotificationHandler
 
 
 # PII Masking Tests
@@ -415,4 +422,379 @@ def test_transient_delivery_failure_schedules_backoff(db_session: Session) -> No
         assert attempts[0].error_code == "ThrottlingException"
     finally:
         # Reset provider registry
+        provider_registry.reset()
+
+
+# =============================================================================
+# Official Notice Worker & Fan-Out Tests
+# =============================================================================
+
+
+def test_notification_handler_subscribes_to_notice_events() -> None:
+    """Verifies notification worker subscribes to notice.published and notice.emergency_broadcast."""
+    handler = NotificationHandler()
+    assert "notice.published" in handler.supported_event_types
+    assert "notice.emergency_broadcast" in handler.supported_event_types
+
+
+def test_process_notice_published_fan_out(db_session: Session) -> None:
+    """Verifies notice.published fans out to In-App, Email, and SMS deliveries."""
+    society_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    flat_id = uuid.UUID("33333333-3333-3333-3333-333333331203")
+    staff_id = uuid.UUID("44444444-4444-4444-4444-444444440004")
+
+    # Create published notice targeted to flat 1203
+    notice_id = uuid.uuid4()
+    notice = Notice(
+        id=notice_id,
+        society_id=society_id,
+        author_id=staff_id,
+        title="Scheduled Water Tank Cleaning",
+        body="Water supply will be suspended tomorrow from 10 AM to 2 PM.",
+        category=NoticeCategory.MAINTENANCE,
+        priority=NoticePriority.NORMAL,
+        status=NoticeStatus.PUBLISHED,
+        target_type=NoticeTargetType.FLAT,
+        target_flat_id=flat_id,
+        published_at=datetime.now(UTC),
+    )
+    db_session.add(notice)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="notice.published",
+        aggregate_type="notice",
+        aggregate_id=str(notice_id),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={
+            "notice_id": str(notice_id),
+            "society_id": str(society_id),
+            "title": notice.title,
+            "category": notice.category.value,
+            "priority": notice.priority.value,
+            "target_type": notice.target_type.value,
+        },
+    )
+
+    success = dispatcher.dispatch_envelope(envelope, db_session)
+    assert success is True
+
+    # 1. Verify In-App Notification created for resident (Neeraj)
+    notif = db_session.scalars(
+        select(Notification).where(
+            Notification.aggregate_id == str(notice_id),
+            Notification.aggregate_type == "notice",
+        )
+    ).first()
+    assert notif is not None
+    assert notif.title == "Scheduled Water Tank Cleaning"
+    assert notif.priority == NotificationPriority.NORMAL
+
+    # 2. Verify all 3 channels delivered
+    delivs = db_session.scalars(
+        select(NotificationDelivery).where(NotificationDelivery.notification_id == notif.id)
+    ).all()
+    channels = {d.channel for d in delivs}
+    assert NotificationChannel.IN_APP in channels
+    assert NotificationChannel.EMAIL in channels
+    assert NotificationChannel.SMS in channels
+
+    # In test environment, mock providers execute and record delivery attempts
+    in_app_deliv = next(d for d in delivs if d.channel == NotificationChannel.IN_APP)
+    assert in_app_deliv.status == DeliveryStatus.DELIVERED
+
+    email_deliv = next(d for d in delivs if d.channel == NotificationChannel.EMAIL)
+    assert email_deliv.status == DeliveryStatus.SUPPRESSED
+    assert email_deliv.last_error_code == "MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED"
+
+    sms_deliv = next(d for d in delivs if d.channel == NotificationChannel.SMS)
+    assert sms_deliv.status == DeliveryStatus.SUPPRESSED
+    assert sms_deliv.last_error_code == "MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED"
+
+
+def test_process_notice_published_respects_user_preferences(db_session: Session) -> None:
+    """Verifies that non-emergency published notices respect resident opt-outs."""
+    society_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    flat_id = uuid.UUID("33333333-3333-3333-3333-333333331203")
+    staff_id = uuid.UUID("44444444-4444-4444-4444-444444440004")
+    resident_id = uuid.UUID("44444444-4444-4444-4444-444444440001")
+
+    # Disable email and SMS for resident
+    svc = NotificationService(db_session)
+    pref = svc.get_or_create_preferences(society_id, resident_id)
+    pref.email_enabled = False
+    pref.sms_enabled = False
+    db_session.flush()
+
+    notice_id = uuid.uuid4()
+    notice = Notice(
+        id=notice_id,
+        society_id=society_id,
+        author_id=staff_id,
+        title="General Society Newsletter",
+        body="Monthly gardening update and recycling reminders.",
+        category=NoticeCategory.GENERAL,
+        priority=NoticePriority.NORMAL,
+        status=NoticeStatus.PUBLISHED,
+        target_type=NoticeTargetType.FLAT,
+        target_flat_id=flat_id,
+        published_at=datetime.now(UTC),
+    )
+    db_session.add(notice)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="notice.published",
+        aggregate_type="notice",
+        aggregate_id=str(notice_id),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={
+            "notice_id": str(notice_id),
+            "society_id": str(society_id),
+            "title": notice.title,
+            "category": notice.category.value,
+        },
+    )
+
+    dispatcher.dispatch_envelope(envelope, db_session)
+
+    # Deliveries for email and SMS should be suppressed by user preference
+    delivs = db_session.scalars(
+        select(NotificationDelivery).where(
+            NotificationDelivery.society_id == society_id,
+            NotificationDelivery.recipient_user_id == resident_id,
+            NotificationDelivery.idempotency_key.like(f"%:{notice_id}:%"),
+        )
+    ).all()
+
+    email_deliv = next(d for d in delivs if d.channel == NotificationChannel.EMAIL)
+    assert email_deliv.status == DeliveryStatus.SUPPRESSED
+    assert email_deliv.last_error_code == "PREFERENCE_EMAIL_DISABLED"
+
+    sms_deliv = next(d for d in delivs if d.channel == NotificationChannel.SMS)
+    assert sms_deliv.status == DeliveryStatus.SUPPRESSED
+    assert sms_deliv.last_error_code == "PREFERENCE_SMS_DISABLED"
+
+
+def test_process_emergency_broadcast_overrides_preferences_and_fans_out(
+    db_session: Session,
+) -> None:
+    """CRITICAL SECURITY INVARIANT: Emergency broadcasts override resident channel opt-outs.
+
+    Fans out across In-App, Email, and SMS with URGENT priority.
+    """
+    society_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    flat_id = uuid.UUID("33333333-3333-3333-3333-333333331203")
+    staff_id = uuid.UUID("44444444-4444-4444-4444-444444440004")
+    resident_id = uuid.UUID("44444444-4444-4444-4444-444444440001")
+
+    # Disable all communication channels for resident
+    svc = NotificationService(db_session)
+    pref = svc.get_or_create_preferences(society_id, resident_id)
+    pref.email_enabled = False
+    pref.sms_enabled = False
+    pref.in_app_enabled = False
+    db_session.flush()
+
+    notice_id = uuid.uuid4()
+    notice = Notice(
+        id=notice_id,
+        society_id=society_id,
+        author_id=staff_id,
+        title="FIRE EVACUATION ALERT",
+        body="Fire detected in Basement 1. Please evacuate via emergency stairs.",
+        category=NoticeCategory.EMERGENCY,
+        priority=NoticePriority.URGENT,
+        status=NoticeStatus.PUBLISHED,
+        target_type=NoticeTargetType.FLAT,
+        target_flat_id=flat_id,
+        published_at=datetime.now(UTC),
+    )
+    db_session.add(notice)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="notice.emergency_broadcast",
+        aggregate_type="notice",
+        aggregate_id=str(notice_id),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={
+            "notice_id": str(notice_id),
+            "society_id": str(society_id),
+            "title": notice.title,
+            "category": notice.category.value,
+            "priority": notice.priority.value,
+            "target_type": notice.target_type.value,
+        },
+    )
+
+    success = dispatcher.dispatch_envelope(envelope, db_session)
+    assert success is True
+
+    # 1. Verify In-App Notification exists with URGENT priority
+    notif = db_session.scalars(
+        select(Notification).where(
+            Notification.aggregate_id == str(notice_id),
+            Notification.aggregate_type == "notice",
+        )
+    ).first()
+    assert notif is not None
+    assert "FIRE EVACUATION ALERT" in notif.title
+    assert notif.priority == NotificationPriority.URGENT
+
+    # 2. Verify all channels were delivered (NOT suppressed by user preferences)
+    delivs = db_session.scalars(
+        select(NotificationDelivery).where(NotificationDelivery.notification_id == notif.id)
+    ).all()
+    channels = {d.channel for d in delivs}
+    assert NotificationChannel.IN_APP in channels
+    assert NotificationChannel.EMAIL in channels
+    assert NotificationChannel.SMS in channels
+
+    email_deliv = next(d for d in delivs if d.channel == NotificationChannel.EMAIL)
+    # Must NOT be PREFERENCE_EMAIL_DISABLED
+    assert email_deliv.last_error_code != "PREFERENCE_EMAIL_DISABLED"
+    assert email_deliv.last_error_code == "MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED"
+
+    sms_deliv = next(d for d in delivs if d.channel == NotificationChannel.SMS)
+    # Must NOT be PREFERENCE_SMS_DISABLED
+    assert sms_deliv.last_error_code != "PREFERENCE_SMS_DISABLED"
+    assert sms_deliv.last_error_code == "MOCK_PROVIDER_EXTERNAL_DELIVERY_DISABLED"
+
+
+def test_notice_event_idempotency_prevents_duplicate_dispatches(db_session: Session) -> None:
+    """Verifies that redelivered or duplicate notice events do not duplicate deliveries."""
+    society_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    flat_id = uuid.UUID("33333333-3333-3333-3333-333333331203")
+    staff_id = uuid.UUID("44444444-4444-4444-4444-444444440004")
+
+    notice_id = uuid.uuid4()
+    notice = Notice(
+        id=notice_id,
+        society_id=society_id,
+        author_id=staff_id,
+        title="Lift Maintenance Notice",
+        body="Passenger elevator will be under maintenance from 3 PM to 5 PM.",
+        category=NoticeCategory.MAINTENANCE,
+        priority=NoticePriority.HIGH,
+        status=NoticeStatus.PUBLISHED,
+        target_type=NoticeTargetType.FLAT,
+        target_flat_id=flat_id,
+        published_at=datetime.now(UTC),
+    )
+    db_session.add(notice)
+    db_session.commit()
+
+    envelope = EventEnvelope(
+        event_id=uuid.uuid4(),
+        event_type="notice.published",
+        aggregate_type="notice",
+        aggregate_id=str(notice_id),
+        metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+        payload={
+            "notice_id": str(notice_id),
+            "society_id": str(society_id),
+            "title": notice.title,
+            "category": notice.category.value,
+        },
+    )
+
+    # First dispatch
+    dispatcher.dispatch_envelope(envelope, db_session)
+    count_1 = len(
+        list(
+            db_session.scalars(
+                select(NotificationDelivery).where(
+                    NotificationDelivery.idempotency_key.like(f"%:{notice_id}:%")
+                )
+            ).all()
+        )
+    )
+    assert count_1 == 3  # IN_APP, EMAIL, SMS
+
+    # Second dispatch with identical notice
+    dispatcher.dispatch_envelope(envelope, db_session)
+    count_2 = len(
+        list(
+            db_session.scalars(
+                select(NotificationDelivery).where(
+                    NotificationDelivery.idempotency_key.like(f"%:{notice_id}:%")
+                )
+            ).all()
+        )
+    )
+    # Deliveries MUST NOT duplicate
+    assert count_2 == count_1
+
+
+def test_notice_emergency_broadcast_transient_failure_retries(db_session: Session) -> None:
+    """Verifies that transient errors during emergency broadcast dispatch trigger RETRYING state."""
+    society_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    flat_id = uuid.UUID("33333333-3333-3333-3333-333333331203")
+    staff_id = uuid.UUID("44444444-4444-4444-4444-444444440004")
+
+    # Inject transient email provider
+    transient_provider = SimulatedTransientEmailProvider()
+    provider_registry.set_email_provider(transient_provider)
+
+    try:
+        notice_id = uuid.uuid4()
+        notice = Notice(
+            id=notice_id,
+            society_id=society_id,
+            author_id=staff_id,
+            title="STORM ADVISORY",
+            body="High winds expected. Secure all balcony items immediately.",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.FLAT,
+            target_flat_id=flat_id,
+            published_at=datetime.now(UTC),
+        )
+        db_session.add(notice)
+        db_session.commit()
+
+        envelope = EventEnvelope(
+            event_id=uuid.uuid4(),
+            event_type="notice.emergency_broadcast",
+            aggregate_type="notice",
+            aggregate_id=str(notice_id),
+            metadata=EventMetadata(correlation_id=str(uuid.uuid4())),
+            payload={
+                "notice_id": str(notice_id),
+                "society_id": str(society_id),
+                "title": notice.title,
+                "category": notice.category.value,
+            },
+        )
+
+        dispatcher.dispatch_envelope(envelope, db_session)
+
+        # Check that email delivery entered RETRYING state with backoff
+        email_deliv = db_session.scalars(
+            select(NotificationDelivery).where(
+                NotificationDelivery.channel == NotificationChannel.EMAIL,
+                NotificationDelivery.idempotency_key.like(f"%:{notice_id}:%"),
+            )
+        ).first()
+
+        assert email_deliv is not None
+        assert email_deliv.status == DeliveryStatus.RETRYING
+        assert email_deliv.attempt_count == 1
+        assert email_deliv.next_attempt_at is not None
+        assert email_deliv.last_error_code == "ThrottlingException"
+
+        # Check delivery attempt record
+        attempts = db_session.scalars(
+            select(NotificationDeliveryAttempt).where(
+                NotificationDeliveryAttempt.delivery_id == email_deliv.id
+            )
+        ).all()
+        assert len(attempts) == 1
+        assert attempts[0].error_code == "ThrottlingException"
+    finally:
         provider_registry.reset()

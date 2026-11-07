@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import ResourceNotFoundError
 from app.core.logging import logger
 from app.domains.identity.models import (
+    Flat,
     FlatMembership,
     MembershipStatus,
     RoleType,
@@ -30,6 +31,10 @@ from app.domains.identity.models import (
 )
 from app.domains.notifications.models import (
     DeliveryStatus,
+    Notice,
+    NoticeCategory,
+    NoticePriority,
+    NoticeTargetType,
     Notification,
     NotificationChannel,
     NotificationDelivery,
@@ -117,6 +122,51 @@ class NotificationService:
         )
         return self.db.scalars(stmt).first()
 
+    def get_active_society_residents(self, society_id: uuid.UUID) -> list[User]:
+        """Resolves all active, approved residents across the entire society."""
+        now = utc_now()
+        stmt = (
+            select(User)
+            .join(FlatMembership, FlatMembership.user_id == User.id)
+            .where(
+                FlatMembership.society_id == society_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+                or_(FlatMembership.valid_from.is_(None), FlatMembership.valid_from <= now),
+                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
+                User.status == UserStatus.ACTIVE,
+            )
+            .distinct()
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def get_notice_target_residents(self, notice: Notice) -> list[User]:
+        """Resolves all active, approved residents within the notice's targeted scope."""
+        now = utc_now()
+        base_query = (
+            select(User)
+            .join(FlatMembership, FlatMembership.user_id == User.id)
+            .where(
+                FlatMembership.society_id == notice.society_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+                User.status == UserStatus.ACTIVE,
+                or_(FlatMembership.valid_from.is_(None), FlatMembership.valid_from <= now),
+                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
+            )
+        )
+
+        if notice.target_type == NoticeTargetType.TOWER:
+            if not notice.target_tower_id:
+                return []
+            base_query = base_query.join(Flat, Flat.id == FlatMembership.flat_id).where(
+                Flat.tower_id == notice.target_tower_id
+            )
+        elif notice.target_type == NoticeTargetType.FLAT:
+            if not notice.target_flat_id:
+                return []
+            base_query = base_query.where(FlatMembership.flat_id == notice.target_flat_id)
+
+        return list(self.db.scalars(base_query.distinct()).all())
+
     # -------------------------------------------------------------------------
     # 2. Preference Resolution & Enforcement
     # -------------------------------------------------------------------------
@@ -159,7 +209,11 @@ class NotificationService:
         CRITICAL SECURITY INVARIANT: Mandatory emergency alerts (URGENT priority or safety escalations)
         cannot be suppressed by user channel preferences.
         """
-        if priority == NotificationPriority.URGENT or "safety_escalated" in event_type:
+        if (
+            priority == NotificationPriority.URGENT
+            or "safety_escalated" in event_type
+            or "emergency" in event_type
+        ):
             return True, "MANDATORY_EMERGENCY_OVERRIDE"
 
         domain = event_type.split(".")[0].lower()
@@ -1043,6 +1097,203 @@ class NotificationService:
                         base_event_id=envelope.event_id,
                     )
                     created_count += 1
+
+        # --- F. OFFICIAL TOWNSHIP NOTICES & EMERGENCY BROADCASTS ---
+        elif event_type in ("notice.published", "notice.emergency_broadcast"):
+            notice_id_raw = payload.get("notice_id") or envelope.aggregate_id
+            if not notice_id_raw:
+                logger.warning(
+                    f"[NotificationService] Notice event {envelope.event_id} has no notice_id; skipping"
+                )
+                return 0
+
+            notice_id = uuid.UUID(str(notice_id_raw))
+            notice = self.db.get(Notice, notice_id)
+
+            is_emergency = (
+                event_type == "notice.emergency_broadcast"
+                or (
+                    notice is not None
+                    and (
+                        notice.category == NoticeCategory.EMERGENCY
+                        or notice.priority == NoticePriority.URGENT
+                    )
+                )
+                or payload.get("category") == NoticeCategory.EMERGENCY.value
+                or payload.get("priority") == NoticePriority.URGENT.value
+            )
+
+            priority = (
+                NotificationPriority.URGENT
+                if is_emergency
+                else (
+                    NotificationPriority.HIGH
+                    if (notice and notice.priority == NoticePriority.HIGH)
+                    or payload.get("priority") == NoticePriority.HIGH.value
+                    else (
+                        NotificationPriority.LOW
+                        if (notice and notice.priority == NoticePriority.LOW)
+                        or payload.get("priority") == NoticePriority.LOW.value
+                        else NotificationPriority.NORMAL
+                    )
+                )
+            )
+
+            title_val: str = str(
+                notice.title if notice else payload.get("title", "Official Notice")
+            )
+            body_val: str = str(notice.body if notice else payload.get("body", title_val))
+            category_val: str = str(
+                notice.category.value if notice else payload.get("category", "GENERAL")
+            )
+
+            # Resolve recipients based on targeting scope
+            if notice:
+                recipients = self.get_notice_target_residents(notice)
+            else:
+                target_type = payload.get("target_type")
+                if target_type == "FLAT" and payload.get("target_flat_id"):
+                    recipients = self.get_active_flat_residents(
+                        society_id, uuid.UUID(str(payload["target_flat_id"]))
+                    )
+                elif target_type == "TOWER" and payload.get("target_tower_id"):
+                    tower_id = uuid.UUID(str(payload["target_tower_id"]))
+                    now = utc_now()
+                    recipients = list(
+                        self.db.scalars(
+                            select(User)
+                            .join(FlatMembership, FlatMembership.user_id == User.id)
+                            .join(Flat, Flat.id == FlatMembership.flat_id)
+                            .where(
+                                FlatMembership.society_id == society_id,
+                                Flat.tower_id == tower_id,
+                                FlatMembership.status == MembershipStatus.APPROVED,
+                                User.status == UserStatus.ACTIVE,
+                                or_(
+                                    FlatMembership.valid_from.is_(None),
+                                    FlatMembership.valid_from <= now,
+                                ),
+                                or_(
+                                    FlatMembership.valid_until.is_(None),
+                                    FlatMembership.valid_until >= now,
+                                ),
+                            )
+                            .distinct()
+                        ).all()
+                    )
+                else:
+                    recipients = self.get_active_society_residents(society_id)
+
+            notif_title = f"🚨 EMERGENCY: {title_val}" if is_emergency else title_val
+            notif_body = body_val[:350] + ("..." if len(body_val) > 350 else "")
+
+            for resident in recipients:
+                pref = self.get_or_create_preferences(society_id, resident.id)
+
+                perm_in_app, reason_in_app = self.is_channel_permitted(
+                    pref, NotificationChannel.IN_APP, event_type, priority
+                )
+                perm_email, reason_email = self.is_channel_permitted(
+                    pref, NotificationChannel.EMAIL, event_type, priority
+                )
+                perm_sms, reason_sms = self.is_channel_permitted(
+                    pref, NotificationChannel.SMS, event_type, priority
+                )
+
+                # Check if in-app notification already exists (e.g. from _deliver_emergency_notice or prior attempt)
+                existing_notif = self.db.scalars(
+                    select(Notification).where(
+                        Notification.society_id == society_id,
+                        Notification.recipient_user_id == resident.id,
+                        Notification.aggregate_type == "notice",
+                        Notification.aggregate_id == str(notice_id),
+                    )
+                ).first()
+
+                notice_notif: Notification | None = existing_notif
+
+                if not notice_notif and perm_in_app:
+                    notice_notif = self.create_in_app_notification(
+                        society_id=society_id,
+                        recipient=resident,
+                        event_type=event_type,
+                        title=notif_title,
+                        body=notif_body,
+                        priority=priority,
+                        aggregate_type="notice",
+                        aggregate_id=str(notice_id),
+                        action_url="/resident/notices",
+                        event_metadata={
+                            "notice_id": str(notice_id),
+                            "category": category_val,
+                            "is_emergency": is_emergency,
+                        },
+                        base_event_id=notice_id,
+                    )
+                    created_count += 1
+                elif notice_notif:
+                    # In-app notification exists; ensure in-app delivery record exists
+                    existing_deliv = self.db.scalars(
+                        select(NotificationDelivery).where(
+                            NotificationDelivery.notification_id == notice_notif.id,
+                            NotificationDelivery.channel == NotificationChannel.IN_APP,
+                        )
+                    ).first()
+                    if not existing_deliv:
+                        deliv = NotificationDelivery(
+                            id=uuid.uuid4(),
+                            notification_id=notice_notif.id,
+                            society_id=society_id,
+                            recipient_user_id=resident.id,
+                            channel=NotificationChannel.IN_APP,
+                            provider="in_app",
+                            status=DeliveryStatus.DELIVERED,
+                            idempotency_key=f"in_app:{notice_id}:{resident.id}",
+                            delivered_at=utc_now(),
+                            created_at=utc_now(),
+                            updated_at=utc_now(),
+                        )
+                        self.db.add(deliv)
+                        self.db.flush()
+                    created_count += 1
+
+                if notice_notif:
+                    # 1. External Email delivery
+                    email_subject = (
+                        f"🚨 URGENT NOTICE: {title_val} - Marvel Greenfield"
+                        if is_emergency
+                        else f"Township Notice: {title_val} - Marvel Greenfield"
+                    )
+                    email_body_text = (
+                        f"Dear Resident,\n\n{body_val}\n\n"
+                        "Please view full details on the resident notices portal:\n"
+                        "https://marvelgreenfield.com/resident/notices\n\n"
+                        "Township Management"
+                    )
+                    self.dispatch_email_delivery(
+                        notification=notice_notif,
+                        recipient=resident,
+                        subject=email_subject,
+                        body_text=email_body_text,
+                        base_event_id=notice_id,
+                        is_suppressed=not perm_email,
+                        suppression_reason=reason_email,
+                    )
+
+                    # 2. External SMS delivery
+                    sms_message = (
+                        f"🚨 EMERGENCY: {title_val}. {body_val[:100]}... Check portal: https://marvelgreenfield.com/resident/notices"
+                        if is_emergency
+                        else f"Notice: {title_val}. Details: https://marvelgreenfield.com/resident/notices"
+                    )
+                    self.dispatch_sms_delivery(
+                        notification=notice_notif,
+                        recipient=resident,
+                        message=sms_message,
+                        base_event_id=notice_id,
+                        is_suppressed=not perm_sms,
+                        suppression_reason=reason_sms,
+                    )
 
         return created_count
 

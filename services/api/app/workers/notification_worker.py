@@ -71,6 +71,9 @@ class NotificationHandler(MessageHandler):
             "amenity.booking_confirmed",
             "amenity.booking_payment_failed",
             "amenity.booking_cancelled",
+            # Official Notices & Circulars
+            "notice.published",
+            "notice.emergency_broadcast",
             # Direct dispatches
             "notification.dispatch_sms",
             "notification.dispatch_email",

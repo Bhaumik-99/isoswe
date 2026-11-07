@@ -225,6 +225,7 @@ def require_permissions(*permissions: Permission) -> Callable[..., CurrentUserCl
                             Permission.BANK_IMPORT,
                             Permission.RECONCILIATION_REVIEW,
                             Permission.BILLING_MANAGE,
+                            Permission.COMMUNICATIONS_MANAGE,
                         }
                     )
 

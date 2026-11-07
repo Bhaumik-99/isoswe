@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.errors import AuthorizationError
-from app.core.security import get_current_user, require_roles
-from app.domains.identity.models import RoleType
+from app.core.security import get_current_user, require_permissions, require_roles
+from app.domains.identity.models import Permission, RoleType
 from app.domains.identity.schemas import CurrentUserClaims
 from app.domains.notifications.models import (
     NoticeCategory,
@@ -349,7 +349,9 @@ def list_staff_notices(
 )
 def create_staff_notice(
     payload: CreateNoticeRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:
@@ -389,7 +391,9 @@ def get_staff_notice_detail(
 def update_staff_notice(
     notice_id: UUID,
     payload: UpdateNoticeRequest,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:
@@ -410,7 +414,9 @@ def update_staff_notice(
 )
 def publish_staff_notice(
     notice_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:
@@ -430,7 +436,9 @@ def publish_staff_notice(
 )
 def archive_staff_notice(
     notice_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:

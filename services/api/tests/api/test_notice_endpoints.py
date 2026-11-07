@@ -15,6 +15,13 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core.security import CurrentUserClaims, get_current_user
+from app.domains.identity.models import (
+    Permission,
+    RoleType,
+)
+from app.main import app
+
 STAFF_HELPDESK_HEADERS = {"X-Dev-User": "helpdesk"}
 RESIDENT_NEERAJ_HEADERS = {"X-Dev-User": "neeraj"}
 RESIDENT_SWATI_HEADERS = {"X-Dev-User": "swati"}
@@ -423,3 +430,100 @@ def test_resident_notice_access_control_idor_and_status_enforcement_api(
         ).status_code
         == 200
     )
+
+
+def test_gate_only_staff_forbidden_from_notice_mutations_api(
+    client: TestClient, db_session: Session
+) -> None:
+    # 1. First, create a notice using authorized helpdesk (possesses COMMUNICATIONS_MANAGE)
+    create_res = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Township Circular for Granular Auth Test",
+            "body": "Official circular body text.",
+            "category": "GENERAL",
+            "status": "DRAFT",
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert create_res.status_code == 201
+    notice_id = create_res.json()["id"]
+
+    # 2. Configure a gate operator who has RoleType.HELPDESK and ONLY Permission.GATE_OPERATIONS
+    gate_guard_id = uuid.uuid4()
+    gate_claims = CurrentUserClaims(
+        user_id=gate_guard_id,
+        supabase_uid=uuid.uuid4(),
+        email="gate.security.guard@example.com",
+        phone="+91-98765-99999",
+        full_name="Gate Security Guard",
+        roles=[RoleType.HELPDESK],
+        permissions=[Permission.GATE_OPERATIONS],
+        society_ids=[uuid.UUID(SOCIETY_PUNE_ID)],
+        active_flat_ids=[],
+        is_mock=True,
+    )
+
+    app.dependency_overrides[get_current_user] = lambda: gate_claims
+    try:
+        # A. Gate operator attempts to CREATE a notice -> must receive HTTP 403 Forbidden
+        post_res = client.post(
+            f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+            json={
+                "title": "Unauthorized Guard Notice",
+                "body": "Guards must not publish circulars.",
+                "category": "GENERAL",
+                "status": "DRAFT",
+            },
+        )
+        assert post_res.status_code == 403
+        assert (
+            post_res.json()["error"]["code"] == "INSUFFICIENT_PERMISSIONS"
+            or "COMMUNICATIONS_MANAGE" in post_res.text
+        )
+
+        # B. Gate operator attempts to EDIT a notice -> must receive HTTP 403 Forbidden
+        put_res = client.put(
+            f"/api/v1/notifications/staff/notices/{notice_id}?society_id={SOCIETY_PUNE_ID}",
+            json={"title": "Rogue Edit by Guard"},
+        )
+        assert put_res.status_code == 403
+
+        # C. Gate operator attempts to PUBLISH a notice -> must receive HTTP 403 Forbidden
+        pub_res = client.post(
+            f"/api/v1/notifications/staff/notices/{notice_id}/publish?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert pub_res.status_code == 403
+
+        # D. Gate operator attempts to ARCHIVE a notice -> must receive HTTP 403 Forbidden
+        arch_res = client.post(
+            f"/api/v1/notifications/staff/notices/{notice_id}/archive?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert arch_res.status_code == 403
+
+        # E. Gate operator is permitted read-only inspection of notices
+        list_res = client.get(f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}")
+        assert list_res.status_code == 200
+
+        detail_res = client.get(
+            f"/api/v1/notifications/staff/notices/{notice_id}?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert detail_res.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    # 3. Verify that authorized helpdesk operator CAN publish and archive the notice
+    auth_pub_res = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/publish?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert auth_pub_res.status_code == 200
+    assert auth_pub_res.json()["status"] == "PUBLISHED"
+
+    auth_arch_res = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/archive?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert auth_arch_res.status_code == 200
+    assert auth_arch_res.json()["status"] == "ARCHIVED"
