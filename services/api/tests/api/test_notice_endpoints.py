@@ -765,3 +765,96 @@ def test_multi_tower_and_multi_flat_targeting_api_and_society_validation(
     assert str(FLAT_0408_ID) in flat_notice_data["target_flat_ids"]
     assert "1203" in flat_notice_data["target_flat_numbers"]
     assert "0408" in flat_notice_data["target_flat_numbers"]
+
+
+def test_staff_overview_and_publish_scheduled_endpoints(client: TestClient) -> None:
+    """Verifies GET /staff/notices/overview and POST /staff/notices/publish-scheduled."""
+    # 1. Overview metrics
+    res_overview = client.get(
+        f"/api/v1/notifications/staff/notices/overview?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_overview.status_code == 200
+    data = res_overview.json()
+    assert "total" in data
+    assert "published" in data
+    assert "scheduled" in data
+    assert "draft" in data
+    assert "archived" in data
+    assert "emergency" in data
+    assert isinstance(data["total"], int)
+
+    # 2. Publish scheduled notices
+    res_publish_sched = client.post(
+        f"/api/v1/notifications/staff/notices/publish-scheduled?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_publish_sched.status_code == 200
+    assert isinstance(res_publish_sched.json(), list)
+
+
+def test_resident_unread_count_endpoint(client: TestClient) -> None:
+    """Verifies GET /resident/notices/unread-count."""
+    res = client.get(
+        f"/api/v1/notifications/resident/notices/unread-count?society_id={SOCIETY_PUNE_ID}",
+        headers=RESIDENT_NEERAJ_HEADERS,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert "unread_count" in data
+    assert isinstance(data["unread_count"], int)
+    assert data["unread_count"] >= 0
+
+
+def test_scheduled_status_and_version_api(client: TestClient) -> None:
+    """Verifies notice versioning and SCHEDULED status creation through REST API."""
+    future_time = (datetime.now(UTC) + timedelta(days=3)).isoformat()
+
+    res = client.post(
+        f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+        json={
+            "title": "Township Independence Day Celebration",
+            "body": "Flag hoisting ceremony and sports day at clubhouse.",
+            "category": "EVENT",
+            "priority": "NORMAL",
+            "status": "SCHEDULED",
+            "published_at": future_time,
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res.status_code == 201
+    notice = res.json()
+    assert notice["status"] == "SCHEDULED"
+    assert notice["version"] == 1
+
+    # Update increments version
+    update_res = client.put(
+        f"/api/v1/notifications/staff/notices/{notice['id']}?society_id={SOCIETY_PUNE_ID}",
+        json={
+            "title": "Township Independence Day Celebration (Updated Schedule)",
+            "body": "Updated: Flag hoisting ceremony starts at 8:30 AM.",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert update_res.status_code == 200
+    assert update_res.json()["version"] == 2
+
+
+def test_expanded_categories_api(client: TestClient) -> None:
+    """Verifies that WATER, ELECTRICITY, and SECURITY categories are supported by API."""
+    for category in ["WATER", "ELECTRICITY", "SECURITY"]:
+        res = client.post(
+            f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+            json={
+                "title": f"API Test for {category}",
+                "body": f"Testing expanded notice category {category}.",
+                "category": category,
+                "priority": "NORMAL",
+                "status": "DRAFT",
+                "target_type": "SOCIETY",
+            },
+            headers=STAFF_HELPDESK_HEADERS,
+        )
+        assert res.status_code == 201
+        assert res.json()["category"] == category

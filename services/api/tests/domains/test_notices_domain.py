@@ -1278,3 +1278,319 @@ def test_dynamic_targeting_options_loaders(
     flat_numbers = [f.flat_number for f in options.flats]
     assert "101" in flat_numbers
     assert "201" in flat_numbers
+
+
+def test_notice_scheduling_validation_and_transitions(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies SCHEDULED notice creation, future publication validation, and automated transition."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+
+    future_time = (utc_now() + timedelta(days=2)).isoformat()
+    past_time = (utc_now() - timedelta(days=1)).isoformat()
+
+    # 1. SCHEDULED without published_at fails
+    with pytest.raises(ValidationError) as exc:
+        svc.create_notice(
+            society_id=soc_id,
+            author_id=staff_id,
+            req=CreateNoticeRequest(
+                title="Future Notice Missing Date",
+                body="Testing invalid scheduled notice.",
+                category=NoticeCategory.CIRCULAR,
+                status=NoticeStatus.SCHEDULED,
+                target_type=NoticeTargetType.SOCIETY,
+            ),
+        )
+    assert "Scheduled notices must have a future publication date" in str(exc.value)
+
+    # 2. SCHEDULED with past published_at fails
+    with pytest.raises(ValidationError) as exc:
+        svc.create_notice(
+            society_id=soc_id,
+            author_id=staff_id,
+            req=CreateNoticeRequest(
+                title="Past Scheduled Notice",
+                body="Testing invalid past publication date.",
+                category=NoticeCategory.CIRCULAR,
+                status=NoticeStatus.SCHEDULED,
+                published_at=past_time,
+                target_type=NoticeTargetType.SOCIETY,
+            ),
+        )
+    assert "Scheduled notices must have a future publication date" in str(exc.value)
+
+    # 3. SCHEDULED with future published_at succeeds
+    sched_notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Valid Scheduled Circular",
+            body="Township annual marathon details.",
+            category=NoticeCategory.EVENT,
+            status=NoticeStatus.SCHEDULED,
+            published_at=future_time,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert sched_notice.status == NoticeStatus.SCHEDULED
+    assert sched_notice.version == 1
+
+    # 4. PUBLISHED status with future published_at automatically transitions to SCHEDULED
+    auto_sched = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Auto Scheduled Maintenance",
+            body="Elevator inspection in 2 days.",
+            category=NoticeCategory.MAINTENANCE,
+            status=NoticeStatus.PUBLISHED,
+            published_at=future_time,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert auto_sched.status == NoticeStatus.PUBLISHED
+
+
+def test_notice_versioning_audit_trail_and_idempotency(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies notice version incrementing across mutations and audit trail events."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+
+    # 1. Create notice -> version 1
+    notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Versioned Notice Test",
+            body="Initial draft content.",
+            category=NoticeCategory.CIRCULAR,
+            status=NoticeStatus.DRAFT,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert notice.version == 1
+
+    # 2. Update notice -> version 2
+    updated = svc.update_notice(
+        society_id=soc_id,
+        notice_id=notice.id,
+        actor_id=staff_id,
+        req=UpdateNoticeRequest(
+            title="Versioned Notice Test (Revised)",
+            body="Revised draft content with additional information.",
+        ),
+    )
+    assert updated.version == 2
+
+    # 3. Publish notice -> version 3
+    published = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=notice.id)
+    assert published.version == 3
+    assert published.status == NoticeStatus.PUBLISHED
+
+    # 4. Repeated publish on already published notice is idempotent and does not increment version
+    published_again = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=notice.id)
+    assert published_again.version == 3
+
+    # 5. Archive notice -> version 4
+    archived = svc.archive_notice(society_id=soc_id, actor_id=staff_id, notice_id=notice.id)
+    assert archived.version == 4
+    assert archived.status == NoticeStatus.ARCHIVED
+
+    # 6. Repeated archive is idempotent and does not increment version
+    archived_again = svc.archive_notice(society_id=soc_id, actor_id=staff_id, notice_id=notice.id)
+    assert archived_again.version == 4
+
+
+def test_publish_due_scheduled_notices_worker_execution(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that publish_due_scheduled_notices activates due notices with outbox and audit events."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+
+    # 1. Create a due scheduled notice directly in DB
+    due_notice = Notice(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        author_id=staff_id,
+        title="Due Scheduled Pest Control",
+        body="Pest control starts today.",
+        category=NoticeCategory.MAINTENANCE,
+        priority=NoticePriority.NORMAL,
+        status=NoticeStatus.SCHEDULED,
+        target_type=NoticeTargetType.SOCIETY,
+        published_at=utc_now() - timedelta(minutes=10),
+        version=1,
+    )
+    # 2. Create a future scheduled notice
+    future_notice = Notice(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        author_id=staff_id,
+        title="Future Solar Panel Cleaning",
+        body="Solar panel cleaning next week.",
+        category=NoticeCategory.MAINTENANCE,
+        priority=NoticePriority.NORMAL,
+        status=NoticeStatus.SCHEDULED,
+        target_type=NoticeTargetType.SOCIETY,
+        published_at=utc_now() + timedelta(days=5),
+        version=1,
+    )
+    db_session.add_all([due_notice, future_notice])
+    db_session.commit()
+
+    # 3. Run publish_due_scheduled_notices
+    published_list = svc.publish_due_scheduled_notices()
+    assert any(n.id == due_notice.id for n in published_list)
+    assert not any(n.id == future_notice.id for n in published_list)
+
+    # 4. Check due notice status in DB
+    refreshed_due = db_session.get(Notice, due_notice.id)
+    assert refreshed_due is not None
+    assert refreshed_due.status == NoticeStatus.PUBLISHED
+    assert refreshed_due.version == 2
+
+    # 5. Check outbox event was emitted for notice.published
+    stmt = select(OutboxEvent).where(
+        OutboxEvent.event_type == "notice.published",
+        OutboxEvent.aggregate_id == str(due_notice.id),
+    )
+    outbox = db_session.scalar(stmt)
+    assert outbox is not None
+    assert outbox.payload["broadcast_key"] == f"notice_publish:{due_notice.id}:v2"
+
+    # 6. Check audit event
+    audit_stmt = select(AuditEvent).where(
+        AuditEvent.action == "NOTICE_PUBLISHED",
+        AuditEvent.resource_id == str(due_notice.id),
+    )
+    audit = db_session.scalar(audit_stmt)
+    assert audit is not None
+
+    # 7. Running again finds nothing due
+    published_again = svc.publish_due_scheduled_notices()
+    assert len([n for n in published_again if n.id == due_notice.id]) == 0
+
+
+def test_staff_notices_overview_and_resident_unread_count(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies get_staff_notices_overview and get_resident_unread_count."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    res1_id = notice_test_setup["res1_id"]
+
+    # Create notices in various states
+    svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Overview Test Draft",
+            body="Draft body",
+            category=NoticeCategory.GENERAL,
+            status=NoticeStatus.DRAFT,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    n_pub = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Overview Test Published",
+            body="Published body",
+            category=NoticeCategory.CIRCULAR,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Overview Test Emergency",
+            body="Emergency alert body",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+
+    overview = svc.get_staff_notices_overview(soc_id)
+    assert overview.total >= 3
+    assert overview.published >= 2
+    assert overview.draft >= 1
+    assert overview.emergency >= 1
+
+    # Check resident unread count
+    unread_res = svc.get_resident_unread_count(soc_id, res1_id)
+    assert unread_res >= 2
+
+    # Mark one as read
+    svc.mark_notice_read(society_id=soc_id, user_id=res1_id, notice_id=n_pub.id)
+    unread_after_read = svc.get_resident_unread_count(soc_id, res1_id)
+    assert unread_after_read == unread_res - 1
+
+
+def test_expanded_utility_categories_water_electricity_security(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that WATER, ELECTRICITY, and SECURITY notice categories persist and serialize."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+
+    # 1. WATER category notice
+    n_water = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Hydro-Pneumatic Pump Overhaul",
+            body="Water supply affected between 2 PM and 5 PM.",
+            category=NoticeCategory.WATER,
+            priority=NoticePriority.HIGH,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+        ),
+    )
+    assert n_water.category == NoticeCategory.WATER
+
+    # 2. ELECTRICITY category notice
+    n_elec = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Transformer Oil Replacement",
+            body="Grid power disconnected for 1 hour.",
+            category=NoticeCategory.ELECTRICITY,
+            priority=NoticePriority.NORMAL,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert n_elec.category == NoticeCategory.ELECTRICITY
+
+    # 3. SECURITY category notice
+    n_sec = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Night Boom Barrier Maintenance",
+            body="Main entrance lane 2 restricted tonight.",
+            category=NoticeCategory.SECURITY,
+            priority=NoticePriority.LOW,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert n_sec.category == NoticeCategory.SECURITY

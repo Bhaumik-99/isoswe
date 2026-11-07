@@ -1,7 +1,7 @@
 # Technical Design Document (TDD)
 # Township Operations Platform
 **Target Scope**: 2,400 Apartments | 28 Towers | 180 Facility Staff | Pune, Maharashtra  
-**Document Revision**: Phase 8 Complete (Official Township Notices & System Hardening)  
+**Document Revision**: Phase 9 Complete (Official Township Notices & Resident Communications)  
 **Date**: November 2026  
 **Status**: APPROVED & IMPLEMENTED  
 
@@ -296,15 +296,38 @@ stateDiagram-v2
     FAILED --> [*]
 ```
 
-### 5.8 Official Township Notices & Broadcast Circulars (Phase 7 Hardening)
-- **Notice Categories**: `CIRCULAR` (general policy), `MAINTENANCE` (power/water outage advisories), `EMERGENCY` (critical safety), `EVENT` (township gatherings), `GENERAL`.
-- **Granular Targeting**:
-  - `SOCIETY`: Entire township community.
-  - `TOWER`: Specific residential towers (e.g. Tower A elevator maintenance).
-  - `FLAT`: Targeted units (e.g. specific pipe replacement notice).
-- **Publishing Lifecycle**: `DRAFT` -> `PUBLISHED` -> `ARCHIVED`. Supports scheduled future publishing and automated expiry (`expires_at`).
-- **Resident Experience**: Feed with search, category filtering, unread badge counter, and per-resident read tracking (`POST /notices/{id}/read`).
-- **Emergency Broadcast**: Publishing an `EMERGENCY` notice automatically triggers outbox notification broadcast to all targeted residents.
+### 5.8 Official Township Notices & Resident Communications (Phase 9 Complete)
+- **Notice Categories**: 9 comprehensive categories tailored to 2,400-apartment township management:
+  - `GENERAL`: Community updates and broad township notices.
+  - `CIRCULAR`: Official administrative and legal circulars.
+  - `MAINTENANCE`: Civil works, elevator maintenance, painting schedules.
+  - `WATER`: Water tanker deliveries, borewell maintenance, supply cutoffs.
+  - `ELECTRICITY`: Transformer overhauls, DG switchovers, grid power outages.
+  - `SECURITY`: Gate protocols, surveillance maintenance, safety drills.
+  - `EVENT`: Township celebrations, cultural festivities, AGM meetings.
+  - `EMERGENCY`: Critical safety, fire drills, immediate evacuations.
+- **Granular Multi-Targeting Across 28 Towers**:
+  - `SOCIETY`: Entire township community broadcast across all 28 towers.
+  - `TOWER`: Multi-tower targeting via `target_tower_ids` array, validated against the calling society.
+  - `FLAT`: Multi-flat targeting via `target_flat_ids` array, validated against the calling society.
+  - Dynamic loading of towers and flats via `/api/v1/notifications/staff/notices/targeting-options` (no hardcoding).
+- **Publishing Lifecycle & Scheduling**:
+  - State machine: `DRAFT` -> `SCHEDULED` -> `PUBLISHED` -> `ARCHIVED`.
+  - Future scheduling: Setting `published_at` in the future with status `SCHEDULED`. Immediate delivery is withheld until effective time.
+  - Background worker execution: Worker runs `publish_due_scheduled_notices` every 30 seconds using PostgreSQL row-level locking (`SELECT ... FOR UPDATE SKIP LOCKED`) to ensure distributed worker safety without duplicate publishing.
+- **Publication Versioning & Audit Trail**:
+  - Monotonically increasing revision counter (`Notice.version = 1, 2, ...`).
+  - Version-scoped broadcast idempotency keys (`notice_publish:{id}:v{version}`, `notice_emergency:{id}:v{version}`).
+  - Immutable audit logging on each state transition and edit (`NOTICE_CREATED`, `NOTICE_UPDATED`, `NOTICE_PUBLISHED`, `NOTICE_ARCHIVED`).
+- **Resident Security & Access Control**:
+  - IDOR protection: Detail (`GET /resident/notices/{id}`) and read tracking (`POST /resident/notices/{id}/read`) strictly enforce membership in the target society, flat/tower targeting predicates, active `PUBLISHED` status, and publication time (`published_at <= now` and `expires_at >= now`).
+  - Read receipts: Per-resident read tracking with `POST /resident/notices/read-all` and unread badge count (`GET /resident/notices/unread-count`).
+- **Staff Operations & Analytics**:
+  - Protected by dedicated `COMMUNICATIONS_MANAGE` permission; gate-only operators receiving HTTP 403 Forbidden.
+  - KPI overview metrics (`GET /staff/notices/overview`): Total, Published, Scheduled, Drafts, Archived, and Emergency notices.
+  - Manual processing endpoint (`POST /staff/notices/publish-scheduled`) for immediate administrator triggering.
+- **Trilingual Internationalization**:
+  - Full UI localization in English (`en`), Hindi (`hi`), and Marathi (`mr`) for resident notice feeds, category filters, emergency banners, and staff management dashboards.
 
 ### 5.9 Amenity & Facility Booking System (Phase 8)
 - **Amenity Entity**: Supports single-unit facilities (tennis courts, badminton courts, clubhouse lounge) and multi-unit shared facilities (swimming pool, gym). Tracks operating hours, slot duration, hourly fee in paise, advance booking days, cancellation deadline hours, refund percentage, and permitted membership types.
@@ -363,6 +386,8 @@ All schema changes are version-controlled via Alembic migrations. Runtime `creat
 | `016` | `016_amenities_foundation.py` | Amenity booking foundation | `amenities`, `amenity_bookings`, operating hours, integer paise fees |
 | `017` | `017_amenity_blocks_and_payments.py` | Amenity maintenance & payments | `amenity_blocks`, 15-minute slot lock (`payment_expires_at`), cancellation policies |
 | `018` | `018_official_township_notices.py` | Official township notices | `notices`, `notice_reads`, society/tower/flat targeting, pinning, scheduled publishing |
+| `019` | `019_notice_multi_targeting.py` | Multi-tower and flat targeting | Dynamic array targeting: `target_tower_ids`, `target_flat_ids` across 28 towers |
+| `020` | `020_notice_version_schedule.py` | Notice revision and scheduling | `notices.version` revision sequence, index `ix_notices_status_published_at` for scheduled worker |
 
 ---
 
@@ -395,11 +420,18 @@ All endpoints are versioned under the `/api/v1` prefix.
 | **Notifications** | `GET` | `/api/v1/notifications` | Authenticated | Fetch resident in-app notifications inbox with pagination |
 | | `PATCH` | `/api/v1/notifications/{id}/read` | Authenticated | Mark notification as read |
 | | `GET` | `/api/v1/notifications/deliveries` | `HELPDESK` | Multi-channel delivery monitoring log |
-| **Official Notices** | `GET` | `/api/v1/notices` | Authenticated | Fetch targeted notices feed with search, priority, and category filters |
-| | `POST` | `/api/v1/notices` | `HELPDESK` | Create draft or published official notice |
-| | `PUT` | `/api/v1/notices/{id}` | `HELPDESK` | Edit official notice details or targeting |
-| | `PATCH` | `/api/v1/notices/{id}/archive` | `HELPDESK` | Archive an official notice |
-| | `POST` | `/api/v1/notices/{id}/read` | `RESIDENT` | Mark notice as read for the calling resident |
+| **Official Notices** | `GET` | `/api/v1/notifications/resident/notices` | Authenticated | Fetch targeted notices feed with search, priority, and category filters |
+| | `GET` | `/api/v1/notifications/resident/notices/{id}` | Authenticated | Fetch single notice detail with targeting and temporal predicate checks |
+| | `GET` | `/api/v1/notifications/resident/notices/unread-count` | Authenticated | Get unread notice badge count for calling resident |
+| | `POST` | `/api/v1/notifications/resident/notices/{id}/read` | Authenticated | Mark notice as read for the calling resident |
+| | `POST` | `/api/v1/notifications/resident/notices/read-all` | Authenticated | Mark all visible notices as read for calling resident |
+| | `GET` | `/api/v1/notifications/staff/notices/overview` | `COMMUNICATIONS_MANAGE` | Overview KPI counters (total, published, scheduled, draft, archived, emergency) |
+| | `GET` | `/api/v1/notifications/staff/notices/targeting-options` | `COMMUNICATIONS_MANAGE` | Dynamic society towers and flats directory for multi-target selection |
+| | `POST` | `/api/v1/notifications/staff/notices` | `COMMUNICATIONS_MANAGE` | Create draft, scheduled, or published notice with multi-targeting |
+| | `PUT` | `/api/v1/notifications/staff/notices/{id}` | `COMMUNICATIONS_MANAGE` | Edit notice details, multi-tower/flat targeting, or schedule |
+| | `POST` | `/api/v1/notifications/staff/notices/{id}/publish` | `COMMUNICATIONS_MANAGE` | Explicitly transition notice to published state and fan out outbox events |
+| | `POST` | `/api/v1/notifications/staff/notices/{id}/archive` | `COMMUNICATIONS_MANAGE` | Archive an official notice |
+| | `POST` | `/api/v1/notifications/staff/notices/publish-scheduled` | `COMMUNICATIONS_MANAGE` | Background worker / admin trigger to publish due scheduled notices |
 | **Amenity Booking** | `GET` | `/api/v1/amenities` | Authenticated | List active amenities with rules, operating hours, and fees |
 | | `GET` | `/api/v1/amenities/{id}/slots` | Authenticated | Retrieve available slots for target date (`Asia/Kolkata`) |
 | | `POST` | `/api/v1/amenities/{id}/bookings` | `RESIDENT` | Reserve slot with row-lock concurrency protection |

@@ -236,6 +236,85 @@ export interface TranslationDictionary {
     conflict409: string;
     genericError: string;
   };
+  notices: {
+    title: string;
+    subtitle: string;
+    overviewTitle: string;
+    emergencyAlerts: string;
+    pinnedNotices: string;
+    latestAnnouncements: string;
+    filters: {
+      all: string;
+      unread: string;
+      general: string;
+      circular: string;
+      maintenance: string;
+      water: string;
+      electricity: string;
+      security: string;
+      event: string;
+      emergency: string;
+    };
+    statuses: {
+      draft: string;
+      scheduled: string;
+      published: string;
+      archived: string;
+    };
+    priorities: {
+      low: string;
+      normal: string;
+      high: string;
+      urgent: string;
+    };
+    actions: {
+      compose: string;
+      edit: string;
+      publish: string;
+      schedule: string;
+      archive: string;
+      markRead: string;
+      markAllRead: string;
+      refresh: string;
+      viewDetails: string;
+      filter: string;
+    };
+    composer: {
+      modalTitle: string;
+      editModalTitle: string;
+      titleLabel: string;
+      titlePlaceholder: string;
+      bodyLabel: string;
+      bodyPlaceholder: string;
+      categoryLabel: string;
+      priorityLabel: string;
+      targetAudienceLabel: string;
+      selectTowers: string;
+      selectFlats: string;
+      publishNowLabel: string;
+      scheduleLabel: string;
+      scheduledTimeLabel: string;
+      expiryDateLabel: string;
+      pinnedLabel: string;
+      emergencyConfirmLabel: string;
+      saveDraftBtn: string;
+      publishBtn: string;
+      scheduleBtn: string;
+    };
+    kpi: {
+      total: string;
+      published: string;
+      scheduled: string;
+      drafts: string;
+      archived: string;
+      emergencies: string;
+    };
+    emptyState: string;
+    emptyDesc: string;
+    readReceipt: string;
+    unread: string;
+    read: string;
+  };
 }
 
 export const enDictionary: TranslationDictionary = {
@@ -486,6 +565,85 @@ export const enDictionary: TranslationDictionary = {
     rateLimited429: 'Too many invalid guest pass attempts at this gate. Locked for 10 minutes.',
     conflict409: 'Replay conflict detected (409): Offline event payload was modified after capture.',
     genericError: 'Unable to complete request. Please check your connection and try again.',
+  },
+  notices: {
+    title: 'Official Township Notices & Communications',
+    subtitle: 'Official federation circulars, maintenance advisories, and emergency announcements',
+    overviewTitle: 'Notice Management Overview',
+    emergencyAlerts: 'Emergency Announcements',
+    pinnedNotices: 'Pinned Notices',
+    latestAnnouncements: 'Latest Notices',
+    filters: {
+      all: 'All Notices',
+      unread: 'Unread Only',
+      general: 'General',
+      circular: 'Circular',
+      maintenance: 'Maintenance',
+      water: 'Water Supply',
+      electricity: 'Electricity',
+      security: 'Security',
+      event: 'Events',
+      emergency: 'Emergency',
+    },
+    statuses: {
+      draft: 'Draft',
+      scheduled: 'Scheduled',
+      published: 'Published',
+      archived: 'Archived',
+    },
+    priorities: {
+      low: 'Low',
+      normal: 'Normal',
+      high: 'High',
+      urgent: 'Urgent',
+    },
+    actions: {
+      compose: 'Compose Notice',
+      edit: 'Edit Notice',
+      publish: 'Publish',
+      schedule: 'Schedule',
+      archive: 'Archive',
+      markRead: 'Mark as Read',
+      markAllRead: 'Mark All Read',
+      refresh: 'Refresh',
+      viewDetails: 'View Details',
+      filter: 'Filter',
+    },
+    composer: {
+      modalTitle: 'Compose Official Notice',
+      editModalTitle: 'Edit Official Notice',
+      titleLabel: 'Notice Title',
+      titlePlaceholder: 'e.g., Scheduled Water Tank Cleaning - Tower T01 to T07',
+      bodyLabel: 'Notice Content & Guidelines',
+      bodyPlaceholder: 'Detail the schedule, impact, precautions, and contacts...',
+      categoryLabel: 'Category',
+      priorityLabel: 'Priority',
+      targetAudienceLabel: 'Target Audience Scope',
+      selectTowers: 'Select Towers',
+      selectFlats: 'Select Specific Flats',
+      publishNowLabel: 'Publish Immediately',
+      scheduleLabel: 'Schedule for Later',
+      scheduledTimeLabel: 'Scheduled Publication Date & Time',
+      expiryDateLabel: 'Notice Expiry Date (Optional)',
+      pinnedLabel: 'Pin this notice to top of feed',
+      emergencyConfirmLabel: 'Broadcast as High-Priority Emergency Notice (bypasses resident opt-outs)',
+      saveDraftBtn: 'Save Draft',
+      publishBtn: 'Publish Notice',
+      scheduleBtn: 'Schedule Publication',
+    },
+    kpi: {
+      total: 'Total Notices',
+      published: 'Published',
+      scheduled: 'Scheduled',
+      drafts: 'Drafts',
+      archived: 'Archived',
+      emergencies: 'Emergency Alerts',
+    },
+    emptyState: 'No notices available',
+    emptyDesc: 'There are currently no official notices published for your unit or society.',
+    readReceipt: 'Read receipt recorded',
+    unread: 'Unread',
+    read: 'Read',
   },
 };
 

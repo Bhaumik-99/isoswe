@@ -26,6 +26,7 @@ wheels/
 .coverage
 htmlcov/
 *.sqlite3
+*.db
 
 # Virtual Environments
 .venv/

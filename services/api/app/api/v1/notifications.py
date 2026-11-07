@@ -32,6 +32,7 @@ from app.domains.notifications.schemas import (
     MarkAllReadResponse,
     MarkNoticeReadResponse,
     MarkReadResponse,
+    NoticeOverviewStatsResponse,
     NoticeResponseSchema,
     NoticeTargetingOptionsResponse,
     NotificationPreferenceSchema,
@@ -253,6 +254,25 @@ def get_resident_notices(
 
 
 @router.get(
+    "/resident/notices/unread-count",
+    response_model=UnreadCountResponse,
+    summary="Get unread official notice count for the current resident",
+)
+def get_resident_notices_unread_count(
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> UnreadCountResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    count = service.get_resident_unread_count(
+        society_id=target_society,
+        user_id=claims.user_id,
+    )
+    return UnreadCountResponse(unread_count=count)
+
+
+@router.get(
     "/resident/notices/{notice_id}",
     response_model=NoticeResponseSchema,
     summary="Get single official notice details for resident",
@@ -421,6 +441,21 @@ def create_staff_notice(
 
 
 @router.get(
+    "/staff/notices/overview",
+    response_model=NoticeOverviewStatsResponse,
+    summary="Overview counts across official notice statuses and emergency announcements",
+)
+def get_staff_notices_overview(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeOverviewStatsResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.get_staff_notices_overview(target_society)
+
+
+@router.get(
     "/staff/notices/{notice_id}",
     response_model=NoticeResponseSchema,
     summary="Get single official notice details for staff",
@@ -505,3 +540,20 @@ def archive_staff_notice(
         actor_id=claims.user_id,
         notice_id=notice_id,
     )
+
+
+@router.post(
+    "/staff/notices/publish-scheduled",
+    response_model=list[NoticeResponseSchema],
+    summary="Trigger immediate publication of all due scheduled notices",
+)
+def trigger_publish_due_scheduled_notices(
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> list[NoticeResponseSchema]:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.publish_due_scheduled_notices(society_id=target_society)

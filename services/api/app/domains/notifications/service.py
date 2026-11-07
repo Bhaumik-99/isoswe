@@ -155,15 +155,39 @@ class NotificationService:
         )
 
         if notice.target_type == NoticeTargetType.TOWER:
-            if not notice.target_tower_id:
+            tower_uuids: list[uuid.UUID] = []
+            for t in notice.target_tower_ids or []:
+                try:
+                    tower_uuids.append(uuid.UUID(str(t)))
+                except (ValueError, TypeError):
+                    continue
+            if not tower_uuids and notice.target_tower_id:
+                tower_uuids.append(notice.target_tower_id)
+            if not tower_uuids and hasattr(notice, "targets") and notice.targets:
+                tower_uuids = [
+                    t.target_id for t in notice.targets if t.target_type == NoticeTargetType.TOWER
+                ]
+            if not tower_uuids:
                 return []
             base_query = base_query.join(Flat, Flat.id == FlatMembership.flat_id).where(
-                Flat.tower_id == notice.target_tower_id
+                Flat.tower_id.in_(tower_uuids)
             )
         elif notice.target_type == NoticeTargetType.FLAT:
-            if not notice.target_flat_id:
+            flat_uuids: list[uuid.UUID] = []
+            for f in notice.target_flat_ids or []:
+                try:
+                    flat_uuids.append(uuid.UUID(str(f)))
+                except (ValueError, TypeError):
+                    continue
+            if not flat_uuids and notice.target_flat_id:
+                flat_uuids.append(notice.target_flat_id)
+            if not flat_uuids and hasattr(notice, "targets") and notice.targets:
+                flat_uuids = [
+                    t.target_id for t in notice.targets if t.target_type == NoticeTargetType.FLAT
+                ]
+            if not flat_uuids:
                 return []
-            base_query = base_query.where(FlatMembership.flat_id == notice.target_flat_id)
+            base_query = base_query.where(FlatMembership.flat_id.in_(flat_uuids))
 
         return list(self.db.scalars(base_query.distinct()).all())
 

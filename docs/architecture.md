@@ -252,5 +252,49 @@ Every dispatch attempt across In-App, Email, and SMS is modeled with strict stat
 ### 8.5 Transactional Outbox & Audit Logging
 All booking creations, confirmations, cancellations, and payment failures emit transactional outbox events (`amenity.booking_created`, `amenity.booking_confirmed`, `amenity.booking_cancelled`, `amenity.booking_payment_failed`) and audit log records (`AMENITY_BOOKING_CREATED`, `AMENITY_BOOKING_CONFIRMED`, `AMENITY_BOOKING_CANCELLED`, `AMENITY_BLOCK_CREATED`, `AMENITY_BLOCK_DELETED`) within the same atomic transaction as the state change.
 
+---
+
+## 9. Phase 9 — Official Township Notices & Resident Communications
+
+### 9.1 Domain Architecture & Granular Multi-Targeting
+- **Township Notice Model (`notices`)**: Official announcements across 9 categories (`GENERAL`, `CIRCULAR`, `MAINTENANCE`, `WATER`, `ELECTRICITY`, `SECURITY`, `EVENT`, `EMERGENCY`).
+- **Dynamic Multi-Tower & Multi-Flat Targeting**:
+  - Notices support flexible array targeting via `target_tower_ids` and `target_flat_ids`, dynamically validated against the society's actual database entities across all 28 towers.
+  - Zero hardcoding of towers or flats. Broadcasts can target the entire society, a subset of towers (e.g., Towers T01, T02, T03 during a transformer shutdown), or specific apartments.
+- **Publication Lifecycle & Future Scheduling**:
+  - Strict state transitions: `DRAFT` -> `SCHEDULED` -> `PUBLISHED` -> `ARCHIVED`.
+  - Future scheduling sets `published_at > now`. Scheduled notices are withheld from the resident feed and cannot trigger early emergency broadcast deliveries.
+  - Expiry is automatically honored via `expires_at`.
+
+### 9.2 Background Worker Execution & Distributed Locking
+- **Scheduled Publishing Worker**:
+  - The notification runner polls for due scheduled notices every 30 seconds (`publish_due_scheduled_notices`).
+  - Queries match `status in (SCHEDULED, PUBLISHED)` and `published_at <= now()`.
+  - In PostgreSQL, queries execute using `with_for_update(skip_locked=True)` to prevent concurrent worker instances or competing Lambda invocations from processing or broadcasting the same notice twice.
+- **Deduplication & Version-Scoped Idempotency**:
+  - Each notice maintains a monotonically increasing `version` sequence incremented on every publish or content update.
+  - Outbox broadcast events carry deterministic, version-scoped broadcast keys: `notice_publish:{id}:v{version}` and `notice_emergency:{id}:v{version}`.
+  - Worker execution idempotently checks existing outbox events to prevent duplicate fan-outs.
+
+### 9.3 Notification Worker Integration & Multi-Channel Fan-Out
+- **Event Subscriptions**: The background notification worker (`NotificationHandler`) subscribes directly to `notice.published` and `notice.emergency_broadcast`.
+- **Target Resolution**: The handler dynamically expands multi-tower and multi-flat targets into individual resident recipient user IDs by querying active memberships in the targeted flats.
+- **Multi-Channel Dispatch**:
+  - Creates in-app `notifications` records for all target residents.
+  - Queues external multi-channel deliveries (`EMAIL`, `SMS`) via `NotificationDeliveryService` with preference checks and emergency override guarantees.
+
+### 9.4 Resident Access Control & IDOR Prevention
+- Individual notice retrieval (`GET /resident/notices/{id}`) and read receipts (`POST /resident/notices/{id}/read`) strictly apply the resident feed's security predicate:
+  1. Resident must belong to the notice's society via an active flat membership.
+  2. Notice must target `SOCIETY`, or the resident's flat/tower must match `target_tower_ids` or `target_flat_ids`.
+  3. Notice must have `status == PUBLISHED`.
+  4. Publication time must be effective (`published_at <= now()`) and non-expired (`expires_at is null or expires_at >= now()`).
+- Prevents IDOR vulnerabilities where unauthorized residents could view drafts, archived circulars, or private notices of other towers by guessing UUIDs.
+
+### 9.5 Trilingual Internationalization (EN, HI, MR)
+- React client leverages `LanguageContext` to provide complete trilingual support across English, Hindi, and Marathi (`en`, `hi`, `mr`).
+- Notice categories, emergency advisories, utility outage banners, targeting options, overview cards, and read receipt actions are localized without UI layout shift.
+
+
 
 

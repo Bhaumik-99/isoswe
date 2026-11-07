@@ -150,5 +150,79 @@ describe('Resident Notices Feed Business Logic', () => {
       status: 'DRAFT',
     };
     expect(isNoticeActive(draftNotice, now)).toBe(false);
+
+    const scheduledStatusNotice: NoticeItem = {
+      ...sampleNotices[0],
+      status: 'SCHEDULED',
+      published_at: '2026-11-10T10:00:00Z',
+    };
+    expect(isNoticeActive(scheduledStatusNotice, now)).toBe(false);
+  });
+
+  it('correctly handles expanded township utility categories and versioning', () => {
+    const utilityNotices: NoticeItem[] = [
+      {
+        id: 'n-water',
+        society_id: 'soc-1',
+        title: 'Water Supply Shutdown',
+        body: 'Main pipe maintenance',
+        category: 'WATER',
+        priority: 'HIGH',
+        status: 'PUBLISHED',
+        target_type: 'TOWER',
+        target_tower_ids: ['tow-1', 'tow-2'],
+        version: 2,
+        is_pinned: false,
+        is_read: false,
+        created_at: '2026-11-07T08:00:00Z',
+        updated_at: '2026-11-07T08:30:00Z',
+        author_id: 'staff-1',
+      },
+      {
+        id: 'n-elec',
+        society_id: 'soc-1',
+        title: 'DG Backup Testing',
+        body: 'Power outage expected for 15 mins',
+        category: 'ELECTRICITY',
+        priority: 'NORMAL',
+        status: 'PUBLISHED',
+        target_type: 'SOCIETY',
+        version: 1,
+        is_pinned: false,
+        is_read: false,
+        created_at: '2026-11-07T09:00:00Z',
+        updated_at: '2026-11-07T09:00:00Z',
+        author_id: 'staff-1',
+      },
+      {
+        id: 'n-sec',
+        society_id: 'soc-1',
+        title: 'Night Patrol Route Update',
+        body: 'Security perimeter patrol advisory',
+        category: 'SECURITY',
+        priority: 'NORMAL',
+        status: 'PUBLISHED',
+        target_type: 'SOCIETY',
+        version: 1,
+        is_pinned: false,
+        is_read: false,
+        created_at: '2026-11-07T10:00:00Z',
+        updated_at: '2026-11-07T10:00:00Z',
+        author_id: 'staff-1',
+      },
+    ];
+
+    const waterResults = filterNotices(utilityNotices, 'WATER', false);
+    expect(waterResults).toHaveLength(1);
+    expect(waterResults[0].id).toBe('n-water');
+    expect(waterResults[0].version).toBe(2);
+
+    const elecResults = filterNotices(utilityNotices, 'ELECTRICITY', false);
+    expect(elecResults).toHaveLength(1);
+    expect(elecResults[0].id).toBe('n-elec');
+
+    const secResults = filterNotices(utilityNotices, 'SECURITY', false);
+    expect(secResults).toHaveLength(1);
+    expect(secResults[0].id).toBe('n-sec');
   });
 });

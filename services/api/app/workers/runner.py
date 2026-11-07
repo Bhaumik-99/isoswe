@@ -84,6 +84,18 @@ class WorkerRunner:
             except Exception as e:
                 logger.error(f"[WorkerRunner] Error purging expired photos: {e}")
 
+            # Pass 4: Scheduled notice publication
+            try:
+                from app.domains.notifications.notice_service import NoticeService
+
+                published_notices = NoticeService(db).publish_due_scheduled_notices()
+                if published_notices:
+                    logger.info(
+                        f"[WorkerRunner] Published {len(published_notices)} scheduled notices whose publication time arrived."
+                    )
+            except Exception as e:
+                logger.error(f"[WorkerRunner] Error publishing scheduled notices: {e}")
+
     def start(self) -> None:
         logger.info("[WorkerRunner] Background outbox publisher and queue worker started.")
         while self.running:

@@ -320,4 +320,36 @@ The database is seeded idempotently with real financial scenarios matching Marve
 | `GET` | `/api/v1/amenities/staff/bookings` | Helpdesk Staff | List all community bookings with filters (`amenity_id`, `date`, `status`, `flat`) |
 | `POST` | `/api/v1/amenities/staff/bookings/{id}/cancel` | Helpdesk Staff | Administrative cancellation with mandatory audit reason and 100% refund |
 
+---
+
+## 12. Phase 9 — Official Township Notices & Resident Communications
+
+### Core Capabilities
+- **Official Township Communications**: Replaces fragmented WhatsApp circulars with one authenticated, auditable broadcast system covering 2,400 apartments across 28 residential towers.
+- **9 Notice Categories**: `GENERAL`, `CIRCULAR`, `MAINTENANCE`, `WATER`, `ELECTRICITY`, `SECURITY`, `EVENT`, `EMERGENCY`.
+- **Dynamic Multi-Tower & Multi-Flat Targeting**: Array targeting (`target_tower_ids`, `target_flat_ids`) dynamically validated against society entities without hardcoding. Broadcasts can target the entire township, specific towers, or individual flats.
+- **Lifecycle & Background Scheduling**: State machine transitions (`DRAFT` -> `SCHEDULED` -> `PUBLISHED` -> `ARCHIVED`). Future scheduled notices remain withheld until publication time; worker processes due notices every 30 seconds with PostgreSQL `FOR UPDATE SKIP LOCKED` distributed locking.
+- **Revision Versioning & Audit Trail**: Monotonically increasing revision sequence (`Notice.version`), revision audit trail, and version-scoped broadcast keys (`notice_publish:{id}:v{version}`, `notice_emergency:{id}:v{version}`).
+- **Granular Staff Permissions**: All notice authoring, updating, publishing, scheduling, and archiving require the dedicated `COMMUNICATIONS_MANAGE` permission. Gate-only personnel are rejected with HTTP 403 Forbidden.
+- **Resident Security & IDOR Prevention**: Detail retrieval (`GET /resident/notices/{id}`) and read receipts (`POST /resident/notices/{id}/read`) strictly enforce society membership, flat/tower audience predicates, published status, and temporal validity window.
+- **Read Receipts & Unread Badging**: Per-resident read receipts, unread counter badge (`GET /resident/notices/unread-count`), and bulk read (`POST /resident/notices/read-all`).
+- **Trilingual Localization**: Full UI internationalization across English (`en`), Hindi (`hi`), and Marathi (`mr`).
+
+### Official Notices API Endpoints
+| Method | Endpoint | Access | Purpose |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/notifications/resident/notices` | Resident | Paginated, filtered feed of targeted notices |
+| `GET` | `/api/v1/notifications/resident/notices/{id}` | Resident | Notice details with strict IDOR and temporal predicates |
+| `GET` | `/api/v1/notifications/resident/notices/unread-count` | Resident | Live unread notice counter for badge display |
+| `POST` | `/api/v1/notifications/resident/notices/{id}/read` | Resident | Mark specific notice as read |
+| `POST` | `/api/v1/notifications/resident/notices/read-all` | Resident | Mark all visible notices as read |
+| `GET` | `/api/v1/notifications/staff/notices/overview` | `COMMUNICATIONS_MANAGE` | 6 KPI overview cards (Total, Published, Scheduled, Draft, Archived, Emergency) |
+| `GET` | `/api/v1/notifications/staff/notices/targeting-options` | `COMMUNICATIONS_MANAGE` | Dynamic tower and flat directory for broadcast selection |
+| `POST` | `/api/v1/notifications/staff/notices` | `COMMUNICATIONS_MANAGE` | Create draft, scheduled, or published notice |
+| `PUT` | `/api/v1/notifications/staff/notices/{id}` | `COMMUNICATIONS_MANAGE` | Edit notice details, multi-targeting, or schedule |
+| `POST` | `/api/v1/notifications/staff/notices/{id}/publish` | `COMMUNICATIONS_MANAGE` | Publish notice and trigger outbox broadcast |
+| `POST` | `/api/v1/notifications/staff/notices/{id}/archive` | `COMMUNICATIONS_MANAGE` | Archive notice |
+| `POST` | `/api/v1/notifications/staff/notices/publish-scheduled` | `COMMUNICATIONS_MANAGE` | Trigger scheduled notice publication run |
+
+
 

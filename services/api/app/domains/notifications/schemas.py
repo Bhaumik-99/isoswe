@@ -177,12 +177,22 @@ class NoticeResponseSchema(BaseSchema):
     is_pinned: bool = False
     published_at: datetime | None = None
     expires_at: datetime | None = None
+    version: int = 1
     author_id: UUID
     author_name: str | None = None
     is_read: bool = False
     read_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class NoticeOverviewStatsResponse(BaseModel):
+    total: int
+    published: int
+    scheduled: int
+    draft: int
+    archived: int
+    emergency: int
 
 
 class PaginatedNoticesResponse(BaseModel):

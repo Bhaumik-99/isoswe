@@ -37,7 +37,7 @@
 | `RESIDENT` | Flat Memberships | View assigned unit details, view maintenance invoices, make payments, lodge complaints | Cannot access other resident units or administrative operations |
 | `HELPDESK` | Assigned Society | Complaint assignment and status, bank statement import, reconciliation review, read-only committee reporting | Cannot access another society; committee reporting is strictly read-only |
 
-The demo authorization model maintains strictly two application roles: `RESIDENT` and `HELPDESK`. Operational capabilities are enforced through granular permissions (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`, `BILLING_MANAGE`, `GATE_OPERATIONS`) stored explicitly in `user_permissions`. Gate operators holding only `GATE_OPERATIONS` are blocked from accessing billing, bank reconciliation, or helpdesk ticket management APIs (`403 INSUFFICIENT_PERMISSIONS`), and must additionally hold an active temporal `gate_assignments` record for the target gate.
+The demo authorization model maintains strictly two application roles: `RESIDENT` and `HELPDESK`. Operational capabilities are enforced through granular permissions (`COMPLAINT_MANAGE`, `BANK_IMPORT`, `RECONCILIATION_REVIEW`, `COMMITTEE_REPORT_READ`, `BILLING_MANAGE`, `GATE_OPERATIONS`, `COMMUNICATIONS_MANAGE`) stored explicitly in `user_permissions`. Gate operators holding only `GATE_OPERATIONS` are blocked from accessing billing, bank reconciliation, notice management, or helpdesk ticket management APIs (`403 INSUFFICIENT_PERMISSIONS`), and must additionally hold an active temporal `gate_assignments` record for the target gate.
 
 ### 2.4 Gate Operations, Guest Pass Cryptography & Visitor Photo Privacy (Phase 6)
 - **Guest Pass Salted Hashing & Row Locking**: Plaintext guest pass codes (`GP-XXXX`) are generated via `secrets` CSPRNG and returned only once at creation. Only a per-pass salt and SHA-256 hash (`salt_<code>`) are persisted. Redemptions execute inside `SELECT ... FOR UPDATE` row locks with per-gate brute-force rate limiting (5 failed attempts per 10-minute window -> `429 RATE_LIMIT_EXCEEDED`).
@@ -49,6 +49,16 @@ The demo authorization model maintains strictly two application roles: `RESIDENT
 - **Membership Type Eligibility**: Amenity configurations specify `allowed_membership_types` (e.g. `OWNER`, `TENANT`, `FAMILY_MEMBER`). Unauthorized membership roles are rejected with `403 MEMBERSHIP_TYPE_NOT_ALLOWED`.
 - **IDOR Protection**: Resident booking retrieval and cancellation endpoints strictly enforce ownership (`booking.user_id == claims.user_id`) and return `404 Not Found` when a resident attempts to access or mutate another resident's booking.
 - **Staff Override & Audit Logging**: Staff cancellations require `RoleType.HELPDESK` authorization and a mandatory audit reason, triggering automated 100% refund calculations and immutable `AuditEvent` records.
+
+### 2.6 Official Township Notices Access Control & Granular Permissions (Phase 9)
+- **Granular Staff Authorization**: All staff notice management endpoints (creation, update, publication, future scheduling, archiving, and scheduled publish worker triggering) require the explicit `COMMUNICATIONS_MANAGE` permission. Staff holding the generic `HELPDESK` role without this permission (such as gate-only guards) receive `403 Forbidden` (`INSUFFICIENT_PERMISSIONS`).
+- **Resident IDOR Prevention & Target Boundary Enforcement**: Resident individual notice detail retrieval (`GET /resident/notices/{id}`) and read receipts (`POST /resident/notices/{id}/read`) strictly enforce:
+  1. **Society Membership**: Resident must hold an active flat membership within the target society.
+  2. **Audience Predicates**: Notice must be society-wide (`SOCIETY`), or resident's flat/tower must match `target_tower_ids` or `target_flat_ids`.
+  3. **Publication Status**: Notice status must be `PUBLISHED`; draft or archived notices return `404 Not Found`.
+  4. **Temporal Validity**: Effective publication timestamp (`published_at <= now()`) and non-expired window (`expires_at is null or expires_at >= now()`).
+- **Scheduled Notice Protection**: Scheduled notices (`status == SCHEDULED`, `published_at > now`) are withheld from resident visibility and cannot prematurely trigger emergency outbox broadcasts or external SMS/email fan-out until their effective time.
+- **Publication Idempotency & Revision Integrity**: Monotonically increasing `version` sequences ensure version-scoped broadcast keys (`notice_publish:{id}:v{version}`, `notice_emergency:{id}:v{version}`) guaranteeing idempotent processing across retry cycles.
 
 ### 2.2 Flat-Level Access Control for Residents
 Residents can only query flat-level resources if:

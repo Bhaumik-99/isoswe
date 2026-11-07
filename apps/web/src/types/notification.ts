@@ -104,11 +104,23 @@ export type NoticeCategory =
   | 'MAINTENANCE'
   | 'EMERGENCY'
   | 'EVENT'
-  | 'GENERAL';
+  | 'GENERAL'
+  | 'WATER'
+  | 'ELECTRICITY'
+  | 'SECURITY';
 
 export type NoticePriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
-export type NoticeStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+export type NoticeStatus = 'DRAFT' | 'SCHEDULED' | 'PUBLISHED' | 'ARCHIVED';
 export type NoticeTargetType = 'SOCIETY' | 'TOWER' | 'FLAT';
+
+export interface NoticeOverviewStats {
+  total: number;
+  published: number;
+  scheduled: number;
+  draft: number;
+  archived: number;
+  emergency: number;
+}
 
 export interface NoticeItem {
   id: string;
@@ -130,6 +142,7 @@ export interface NoticeItem {
   is_pinned: boolean;
   published_at?: string | null;
   expires_at?: string | null;
+  version?: number;
   author_id: string;
   author_name?: string | null;
   is_read?: boolean;

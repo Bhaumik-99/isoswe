@@ -8,6 +8,7 @@ import {
   MarkReadResponse,
   NoticeCategory,
   NoticeItem,
+  NoticeOverviewStats,
   NoticeStatus,
   NoticeTargetingOptionsResponse,
   NoticeTargetType,
@@ -154,9 +155,36 @@ export const notificationService = {
     return apiClient.patch<MarkAllNoticesReadResponse>(`/api/v1/notifications/resident/notices/read-all${query}`);
   },
 
+  async getResidentNoticesUnreadCount(societyId?: string): Promise<{ unread_count: number }> {
+    const params = new URLSearchParams();
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.get<{ unread_count: number }>(`/api/v1/notifications/resident/notices/unread-count${query}`);
+  },
+
   // ---------------------------------------------------------------------------
   // Staff Official Notice Management
   // ---------------------------------------------------------------------------
+
+  async getStaffNoticesOverview(societyId?: string): Promise<NoticeOverviewStats> {
+    const params = new URLSearchParams();
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.get<NoticeOverviewStats>(`/api/v1/notifications/staff/notices/overview${query}`);
+  },
+
+  async triggerPublishScheduledNotices(societyId?: string): Promise<NoticeItem[]> {
+    const params = new URLSearchParams();
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.post<NoticeItem[]>(`/api/v1/notifications/staff/notices/publish-scheduled${query}`);
+  },
 
   async getStaffNotices(
     page = 1,

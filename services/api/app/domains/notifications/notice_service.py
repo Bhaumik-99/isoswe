@@ -45,6 +45,7 @@ from app.domains.notifications.schemas import (
     FlatOptionSchema,
     MarkAllNoticesReadResponse,
     MarkNoticeReadResponse,
+    NoticeOverviewStatsResponse,
     NoticeResponseSchema,
     NoticeTargetingOptionsResponse,
     PaginatedNoticesResponse,
@@ -391,15 +392,31 @@ class NoticeService:
             target_flat_id=req.target_flat_id,
         )
 
-        published_at = req.published_at
-        if req.status == NoticeStatus.PUBLISHED and published_at is None:
-            published_at = now
+        pub_at = ensure_utc(req.published_at)
+        target_status = req.status
+        published_at: datetime | None = None
 
-        if req.expires_at and published_at and req.expires_at <= published_at:
-            raise ValidationError(
-                code="INVALID_EXPIRY_DATE",
-                message="Notice expiry date must be strictly after the publication date.",
-            )
+        # If requested status is SCHEDULED
+        if target_status == NoticeStatus.SCHEDULED:
+            if not pub_at or pub_at <= now:
+                raise ValidationError(
+                    code="INVALID_SCHEDULE_TIME",
+                    message="Scheduled notices must have a future publication date and time strictly in the future.",
+                )
+            published_at = pub_at
+        elif target_status == NoticeStatus.PUBLISHED:
+            published_at = pub_at or now
+        else:
+            published_at = pub_at
+
+        if req.expires_at:
+            exp_at = ensure_utc(req.expires_at)
+            ref_pub = published_at or now
+            if exp_at and exp_at <= ref_pub:
+                raise ValidationError(
+                    code="INVALID_EXPIRY_DATE",
+                    message="Notice expiry date must be strictly after the publication date.",
+                )
 
         target_tower_id = val_tower_ids[0] if val_tower_ids else None
         target_flat_id = val_flat_ids[0] if val_flat_ids else None
@@ -411,7 +428,7 @@ class NoticeService:
             body=req.body.strip(),
             category=req.category,
             priority=req.priority,
-            status=req.status,
+            status=target_status,
             target_type=req.target_type,
             target_tower_id=target_tower_id,
             target_flat_id=target_flat_id,
@@ -420,6 +437,7 @@ class NoticeService:
             is_pinned=req.is_pinned,
             published_at=published_at,
             expires_at=req.expires_at,
+            version=1,
             author_id=author_id,
             created_at=now,
             updated_at=now,
@@ -449,10 +467,13 @@ class NoticeService:
             )
         self.db.flush()
 
+        audit_action = (
+            "NOTICE_SCHEDULED" if target_status == NoticeStatus.SCHEDULED else "NOTICE_CREATED"
+        )
         self._record_audit(
             society_id=society_id,
             actor_id=author_id,
-            action="NOTICE_CREATED",
+            action=audit_action,
             resource_id=str(notice.id),
             metadata={
                 "title": notice.title,
@@ -460,6 +481,8 @@ class NoticeService:
                 "category": notice.category.value,
                 "target_type": notice.target_type.value,
                 "is_pinned": notice.is_pinned,
+                "published_at": str(notice.published_at) if notice.published_at else None,
+                "version": notice.version,
             },
         )
 
@@ -470,8 +493,7 @@ class NoticeService:
         )
 
         # Effective-time scheduling: only deliver/broadcast if publication is effective now
-        pub_at = ensure_utc(notice.published_at)
-        is_effective = pub_at is None or pub_at <= now
+        is_effective = published_at is None or published_at <= now
 
         if notice.status == NoticeStatus.PUBLISHED and is_effective:
             if is_emergency:
@@ -488,7 +510,8 @@ class NoticeService:
                         "priority": notice.priority.value,
                         "target_type": notice.target_type.value,
                         "status": notice.status.value,
-                        "broadcast_key": f"notice_publish:{notice.id}",
+                        "version": notice.version,
+                        "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
                     },
                 )
 
@@ -552,7 +575,17 @@ class NoticeService:
         if req.priority is not None:
             notice.priority = req.priority
         if req.status is not None:
-            notice.status = req.status
+            if req.status == NoticeStatus.SCHEDULED:
+                target_pub = ensure_utc(req.published_at or notice.published_at)
+                if not target_pub or target_pub <= now:
+                    raise ValidationError(
+                        code="INVALID_SCHEDULE_TIME",
+                        message="Scheduled publication time must be strictly in the future.",
+                    )
+                notice.status = NoticeStatus.SCHEDULED
+                notice.published_at = target_pub
+            else:
+                notice.status = req.status
         if (
             req.target_type is not None
             or req.target_tower_ids is not None
@@ -601,9 +634,12 @@ class NoticeService:
         if req.is_pinned is not None:
             notice.is_pinned = req.is_pinned
         if req.published_at is not None:
-            notice.published_at = req.published_at
+            pub_at_req = ensure_utc(req.published_at)
+            notice.published_at = pub_at_req
+            if pub_at_req and pub_at_req > now and notice.status != NoticeStatus.DRAFT:
+                notice.status = NoticeStatus.SCHEDULED
         if req.expires_at is not None:
-            notice.expires_at = req.expires_at
+            notice.expires_at = ensure_utc(req.expires_at)
 
         # Transitioning to published
         if notice.status == NoticeStatus.PUBLISHED and not notice.published_at:
@@ -615,6 +651,7 @@ class NoticeService:
                 message="Notice expiry date must be strictly after the publication date.",
             )
 
+        notice.version = (notice.version or 1) + 1
         notice.updated_at = now
         self.db.flush()
 
@@ -628,10 +665,24 @@ class NoticeService:
                 "status": notice.status.value,
                 "category": notice.category.value,
                 "is_pinned": notice.is_pinned,
+                "version": notice.version,
             },
         )
 
-        # If transitioned from DRAFT to PUBLISHED or explicitly triggered emergency
+        if notice.status == NoticeStatus.SCHEDULED and prev_status != NoticeStatus.SCHEDULED:
+            self._record_audit(
+                society_id=society_id,
+                actor_id=actor_id,
+                action="NOTICE_SCHEDULED",
+                resource_id=str(notice.id),
+                metadata={
+                    "title": notice.title,
+                    "published_at": str(notice.published_at),
+                    "version": notice.version,
+                },
+            )
+
+        # If transitioned from DRAFT/SCHEDULED to PUBLISHED or explicitly triggered emergency
         is_emergency = (
             req.deliver_emergency
             or notice.category == NoticeCategory.EMERGENCY
@@ -647,7 +698,11 @@ class NoticeService:
                 actor_id=actor_id,
                 action="NOTICE_PUBLISHED",
                 resource_id=str(notice.id),
-                metadata={"title": notice.title, "published_at": str(notice.published_at)},
+                metadata={
+                    "title": notice.title,
+                    "published_at": str(notice.published_at),
+                    "version": notice.version,
+                },
             )
             if is_effective:
                 if is_emergency:
@@ -663,7 +718,8 @@ class NoticeService:
                             "category": notice.category.value,
                             "priority": notice.priority.value,
                             "target_type": notice.target_type.value,
-                            "broadcast_key": f"notice_publish:{notice.id}",
+                            "version": notice.version,
+                            "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
                         },
                     )
         elif is_emergency and req.deliver_emergency and is_effective:
@@ -703,9 +759,10 @@ class NoticeService:
         now = utc_now()
         notice.status = NoticeStatus.PUBLISHED
         pub_at = ensure_utc(notice.published_at)
-        if not pub_at or pub_at <= now:
+        if not pub_at or pub_at <= now or pub_at > now:
             notice.published_at = now
             pub_at = now
+        notice.version = (notice.version or 1) + 1
         notice.updated_at = now
         self.db.flush()
 
@@ -714,7 +771,11 @@ class NoticeService:
             actor_id=actor_id,
             action="NOTICE_PUBLISHED",
             resource_id=str(notice.id),
-            metadata={"title": notice.title, "published_at": str(notice.published_at)},
+            metadata={
+                "title": notice.title,
+                "published_at": str(notice.published_at),
+                "version": notice.version,
+            },
         )
 
         is_emergency = (
@@ -736,7 +797,8 @@ class NoticeService:
                         "category": notice.category.value,
                         "priority": notice.priority.value,
                         "target_type": notice.target_type.value,
-                        "broadcast_key": f"notice_publish:{notice.id}",
+                        "version": notice.version,
+                        "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
                     },
                 )
 
@@ -750,20 +812,23 @@ class NoticeService:
         """Activates and broadcasts scheduled notices whose published_at effective time has arrived."""
         now = utc_now()
         stmt = select(Notice).where(
-            Notice.status == NoticeStatus.PUBLISHED,
+            or_(
+                Notice.status == NoticeStatus.SCHEDULED,
+                Notice.status == NoticeStatus.PUBLISHED,
+            ),
             Notice.published_at.is_not(None),
+            Notice.published_at <= now,
         )
         if society_id:
             stmt = stmt.where(Notice.society_id == society_id)
 
-        all_pub = list(self.db.scalars(stmt).all())
-        notices: list[Notice] = []
-        for n in all_pub:
-            pub = ensure_utc(n.published_at)
-            if pub is not None and pub <= now:
-                notices.append(n)
+        # Skip locked rows in PostgreSQL for distributed worker concurrency protection
+        if self.db.bind and self.db.bind.dialect.name == "postgresql":
+            stmt = stmt.with_for_update(skip_locked=True)
+
+        due_notices = list(self.db.scalars(stmt).all())
         activated: list[NoticeResponseSchema] = []
-        for notice in notices:
+        for notice in due_notices:
             is_emergency = (
                 notice.category == NoticeCategory.EMERGENCY
                 or notice.priority == NoticePriority.URGENT
@@ -775,6 +840,26 @@ class NoticeService:
                     OutboxEvent.event_type == outbox_type,
                 )
             ).first()
+
+            if existing_outbox and notice.status == NoticeStatus.PUBLISHED:
+                continue
+
+            if notice.status == NoticeStatus.SCHEDULED:
+                notice.status = NoticeStatus.PUBLISHED
+                notice.version = (notice.version or 1) + 1
+                notice.updated_at = now
+                self._record_audit(
+                    society_id=notice.society_id,
+                    actor_id=notice.author_id,
+                    action="NOTICE_PUBLISHED",
+                    resource_id=str(notice.id),
+                    metadata={
+                        "title": notice.title,
+                        "published_at": str(notice.published_at),
+                        "scheduled_publication": True,
+                        "version": notice.version,
+                    },
+                )
 
             if not existing_outbox:
                 if is_emergency:
@@ -791,10 +876,11 @@ class NoticeService:
                             "priority": notice.priority.value,
                             "target_type": notice.target_type.value,
                             "status": notice.status.value,
-                            "broadcast_key": f"notice_publish:{notice.id}",
+                            "version": notice.version,
+                            "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
                         },
                     )
-                activated.append(self._to_schema(notice, is_read=False, read_at=None))
+            activated.append(self._to_schema(notice, is_read=False, read_at=None))
 
         if activated:
             self.db.commit()
@@ -812,8 +898,13 @@ class NoticeService:
         if not notice:
             raise ResourceNotFoundError(f"Notice {notice_id} not found.")
 
+        if notice.status == NoticeStatus.ARCHIVED:
+            return self._to_schema(notice, is_read=False, read_at=None)
+
+        now = utc_now()
         notice.status = NoticeStatus.ARCHIVED
-        notice.updated_at = utc_now()
+        notice.version = (notice.version or 1) + 1
+        notice.updated_at = now
         self.db.flush()
 
         self._record_audit(
@@ -821,18 +912,85 @@ class NoticeService:
             actor_id=actor_id,
             action="NOTICE_ARCHIVED",
             resource_id=str(notice.id),
-            metadata={"title": notice.title},
+            metadata={"title": notice.title, "version": notice.version},
         )
 
         self._enqueue_outbox(
             event_type="notice.archived",
             aggregate_id=str(notice.id),
-            payload={"notice_id": str(notice.id), "society_id": str(society_id)},
+            payload={
+                "notice_id": str(notice.id),
+                "society_id": str(society_id),
+                "version": notice.version,
+            },
         )
 
         self.db.commit()
         self.db.refresh(notice)
         return self._to_schema(notice, is_read=False, read_at=None)
+
+    def get_staff_notices_overview(self, society_id: uuid.UUID) -> NoticeOverviewStatsResponse:
+        """Provides high-level operational counts across notice statuses and emergency alerts."""
+        total = (
+            self.db.scalar(select(func.count(Notice.id)).where(Notice.society_id == society_id))
+            or 0
+        )
+        published = (
+            self.db.scalar(
+                select(func.count(Notice.id)).where(
+                    Notice.society_id == society_id,
+                    Notice.status == NoticeStatus.PUBLISHED,
+                )
+            )
+            or 0
+        )
+        scheduled = (
+            self.db.scalar(
+                select(func.count(Notice.id)).where(
+                    Notice.society_id == society_id,
+                    Notice.status == NoticeStatus.SCHEDULED,
+                )
+            )
+            or 0
+        )
+        draft = (
+            self.db.scalar(
+                select(func.count(Notice.id)).where(
+                    Notice.society_id == society_id,
+                    Notice.status == NoticeStatus.DRAFT,
+                )
+            )
+            or 0
+        )
+        archived = (
+            self.db.scalar(
+                select(func.count(Notice.id)).where(
+                    Notice.society_id == society_id,
+                    Notice.status == NoticeStatus.ARCHIVED,
+                )
+            )
+            or 0
+        )
+        emergency = (
+            self.db.scalar(
+                select(func.count(Notice.id)).where(
+                    Notice.society_id == society_id,
+                    or_(
+                        Notice.category == NoticeCategory.EMERGENCY,
+                        Notice.priority == NoticePriority.URGENT,
+                    ),
+                )
+            )
+            or 0
+        )
+        return NoticeOverviewStatsResponse(
+            total=total,
+            published=published,
+            scheduled=scheduled,
+            draft=draft,
+            archived=archived,
+            emergency=emergency,
+        )
 
     def get_notice(
         self,
@@ -1156,6 +1314,24 @@ class NoticeService:
         self.db.commit()
         return MarkAllNoticesReadResponse(marked_count=len(unread_ids), status="success")
 
+    def get_resident_unread_count(self, society_id: uuid.UUID, user_id: uuid.UUID) -> int:
+        """Returns the exact unread notice count for an active resident within their eligible scope."""
+        now = utc_now()
+        has_access, predicate = self._build_resident_notice_predicate(society_id, user_id, now)
+        if not has_access or predicate is None:
+            return 0
+
+        read_subq = select(NoticeRead.notice_id).where(NoticeRead.user_id == user_id).subquery()
+        unread_stmt = (
+            select(func.count(Notice.id))
+            .outerjoin(read_subq, read_subq.c.notice_id == Notice.id)
+            .where(
+                predicate,
+                read_subq.c.notice_id.is_(None),
+            )
+        )
+        return self.db.scalar(unread_stmt) or 0
+
     # -------------------------------------------------------------------------
     # Helper: Serialization & Dynamic Targeting Options
     # -------------------------------------------------------------------------
@@ -1235,6 +1411,7 @@ class NoticeService:
             is_pinned=notice.is_pinned,
             published_at=notice.published_at,
             expires_at=notice.expires_at,
+            version=getattr(notice, "version", 1),
             author_id=notice.author_id,
             author_name=author_name,
             is_read=is_read,

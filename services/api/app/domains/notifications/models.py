@@ -270,6 +270,9 @@ class NoticeCategory(str, enum.Enum):
     EMERGENCY = "EMERGENCY"
     EVENT = "EVENT"
     GENERAL = "GENERAL"
+    WATER = "WATER"
+    ELECTRICITY = "ELECTRICITY"
+    SECURITY = "SECURITY"
 
 
 class NoticePriority(str, enum.Enum):
@@ -281,6 +284,7 @@ class NoticePriority(str, enum.Enum):
 
 class NoticeStatus(str, enum.Enum):
     DRAFT = "DRAFT"
+    SCHEDULED = "SCHEDULED"
     PUBLISHED = "PUBLISHED"
     ARCHIVED = "ARCHIVED"
 
@@ -350,6 +354,7 @@ class Notice(Base):
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     author_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -385,6 +390,7 @@ class Notice(Base):
             "target_flat_id",
         ),
         Index("ix_notices_pinned_published", "society_id", "is_pinned", "published_at"),
+        Index("ix_notices_status_published_at", "status", "published_at"),
     )
 
 

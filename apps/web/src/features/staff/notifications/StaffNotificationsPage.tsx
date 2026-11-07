@@ -27,6 +27,7 @@ import {
   FlatOption,
   NoticeCategory,
   NoticeItem,
+  NoticeOverviewStats,
   NoticePriority,
   NoticeStatus,
   NoticeTargetType,
@@ -51,6 +52,8 @@ export const StaffNotificationsPage: React.FC = () => {
   const [noticePage, setNoticePage] = useState<number>(1);
   const [totalNoticePages, setTotalNoticePages] = useState<number>(1);
   const [totalNotices, setTotalNotices] = useState<number>(0);
+  const [overviewStats, setOverviewStats] = useState<NoticeOverviewStats | null>(null);
+  const [triggeringScheduled, setTriggeringScheduled] = useState<boolean>(false);
 
   // Notice Composer Modal State
   const [isComposerOpen, setIsComposerOpen] = useState<boolean>(false);
@@ -114,6 +117,15 @@ export const StaffNotificationsPage: React.FC = () => {
   const [deliveryPage, setDeliveryPage] = useState(1);
 
   // --- Fetch Notices ---
+  const loadOverview = useCallback(async () => {
+    try {
+      const stats = await notificationService.getStaffNoticesOverview();
+      setOverviewStats(stats);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
   const loadNotices = useCallback(async () => {
     setNoticesLoading(true);
     setNoticesError(null);
@@ -131,12 +143,27 @@ export const StaffNotificationsPage: React.FC = () => {
       setNotices(res.items);
       setTotalNotices(res.total);
       setTotalNoticePages(res.total_pages);
+      loadOverview();
     } catch {
       setNoticesError('Failed to load official notices. Please check network.');
     } finally {
       setNoticesLoading(false);
     }
-  }, [noticePage, noticeStatusFilter, noticeCategoryFilter, noticeSearch]);
+  }, [noticePage, noticeStatusFilter, noticeCategoryFilter, noticeSearch, loadOverview]);
+
+  const handleTriggerPublishScheduled = async () => {
+    setTriggeringScheduled(true);
+    try {
+      const res = await notificationService.triggerPublishScheduledNotices();
+      alert(`Scheduled notices processor: ${res.length} notice(s) published.`);
+      loadNotices();
+      loadOverview();
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to trigger scheduled publish');
+    } finally {
+      setTriggeringScheduled(false);
+    }
+  };
 
   // --- Fetch Deliveries ---
   const loadDeliveries = useCallback(async () => {
@@ -353,6 +380,12 @@ export const StaffNotificationsPage: React.FC = () => {
         return 'info';
       case 'MAINTENANCE':
         return 'warning';
+      case 'WATER':
+        return 'info';
+      case 'ELECTRICITY':
+        return 'warning';
+      case 'SECURITY':
+        return 'neutral';
       case 'EVENT':
         return 'success';
       default:
@@ -362,7 +395,8 @@ export const StaffNotificationsPage: React.FC = () => {
 
   const getNoticeStatusBadge = (status: NoticeStatus, publishedAt?: string | null) => {
     const isScheduled =
-      status === 'PUBLISHED' && publishedAt && new Date(publishedAt).getTime() > Date.now();
+      (status === 'PUBLISHED' && publishedAt && new Date(publishedAt).getTime() > Date.now()) ||
+      status === 'SCHEDULED';
 
     if (isScheduled) {
       return (
@@ -395,6 +429,8 @@ export const StaffNotificationsPage: React.FC = () => {
             <span>ARCHIVED</span>
           </Badge>
         );
+      default:
+        return <Badge variant="neutral">{status}</Badge>;
     }
   };
 
@@ -431,14 +467,28 @@ export const StaffNotificationsPage: React.FC = () => {
 
         <div className="flex items-center gap-3">
           {activeTab === 'NOTICES' && (
-            <Button
-              size="sm"
-              onClick={() => handleOpenComposer()}
-              className="gap-1.5 font-semibold text-xs shadow-xs"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Compose Notice</span>
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTriggerPublishScheduled}
+                disabled={triggeringScheduled}
+                className="flex items-center gap-1.5 text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border-amber-200"
+                title="Scan and publish due scheduled notices"
+              >
+                <Clock className={`h-3.5 w-3.5 ${triggeringScheduled ? 'animate-spin' : ''}`} />
+                <span>Process Due Scheduled</span>
+              </Button>
+
+              <Button
+                size="sm"
+                onClick={() => handleOpenComposer()}
+                className="gap-1.5 font-semibold text-xs shadow-xs"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Compose Notice</span>
+              </Button>
+            </>
           )}
 
           <Button
@@ -495,6 +545,34 @@ export const StaffNotificationsPage: React.FC = () => {
       {/* ========================================================================= */}
       {activeTab === 'NOTICES' && (
         <div className="space-y-4">
+          {/* 6 KPI Cards Overview */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Notices</span>
+              <p className="text-xl font-bold text-slate-900 mt-1">{overviewStats?.total ?? totalNotices}</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-emerald-600 uppercase tracking-wider">Published</span>
+              <p className="text-xl font-bold text-emerald-700 mt-1">{overviewStats?.published ?? 0}</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider">Scheduled</span>
+              <p className="text-xl font-bold text-amber-700 mt-1">{overviewStats?.scheduled ?? 0}</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider">Drafts</span>
+              <p className="text-xl font-bold text-slate-700 mt-1">{overviewStats?.draft ?? 0}</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Archived</span>
+              <p className="text-xl font-bold text-slate-500 mt-1">{overviewStats?.archived ?? 0}</p>
+            </div>
+            <div className="bg-white border border-rose-200 bg-rose-50/20 rounded-xl p-3 shadow-xs">
+              <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider">Emergencies</span>
+              <p className="text-xl font-bold text-rose-700 mt-1">{overviewStats?.emergency ?? 0}</p>
+            </div>
+          </div>
+
           {/* Filter & Search Bar */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
@@ -517,6 +595,7 @@ export const StaffNotificationsPage: React.FC = () => {
               >
                 <option value="ALL">All Statuses</option>
                 <option value="PUBLISHED">Published</option>
+                <option value="SCHEDULED">Scheduled</option>
                 <option value="DRAFT">Drafts</option>
                 <option value="ARCHIVED">Archived</option>
               </select>
@@ -530,6 +609,9 @@ export const StaffNotificationsPage: React.FC = () => {
                 <option value="ALL">All Categories</option>
                 <option value="CIRCULAR">Circular</option>
                 <option value="MAINTENANCE">Maintenance</option>
+                <option value="WATER">Water Supply</option>
+                <option value="ELECTRICITY">Electricity</option>
+                <option value="SECURITY">Security</option>
                 <option value="EMERGENCY">Emergency</option>
                 <option value="EVENT">Event</option>
                 <option value="GENERAL">General</option>
@@ -972,6 +1054,9 @@ export const StaffNotificationsPage: React.FC = () => {
                   >
                     <option value="CIRCULAR">Federation Circular</option>
                     <option value="MAINTENANCE">Maintenance Advisory</option>
+                    <option value="WATER">Water Supply Notice</option>
+                    <option value="ELECTRICITY">Electricity Advisory</option>
+                    <option value="SECURITY">Security Announcement</option>
                     <option value="EMERGENCY">Emergency Announcement</option>
                     <option value="EVENT">Community Event</option>
                     <option value="GENERAL">General Notice</option>
@@ -1360,15 +1445,27 @@ export const StaffNotificationsPage: React.FC = () => {
                   Save as Draft
                 </Button>
 
-                <Button
-                  size="sm"
-                  onClick={() => handleSaveNotice('PUBLISHED')}
-                  disabled={composerSubmitting}
-                  className="text-xs font-semibold gap-1"
-                >
-                  <Send className="h-3.5 w-3.5" />
-                  <span>{composerSubmitting ? 'Publishing...' : 'Publish Notice'}</span>
-                </Button>
+                {formData.published_at && new Date(formData.published_at).getTime() > Date.now() ? (
+                  <Button
+                    size="sm"
+                    onClick={() => handleSaveNotice('SCHEDULED')}
+                    disabled={composerSubmitting}
+                    className="text-xs font-semibold gap-1 bg-amber-600 hover:bg-amber-700 text-white"
+                  >
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>{composerSubmitting ? 'Scheduling...' : 'Schedule Publication'}</span>
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => handleSaveNotice('PUBLISHED')}
+                    disabled={composerSubmitting}
+                    className="text-xs font-semibold gap-1"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    <span>{composerSubmitting ? 'Publishing...' : 'Publish Notice'}</span>
+                  </Button>
+                )}
               </div>
             </div>
           </div>
