@@ -145,3 +145,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("notice_reads")
     op.drop_table("notices")
+
