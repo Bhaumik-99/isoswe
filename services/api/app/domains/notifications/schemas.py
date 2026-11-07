@@ -138,6 +138,7 @@ class CreateNoticeRequest(BaseModel):
     published_at: datetime | None = None
     expires_at: datetime | None = None
     deliver_emergency: bool = False
+    confirm_emergency_broadcast: bool = False
 
 
 class UpdateNoticeRequest(BaseModel):
@@ -155,6 +156,12 @@ class UpdateNoticeRequest(BaseModel):
     published_at: datetime | None = None
     expires_at: datetime | None = None
     deliver_emergency: bool | None = None
+    confirm_emergency_broadcast: bool | None = None
+
+
+class PublishNoticeRequest(BaseModel):
+    deliver_emergency: bool = False
+    confirm_emergency_broadcast: bool = False
 
 
 class NoticeResponseSchema(BaseSchema):
@@ -178,6 +185,7 @@ class NoticeResponseSchema(BaseSchema):
     published_at: datetime | None = None
     expires_at: datetime | None = None
     version: int = 1
+    deliver_emergency: bool = False
     author_id: UUID
     author_name: str | None = None
     is_read: bool = False

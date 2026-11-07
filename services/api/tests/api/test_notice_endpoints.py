@@ -193,6 +193,7 @@ def test_emergency_notice_broadcast_integration_api(
             "status": "PUBLISHED",
             "target_type": "SOCIETY",
             "deliver_emergency": True,
+            "confirm_emergency_broadcast": True,
         },
         headers=STAFF_HELPDESK_HEADERS,
     )
@@ -509,14 +510,24 @@ def test_gate_only_staff_forbidden_from_notice_mutations_api(
         )
         assert arch_res.status_code == 403
 
-        # E. Gate operator is permitted read-only inspection of notices
+        # E. Gate operator WITHOUT COMMUNICATIONS_MANAGE receives 403 on staff notice inspection
         list_res = client.get(f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}")
-        assert list_res.status_code == 200
+        assert list_res.status_code == 403
 
         detail_res = client.get(
             f"/api/v1/notifications/staff/notices/{notice_id}?society_id={SOCIETY_PUNE_ID}"
         )
-        assert detail_res.status_code == 200
+        assert detail_res.status_code == 403
+
+        overview_res = client.get(
+            f"/api/v1/notifications/staff/notices/overview?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert overview_res.status_code == 403
+
+        targeting_res = client.get(
+            f"/api/v1/notifications/staff/targeting-options?society_id={SOCIETY_PUNE_ID}"
+        )
+        assert targeting_res.status_code == 403
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -554,6 +565,7 @@ def test_future_scheduled_emergency_notice_api_not_delivered_early(
             "published_at": future_time,
             "target_type": "SOCIETY",
             "deliver_emergency": True,
+            "confirm_emergency_broadcast": True,
         },
         headers=STAFF_HELPDESK_HEADERS,
     )

@@ -49,6 +49,7 @@ from app.domains.notifications.schemas import (
     NoticeResponseSchema,
     NoticeTargetingOptionsResponse,
     PaginatedNoticesResponse,
+    PublishNoticeRequest,
     TowerOptionSchema,
     UpdateNoticeRequest,
 )
@@ -109,19 +110,50 @@ class NoticeService:
         aggregate_id: str,
         payload: dict[str, Any],
     ) -> OutboxEvent:
-        existing = self.db.scalars(
-            select(OutboxEvent).where(
-                OutboxEvent.aggregate_id == aggregate_id,
-                OutboxEvent.event_type == event_type,
-            )
-        ).first()
-        if existing:
-            logger.info(
-                "[NoticeService] Outbox event %s for aggregate %s already exists; skipping duplicate",
-                event_type,
-                aggregate_id,
-            )
-            return existing
+        broadcast_key = payload.get("broadcast_key")
+        version = payload.get("version")
+
+        existing_events = list(
+            self.db.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == aggregate_id,
+                    OutboxEvent.event_type == event_type,
+                )
+            ).all()
+        )
+
+        for existing in existing_events:
+            ev_payload = existing.payload if isinstance(existing.payload, dict) else {}
+            # If broadcast_key is supplied in payload, enforce version-scoped uniqueness on that broadcast_key
+            if broadcast_key and ev_payload.get("broadcast_key") == broadcast_key:
+                logger.info(
+                    "[NoticeService] Outbox event %s for aggregate %s with broadcast_key %s already exists; skipping duplicate",
+                    event_type,
+                    aggregate_id,
+                    broadcast_key,
+                )
+                return existing
+            # If version is supplied without broadcast_key, enforce uniqueness on version
+            if (
+                broadcast_key is None
+                and version is not None
+                and ev_payload.get("version") == version
+            ):
+                logger.info(
+                    "[NoticeService] Outbox event %s for aggregate %s version %s already exists; skipping duplicate",
+                    event_type,
+                    aggregate_id,
+                    version,
+                )
+                return existing
+            # Fallback for events with neither broadcast_key nor version
+            if not broadcast_key and version is None:
+                logger.info(
+                    "[NoticeService] Outbox event %s for aggregate %s already exists; skipping duplicate",
+                    event_type,
+                    aggregate_id,
+                )
+                return existing
 
         outbox = OutboxEvent(
             id=uuid.uuid4(),
@@ -263,30 +295,39 @@ class NoticeService:
 
     def _deliver_emergency_notice(self, notice: Notice) -> int:
         """Broadcasts emergency notice directly through the existing notification infrastructure with idempotency."""
-        broadcast_key = f"emergency_broadcast:{notice.id}"
-        # Idempotency guard: prevent duplicate emergency broadcast for the same notice
-        existing_outbox = self.db.scalars(
-            select(OutboxEvent).where(
-                OutboxEvent.aggregate_id == str(notice.id),
-                OutboxEvent.event_type == "notice.emergency_broadcast",
-            )
-        ).first()
-        if existing_outbox:
-            logger.info(
-                "Emergency notice %s has already been broadcast (key: %s); skipping duplicate delivery",
-                notice.id,
-                broadcast_key,
-            )
-            return 0
+        version_num = notice.version or 1
+        broadcast_key = f"notice_emergency:{notice.id}:v{version_num}"
+        # Idempotency guard: prevent duplicate emergency broadcast for the same notice version
+        existing_outbox_events = list(
+            self.db.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == str(notice.id),
+                    OutboxEvent.event_type == "notice.emergency_broadcast",
+                )
+            ).all()
+        )
+        for ev in existing_outbox_events:
+            ev_payload = ev.payload if isinstance(ev.payload, dict) else {}
+            if (
+                ev_payload.get("broadcast_key") == broadcast_key
+                or ev_payload.get("version") == version_num
+            ):
+                logger.info(
+                    "Emergency notice %s version %d has already been broadcast (key: %s); skipping duplicate delivery",
+                    notice.id,
+                    version_num,
+                    broadcast_key,
+                )
+                return 0
 
         residents = self._resolve_target_residents(notice)
         now = utc_now()
         delivered_count = 0
 
         for resident in residents:
-            delivery_key = f"in_app:{notice.id}:{resident.id}"
+            delivery_key = f"in_app:{notice.id}:v{version_num}:{resident.id}"
 
-            # Check if delivery record already exists for this resident and notice
+            # Check if delivery record already exists for this resident and notice version
             existing_deliv = self.db.scalars(
                 select(NotificationDelivery).where(
                     NotificationDelivery.idempotency_key == delivery_key
@@ -320,6 +361,7 @@ class NoticeService:
                     action_url="/resident/notices",
                     event_metadata={
                         "notice_id": str(notice.id),
+                        "version": version_num,
                         "category": notice.category.value,
                         "target_type": notice.target_type.value,
                         "is_emergency": True,
@@ -357,6 +399,7 @@ class NoticeService:
                 "category": notice.category.value,
                 "priority": notice.priority.value,
                 "target_type": notice.target_type.value,
+                "version": version_num,
                 "recipients_count": len(residents),
                 "broadcast_key": broadcast_key,
                 "published_at": notice.published_at.isoformat()
@@ -365,8 +408,9 @@ class NoticeService:
             },
         )
         logger.info(
-            "Delivered emergency notice %s to %d resident(s) with broadcast key %s",
+            "Delivered emergency notice %s version %d to %d resident(s) with broadcast key %s",
             notice.id,
+            version_num,
             delivered_count,
             broadcast_key,
         )
@@ -418,6 +462,19 @@ class NoticeService:
                     message="Notice expiry date must be strictly after the publication date.",
                 )
 
+        # Emergency broadcast confirmation gate:
+        # Category EMERGENCY or Priority URGENT alone MUST NOT trigger emergency delivery.
+        # Explicit confirmation (confirm_emergency_broadcast=True) is mandatory when deliver_emergency=True.
+        if req.deliver_emergency:
+            if not req.confirm_emergency_broadcast:
+                raise ValidationError(
+                    code="EMERGENCY_CONFIRMATION_REQUIRED",
+                    message="Emergency broadcast requires explicit confirmation (confirm_emergency_broadcast=True) before dispatching.",
+                )
+            deliver_emergency = True
+        else:
+            deliver_emergency = False
+
         target_tower_id = val_tower_ids[0] if val_tower_ids else None
         target_flat_id = val_flat_ids[0] if val_flat_ids else None
 
@@ -438,6 +495,7 @@ class NoticeService:
             published_at=published_at,
             expires_at=req.expires_at,
             version=1,
+            deliver_emergency=deliver_emergency,
             author_id=author_id,
             created_at=now,
             updated_at=now,
@@ -486,17 +544,11 @@ class NoticeService:
             },
         )
 
-        is_emergency = (
-            req.deliver_emergency
-            or notice.category == NoticeCategory.EMERGENCY
-            or notice.priority == NoticePriority.URGENT
-        )
-
         # Effective-time scheduling: only deliver/broadcast if publication is effective now
         is_effective = published_at is None or published_at <= now
 
         if notice.status == NoticeStatus.PUBLISHED and is_effective:
-            if is_emergency:
+            if notice.deliver_emergency:
                 self._deliver_emergency_notice(notice)
             else:
                 self._enqueue_outbox(
@@ -682,30 +734,35 @@ class NoticeService:
                 },
             )
 
-        # If transitioned from DRAFT/SCHEDULED to PUBLISHED or explicitly triggered emergency
-        is_emergency = (
-            req.deliver_emergency
-            or notice.category == NoticeCategory.EMERGENCY
-            or notice.priority == NoticePriority.URGENT
-        )
+        if req.deliver_emergency is not None:
+            if req.deliver_emergency:
+                if not req.confirm_emergency_broadcast:
+                    raise ValidationError(
+                        code="EMERGENCY_CONFIRMATION_REQUIRED",
+                        message="Emergency broadcast requires explicit confirmation (confirm_emergency_broadcast=True) before dispatching.",
+                    )
+                notice.deliver_emergency = True
+            else:
+                notice.deliver_emergency = False
 
         pub_at = ensure_utc(notice.published_at)
         is_effective = pub_at is None or pub_at <= now
 
-        if notice.status == NoticeStatus.PUBLISHED and prev_status != NoticeStatus.PUBLISHED:
-            self._record_audit(
-                society_id=society_id,
-                actor_id=actor_id,
-                action="NOTICE_PUBLISHED",
-                resource_id=str(notice.id),
-                metadata={
-                    "title": notice.title,
-                    "published_at": str(notice.published_at),
-                    "version": notice.version,
-                },
-            )
+        if notice.status == NoticeStatus.PUBLISHED:
+            if prev_status != NoticeStatus.PUBLISHED:
+                self._record_audit(
+                    society_id=society_id,
+                    actor_id=actor_id,
+                    action="NOTICE_PUBLISHED",
+                    resource_id=str(notice.id),
+                    metadata={
+                        "title": notice.title,
+                        "published_at": str(notice.published_at),
+                        "version": notice.version,
+                    },
+                )
             if is_effective:
-                if is_emergency:
+                if notice.deliver_emergency:
                     self._deliver_emergency_notice(notice)
                 else:
                     self._enqueue_outbox(
@@ -722,8 +779,6 @@ class NoticeService:
                             "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
                         },
                     )
-        elif is_emergency and req.deliver_emergency and is_effective:
-            self._deliver_emergency_notice(notice)
 
         self.db.commit()
         self.db.refresh(notice)
@@ -734,6 +789,7 @@ class NoticeService:
         society_id: uuid.UUID,
         actor_id: uuid.UUID,
         notice_id: uuid.UUID,
+        req: PublishNoticeRequest | None = None,
     ) -> NoticeResponseSchema:
         notice = self.db.scalars(
             select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
@@ -755,6 +811,14 @@ class NoticeService:
                 code="INVALID_STATUS_TRANSITION",
                 message="Cannot publish an archived notice.",
             )
+
+        if req and req.deliver_emergency:
+            if not req.confirm_emergency_broadcast:
+                raise ValidationError(
+                    code="EMERGENCY_CONFIRMATION_REQUIRED",
+                    message="Emergency broadcast requires explicit confirmation (confirm_emergency_broadcast=True) before dispatching.",
+                )
+            notice.deliver_emergency = True
 
         now = utc_now()
         notice.status = NoticeStatus.PUBLISHED
@@ -778,13 +842,10 @@ class NoticeService:
             },
         )
 
-        is_emergency = (
-            notice.category == NoticeCategory.EMERGENCY or notice.priority == NoticePriority.URGENT
-        )
         is_effective = pub_at is None or pub_at <= now
 
         if is_effective:
-            if is_emergency:
+            if notice.deliver_emergency:
                 self._deliver_emergency_notice(notice)
             else:
                 self._enqueue_outbox(
@@ -829,17 +890,26 @@ class NoticeService:
         due_notices = list(self.db.scalars(stmt).all())
         activated: list[NoticeResponseSchema] = []
         for notice in due_notices:
-            is_emergency = (
-                notice.category == NoticeCategory.EMERGENCY
-                or notice.priority == NoticePriority.URGENT
+            is_emergency = bool(notice.deliver_emergency)
+            version_num = notice.version or 1
+            broadcast_key = (
+                f"notice_emergency:{notice.id}:v{version_num}"
+                if is_emergency
+                else f"notice_publish:{notice.id}:v{version_num}"
             )
             outbox_type = "notice.emergency_broadcast" if is_emergency else "notice.published"
-            existing_outbox = self.db.scalars(
-                select(OutboxEvent).where(
-                    OutboxEvent.aggregate_id == str(notice.id),
-                    OutboxEvent.event_type == outbox_type,
-                )
-            ).first()
+            existing_outbox_events = list(
+                self.db.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.aggregate_id == str(notice.id),
+                        OutboxEvent.event_type == outbox_type,
+                    )
+                ).all()
+            )
+            existing_outbox = any(
+                isinstance(ev.payload, dict) and ev.payload.get("broadcast_key") == broadcast_key
+                for ev in existing_outbox_events
+            )
 
             if existing_outbox and notice.status == NoticeStatus.PUBLISHED:
                 continue
@@ -848,6 +918,12 @@ class NoticeService:
                 notice.status = NoticeStatus.PUBLISHED
                 notice.version = (notice.version or 1) + 1
                 notice.updated_at = now
+                version_num = notice.version
+                broadcast_key = (
+                    f"notice_emergency:{notice.id}:v{version_num}"
+                    if is_emergency
+                    else f"notice_publish:{notice.id}:v{version_num}"
+                )
                 self._record_audit(
                     society_id=notice.society_id,
                     actor_id=notice.author_id,
@@ -877,7 +953,7 @@ class NoticeService:
                             "target_type": notice.target_type.value,
                             "status": notice.status.value,
                             "version": notice.version,
-                            "broadcast_key": f"notice_publish:{notice.id}:v{notice.version}",
+                            "broadcast_key": broadcast_key,
                         },
                     )
             activated.append(self._to_schema(notice, is_read=False, read_at=None))
@@ -1412,6 +1488,7 @@ class NoticeService:
             published_at=notice.published_at,
             expires_at=notice.expires_at,
             version=getattr(notice, "version", 1),
+            deliver_emergency=getattr(notice, "deliver_emergency", False),
             author_id=notice.author_id,
             author_name=author_name,
             is_read=is_read,

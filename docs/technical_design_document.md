@@ -318,12 +318,15 @@ stateDiagram-v2
 - **Publication Versioning & Audit Trail**:
   - Monotonically increasing revision counter (`Notice.version = 1, 2, ...`).
   - Version-scoped broadcast idempotency keys (`notice_publish:{id}:v{version}`, `notice_emergency:{id}:v{version}`).
+  - Outbox deduplication checks both `aggregate_id` and payload `broadcast_key` / version, enabling notice edits to be republished with fresh outbox events while deduplicating exact replays.
+  - Multi-channel delivery idempotency keys (`in_app:{id}:v{version}:{resident_id}`, `email:{id}:v{version}:{resident_id}`, `sms:{id}:v{version}:{resident_id}`) guarantee accurate delivery fan-out per version.
+  - Emergency Broadcast Confirmation Gate: Dispatching emergency alerts (`deliver_emergency: true`) strictly requires affirmative confirmation (`confirm_emergency_broadcast: true`). Informational categorization as `EMERGENCY` or priority `URGENT` alone does not bypass user notification preferences.
   - Immutable audit logging on each state transition and edit (`NOTICE_CREATED`, `NOTICE_UPDATED`, `NOTICE_PUBLISHED`, `NOTICE_ARCHIVED`).
 - **Resident Security & Access Control**:
   - IDOR protection: Detail (`GET /resident/notices/{id}`) and read tracking (`POST /resident/notices/{id}/read`) strictly enforce membership in the target society, flat/tower targeting predicates, active `PUBLISHED` status, and publication time (`published_at <= now` and `expires_at >= now`).
   - Read receipts: Per-resident read tracking with `POST /resident/notices/read-all` and unread badge count (`GET /resident/notices/unread-count`).
 - **Staff Operations & Analytics**:
-  - Protected by dedicated `COMMUNICATIONS_MANAGE` permission; gate-only operators receiving HTTP 403 Forbidden.
+  - Protected by dedicated `COMMUNICATIONS_MANAGE` permission across all endpoints (notices list, detail, overview statistics, dynamic towers and flats targeting directories); gate-only operators holding only `GATE_OPERATIONS` receive HTTP 403 Forbidden.
   - KPI overview metrics (`GET /staff/notices/overview`): Total, Published, Scheduled, Drafts, Archived, and Emergency notices.
   - Manual processing endpoint (`POST /staff/notices/publish-scheduled`) for immediate administrator triggering.
 - **Trilingual Internationalization**:

@@ -465,6 +465,7 @@ def test_emergency_notice_delivery_via_existing_infrastructure(
         target_type=NoticeTargetType.TOWER,
         target_tower_id=tow1_id,
         deliver_emergency=True,
+        confirm_emergency_broadcast=True,
     )
     notice = svc.create_notice(society_id=soc_id, author_id=staff_id, req=emergency_req)
 
@@ -763,6 +764,7 @@ def test_future_scheduled_emergency_notice_not_delivered_early(
         target_type=NoticeTargetType.TOWER,
         target_tower_id=tow1_id,
         deliver_emergency=True,
+        confirm_emergency_broadcast=True,
     )
     notice = svc.create_notice(society_id=soc_id, author_id=staff_id, req=emergency_req)
 
@@ -827,7 +829,9 @@ def test_future_scheduled_emergency_notice_not_delivered_early(
         )
     ).first()
     assert outbox_after is not None
-    assert outbox_after.payload["broadcast_key"] == f"emergency_broadcast:{notice.id}"
+    assert (
+        outbox_after.payload["broadcast_key"] == f"notice_emergency:{notice.id}:v{notice.version}"
+    )
 
 
 def test_publish_notice_state_transition_and_repeated_requests_idempotency(
@@ -922,6 +926,8 @@ def test_publish_notice_state_transition_and_repeated_requests_idempotency(
             status=NoticeStatus.DRAFT,
             target_type=NoticeTargetType.TOWER,
             target_tower_id=tow1_id,
+            deliver_emergency=True,
+            confirm_emergency_broadcast=True,
         ),
     )
 
@@ -987,10 +993,11 @@ def test_idempotent_emergency_broadcast_keys(
             target_type=NoticeTargetType.TOWER,
             target_tower_id=tow1_id,
             deliver_emergency=True,
+            confirm_emergency_broadcast=True,
         ),
     )
 
-    expected_broadcast_key = f"emergency_broadcast:{notice.id}"
+    expected_broadcast_key = f"notice_emergency:{notice.id}:v{notice.version}"
 
     # Check broadcast key in outbox event payload
     outbox = db_session.scalars(
@@ -1005,7 +1012,8 @@ def test_idempotent_emergency_broadcast_keys(
     # Check notification delivery idempotency key
     delivery = db_session.scalars(
         select(NotificationDelivery).where(
-            NotificationDelivery.idempotency_key == f"in_app:{notice.id}:{res1_id}"
+            NotificationDelivery.idempotency_key
+            == f"in_app:{notice.id}:v{notice.version}:{res1_id}"
         )
     ).first()
     assert delivery is not None
@@ -1126,6 +1134,7 @@ def test_multi_tower_targeting_broadcast_and_society_validation(
             target_type=NoticeTargetType.TOWER,
             target_tower_ids=[tow1_id, tow2_id],
             deliver_emergency=True,
+            confirm_emergency_broadcast=True,
         ),
     )
 
@@ -1594,3 +1603,184 @@ def test_expanded_utility_categories_water_electricity_security(
         ),
     )
     assert n_sec.category == NoticeCategory.SECURITY
+
+
+def test_version_based_notification_idempotency_and_republish(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that editing a published notice increments version and allows republishing
+
+    with version-scoped broadcast keys and outbox deduplication.
+    """
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+
+    # 1. Create and publish initial notice (version 1)
+    notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Scheduled Water Tank Cleaning",
+            body="Cleaning will occur from 9 AM to 12 PM.",
+            category=NoticeCategory.WATER,
+            priority=NoticePriority.NORMAL,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    assert notice.version == 1
+
+    # Check that outbox event exists for v1
+    v1_outbox = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(notice.id),
+                OutboxEvent.event_type == "notice.published",
+            )
+        ).all()
+    )
+    assert len(v1_outbox) == 1
+    assert v1_outbox[0].payload.get("version") == 1
+    assert v1_outbox[0].payload.get("broadcast_key") == f"notice_publish:{notice.id}:v1"
+
+    # Repeated publish of v1 must be idempotent and NOT emit duplicate outbox event
+    pub_result_v1 = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=notice.id)
+    assert pub_result_v1.version == 1
+    v1_outbox_repeat = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(notice.id),
+                OutboxEvent.event_type == "notice.published",
+            )
+        ).all()
+    )
+    assert len(v1_outbox_repeat) == 1, "Duplicate publish must not create duplicate outbox event"
+
+    # 2. Update notice (version increments to 2)
+    updated_notice = svc.update_notice(
+        society_id=soc_id,
+        actor_id=staff_id,
+        notice_id=notice.id,
+        req=UpdateNoticeRequest(
+            body="REVISED: Cleaning extended until 2 PM due to pump maintenance.",
+        ),
+    )
+    assert updated_notice.version == 2
+
+    # Check that updating a published notice enqueued a new outbox event for v2
+    all_outbox = list(
+        db_session.scalars(
+            select(OutboxEvent)
+            .where(
+                OutboxEvent.aggregate_id == str(notice.id),
+                OutboxEvent.event_type == "notice.published",
+            )
+            .order_by(OutboxEvent.created_at.asc())
+        ).all()
+    )
+    assert len(all_outbox) == 2
+    assert all_outbox[1].payload.get("version") == 2
+    assert all_outbox[1].payload.get("broadcast_key") == f"notice_publish:{notice.id}:v2"
+
+
+def test_emergency_notice_requires_explicit_confirmation_gate(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that emergency broadcasts strictly require deliver_emergency AND confirm_emergency_broadcast.
+
+    Category EMERGENCY or priority URGENT alone must NOT trigger emergency alerts.
+    """
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+
+    # 1. Notice with category EMERGENCY and priority URGENT, but deliver_emergency=False
+    # Must create a standard notice, NOT dispatch emergency alerts
+    regular_emg = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Fire Drill Post-Mortem Notes",
+            body="Informational notes on yesterday's drill.",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+            deliver_emergency=False,
+        ),
+    )
+    assert regular_emg.deliver_emergency is False
+
+    # Outbox should have notice.published, NOT notice.emergency_broadcast
+    outbox_reg = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(regular_emg.id),
+            )
+        ).all()
+    )
+    assert len(outbox_reg) == 1
+    assert outbox_reg[0].event_type == "notice.published"
+
+    # In-app notifications generated by notice.emergency should be 0
+    emg_notifs = list(
+        db_session.scalars(
+            select(Notification).where(
+                Notification.aggregate_id.like(f"{regular_emg.id}%"),
+                Notification.event_type == "notice.emergency",
+            )
+        ).all()
+    )
+    assert len(emg_notifs) == 0
+
+    # 2. deliver_emergency=True WITHOUT confirm_emergency_broadcast must raise ValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        svc.create_notice(
+            society_id=soc_id,
+            author_id=staff_id,
+            req=CreateNoticeRequest(
+                title="UNCONFIRMED EVACUATION ALERT",
+                body="Immediate evacuation.",
+                category=NoticeCategory.EMERGENCY,
+                priority=NoticePriority.URGENT,
+                status=NoticeStatus.PUBLISHED,
+                target_type=NoticeTargetType.TOWER,
+                target_tower_id=tow1_id,
+                deliver_emergency=True,
+                confirm_emergency_broadcast=False,
+            ),
+        )
+    assert exc_info.value.code == "EMERGENCY_CONFIRMATION_REQUIRED"
+
+    # 3. deliver_emergency=True WITH confirm_emergency_broadcast=True must succeed
+    confirmed_emg = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="AUTHORIZED GAS LEAK EVACUATION",
+            body="Immediate evacuation authorized by Chief Fire Officer.",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+            deliver_emergency=True,
+            confirm_emergency_broadcast=True,
+        ),
+    )
+    assert confirmed_emg.deliver_emergency is True
+
+    # Emergency outbox event should be enqueued
+    outbox_emg = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(confirmed_emg.id),
+                OutboxEvent.event_type == "notice.emergency_broadcast",
+            )
+        ).all()
+    )
+    assert len(outbox_emg) == 1
+    assert outbox_emg[0].payload.get("broadcast_key") == f"notice_emergency:{confirmed_emg.id}:v1"

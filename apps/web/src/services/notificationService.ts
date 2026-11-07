@@ -15,6 +15,7 @@ import {
   NotificationPreferences,
   PaginatedNotices,
   PaginatedNotifications,
+  PublishNoticePayload,
   StaffNotificationOverview,
   TowerOption,
   UnreadCountResponse,
@@ -248,13 +249,27 @@ export const notificationService = {
     return apiClient.put<NoticeItem>(`/api/v1/notifications/staff/notices/${noticeId}${query}`, payload);
   },
 
-  async publishStaffNotice(noticeId: string, societyId?: string): Promise<NoticeItem> {
+  async publishStaffNotice(
+    noticeId: string,
+    payloadOrSocietyId?: PublishNoticePayload | string,
+    societyId?: string
+  ): Promise<NoticeItem> {
+    let payload: PublishNoticePayload | undefined;
+    let socId = societyId;
+    if (typeof payloadOrSocietyId === 'string') {
+      socId = payloadOrSocietyId;
+    } else if (payloadOrSocietyId && typeof payloadOrSocietyId === 'object') {
+      payload = payloadOrSocietyId;
+    }
     const params = new URLSearchParams();
-    if (societyId) {
-      params.append('society_id', societyId);
+    if (socId) {
+      params.append('society_id', socId);
     }
     const query = params.toString() ? `?${params.toString()}` : '';
-    return apiClient.post<NoticeItem>(`/api/v1/notifications/staff/notices/${noticeId}/publish${query}`);
+    const url = `/api/v1/notifications/staff/notices/${noticeId}/publish${query}`;
+    return payload !== undefined
+      ? apiClient.post<NoticeItem>(url, payload)
+      : apiClient.post<NoticeItem>(url);
   },
 
   async archiveStaffNotice(noticeId: string, societyId?: string): Promise<NoticeItem> {

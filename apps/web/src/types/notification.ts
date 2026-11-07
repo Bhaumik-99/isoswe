@@ -143,6 +143,7 @@ export interface NoticeItem {
   published_at?: string | null;
   expires_at?: string | null;
   version?: number;
+  deliver_emergency?: boolean;
   author_id: string;
   author_name?: string | null;
   is_read?: boolean;
@@ -175,6 +176,7 @@ export interface CreateNoticePayload {
   published_at?: string | null;
   expires_at?: string | null;
   deliver_emergency?: boolean;
+  confirm_emergency_broadcast?: boolean;
 }
 
 export interface UpdateNoticePayload {
@@ -192,6 +194,12 @@ export interface UpdateNoticePayload {
   published_at?: string | null;
   expires_at?: string | null;
   deliver_emergency?: boolean;
+  confirm_emergency_broadcast?: boolean;
+}
+
+export interface PublishNoticePayload {
+  deliver_emergency?: boolean;
+  confirm_emergency_broadcast?: boolean;
 }
 
 export interface TowerOption {

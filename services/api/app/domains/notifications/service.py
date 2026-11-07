@@ -32,7 +32,6 @@ from app.domains.identity.models import (
 from app.domains.notifications.models import (
     DeliveryStatus,
     Notice,
-    NoticeCategory,
     NoticePriority,
     NoticeTargetType,
     Notification,
@@ -353,11 +352,12 @@ class NotificationService:
         base_event_id: uuid.UUID | None = None,
         is_suppressed: bool = False,
         suppression_reason: str | None = None,
+        custom_idempotency_key: str | None = None,
     ) -> NotificationDelivery:
         """Dispatches external transactional email with idempotency and state machine tracking."""
         now = utc_now()
         event_ref = base_event_id or notification.id
-        idempotency_key = f"email:{event_ref}:{recipient.id}"
+        idempotency_key = custom_idempotency_key or f"email:{event_ref}:{recipient.id}"
 
         # 1. Idempotency Check
         existing = self.db.scalars(
@@ -453,11 +453,12 @@ class NotificationService:
         base_event_id: uuid.UUID | None = None,
         is_suppressed: bool = False,
         suppression_reason: str | None = None,
+        custom_idempotency_key: str | None = None,
     ) -> NotificationDelivery:
         """Dispatches external transactional SMS with idempotency and state machine tracking."""
         now = utc_now()
         event_ref = base_event_id or notification.id
-        idempotency_key = f"sms:{event_ref}:{recipient.id}"
+        idempotency_key = custom_idempotency_key or f"sms:{event_ref}:{recipient.id}"
 
         existing = self.db.scalars(
             select(NotificationDelivery).where(
@@ -1133,18 +1134,12 @@ class NotificationService:
 
             notice_id = uuid.UUID(str(notice_id_raw))
             notice = self.db.get(Notice, notice_id)
+            version_val = int(payload.get("version") or (notice.version if notice else 1))
 
             is_emergency = (
                 event_type == "notice.emergency_broadcast"
-                or (
-                    notice is not None
-                    and (
-                        notice.category == NoticeCategory.EMERGENCY
-                        or notice.priority == NoticePriority.URGENT
-                    )
-                )
-                or payload.get("category") == NoticeCategory.EMERGENCY.value
-                or payload.get("priority") == NoticePriority.URGENT.value
+                or bool(payload.get("deliver_emergency"))
+                or (notice is not None and getattr(notice, "deliver_emergency", False))
             )
 
             priority = (
@@ -1152,8 +1147,9 @@ class NotificationService:
                 if is_emergency
                 else (
                     NotificationPriority.HIGH
-                    if (notice and notice.priority == NoticePriority.HIGH)
-                    or payload.get("priority") == NoticePriority.HIGH.value
+                    if (notice and notice.priority in (NoticePriority.HIGH, NoticePriority.URGENT))
+                    or payload.get("priority")
+                    in (NoticePriority.HIGH.value, NoticePriority.URGENT.value)
                     else (
                         NotificationPriority.LOW
                         if (notice and notice.priority == NoticePriority.LOW)
@@ -1249,6 +1245,7 @@ class NotificationService:
                         action_url="/resident/notices",
                         event_metadata={
                             "notice_id": str(notice_id),
+                            "version": version_val,
                             "category": category_val,
                             "is_emergency": is_emergency,
                         },
@@ -1272,7 +1269,7 @@ class NotificationService:
                             channel=NotificationChannel.IN_APP,
                             provider="in_app",
                             status=DeliveryStatus.DELIVERED,
-                            idempotency_key=f"in_app:{notice_id}:{resident.id}",
+                            idempotency_key=f"in_app:{notice_id}:v{version_val}:{resident.id}",
                             delivered_at=utc_now(),
                             created_at=utc_now(),
                             updated_at=utc_now(),
@@ -1294,6 +1291,7 @@ class NotificationService:
                         "https://marvelgreenfield.com/resident/notices\n\n"
                         "Township Management"
                     )
+                    email_key = f"email:{notice_id}:v{version_val}:{resident.id}"
                     self.dispatch_email_delivery(
                         notification=notice_notif,
                         recipient=resident,
@@ -1302,6 +1300,7 @@ class NotificationService:
                         base_event_id=notice_id,
                         is_suppressed=not perm_email,
                         suppression_reason=reason_email,
+                        custom_idempotency_key=email_key,
                     )
 
                     # 2. External SMS delivery
@@ -1310,6 +1309,7 @@ class NotificationService:
                         if is_emergency
                         else f"Notice: {title_val}. Details: https://marvelgreenfield.com/resident/notices"
                     )
+                    sms_key = f"sms:{notice_id}:v{version_val}:{resident.id}"
                     self.dispatch_sms_delivery(
                         notification=notice_notif,
                         recipient=resident,
@@ -1317,6 +1317,7 @@ class NotificationService:
                         base_event_id=notice_id,
                         is_suppressed=not perm_sms,
                         suppression_reason=reason_sms,
+                        custom_idempotency_key=sms_key,
                     )
 
         return created_count

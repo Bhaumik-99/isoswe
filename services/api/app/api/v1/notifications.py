@@ -38,6 +38,7 @@ from app.domains.notifications.schemas import (
     NotificationPreferenceSchema,
     PaginatedNoticesResponse,
     PaginatedNotificationsResponse,
+    PublishNoticeRequest,
     StaffNotificationOverviewResponse,
     TowerOptionSchema,
     UnreadCountResponse,
@@ -341,7 +342,9 @@ def mark_all_resident_notices_read(
     summary="Load towers and flats dynamically for notice composer",
 )
 def get_notice_targeting_options(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeTargetingOptionsResponse:
@@ -356,7 +359,9 @@ def get_notice_targeting_options(
     summary="List all towers in society dynamically for notice targeting",
 )
 def list_society_towers(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> list[TowerOptionSchema]:
@@ -371,7 +376,9 @@ def list_society_towers(
     summary="List flats in society dynamically for notice targeting",
 )
 def list_society_flats(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     tower_id: UUID | None = Query(None, description="Optional tower filter"),
     search: str | None = Query(None, description="Optional flat number search"),
@@ -394,7 +401,9 @@ def list_society_flats(
     summary="List all official notices with management filters for staff",
 )
 def list_staff_notices(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     status: NoticeStatus | None = Query(None, description="Filter by notice status"),
@@ -446,7 +455,9 @@ def create_staff_notice(
     summary="Overview counts across official notice statuses and emergency announcements",
 )
 def get_staff_notices_overview(
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeOverviewStatsResponse:
@@ -462,7 +473,9 @@ def get_staff_notices_overview(
 )
 def get_staff_notice_detail(
     notice_id: UUID,
-    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    claims: Annotated[
+        CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
+    ],
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:
@@ -508,6 +521,7 @@ def publish_staff_notice(
     claims: Annotated[
         CurrentUserClaims, Depends(require_permissions(Permission.COMMUNICATIONS_MANAGE))
     ],
+    payload: PublishNoticeRequest | None = None,
     society_id: UUID | None = Query(None, description="Optional society filter"),
     db: Session = Depends(get_db),
 ) -> NoticeResponseSchema:
@@ -517,6 +531,7 @@ def publish_staff_notice(
         society_id=target_society,
         actor_id=claims.user_id,
         notice_id=notice_id,
+        req=payload,
     )
 
 

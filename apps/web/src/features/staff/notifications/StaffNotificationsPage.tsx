@@ -85,6 +85,7 @@ export const StaffNotificationsPage: React.FC = () => {
     published_at: string;
     expires_at: string;
     deliver_emergency: boolean;
+    confirm_emergency_broadcast: boolean;
   }>({
     title: '',
     body: '',
@@ -100,6 +101,7 @@ export const StaffNotificationsPage: React.FC = () => {
     published_at: '',
     expires_at: '',
     deliver_emergency: false,
+    confirm_emergency_broadcast: false,
   });
 
   // --- Delivery Overview State ---
@@ -243,7 +245,8 @@ export const StaffNotificationsPage: React.FC = () => {
         publish_now: noticeToEdit.status === 'PUBLISHED',
         published_at: noticeToEdit.published_at ? noticeToEdit.published_at.slice(0, 16) : '',
         expires_at: noticeToEdit.expires_at ? noticeToEdit.expires_at.slice(0, 16) : '',
-        deliver_emergency: false,
+        deliver_emergency: !!noticeToEdit.deliver_emergency,
+        confirm_emergency_broadcast: false,
       });
     } else {
       setEditingNotice(null);
@@ -262,6 +265,7 @@ export const StaffNotificationsPage: React.FC = () => {
         published_at: '',
         expires_at: '',
         deliver_emergency: false,
+        confirm_emergency_broadcast: false,
       });
     }
     setComposerError(null);
@@ -307,6 +311,11 @@ export const StaffNotificationsPage: React.FC = () => {
       }
     }
 
+    if (formData.deliver_emergency && !formData.confirm_emergency_broadcast) {
+      setComposerError('Explicit confirmation is required before dispatching an emergency broadcast.');
+      return;
+    }
+
     setComposerSubmitting(true);
     setComposerError(null);
 
@@ -331,6 +340,7 @@ export const StaffNotificationsPage: React.FC = () => {
       published_at: formData.published_at ? new Date(formData.published_at).toISOString() : null,
       expires_at: formData.expires_at ? new Date(formData.expires_at).toISOString() : null,
       deliver_emergency: formData.deliver_emergency,
+      confirm_emergency_broadcast: formData.confirm_emergency_broadcast,
     };
 
     try {
@@ -350,9 +360,24 @@ export const StaffNotificationsPage: React.FC = () => {
   };
 
   // --- Publish Notice Action ---
-  const handlePublishNotice = async (noticeId: string) => {
+  const handlePublishNotice = async (notice: NoticeItem) => {
+    let payload: { deliver_emergency?: boolean; confirm_emergency_broadcast?: boolean } | undefined;
+    if (notice.deliver_emergency) {
+      const confirmed = window.confirm(
+        '⚠️ EMERGENCY BROADCAST CONFIRMATION:\n\n' +
+        'This notice has emergency delivery enabled. Publishing will trigger an immediate emergency notification broadcast to all targeted residents.\n\n' +
+        'Do you confirm this emergency broadcast?'
+      );
+      if (!confirmed) {
+        return;
+      }
+      payload = {
+        deliver_emergency: true,
+        confirm_emergency_broadcast: true,
+      };
+    }
     try {
-      await notificationService.publishStaffNotice(noticeId);
+      await notificationService.publishStaffNotice(notice.id, payload);
       loadNotices();
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Failed to publish notice');
@@ -748,7 +773,7 @@ export const StaffNotificationsPage: React.FC = () => {
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => handlePublishNotice(n.id)}
+                              onClick={() => handlePublishNotice(n)}
                               className="h-7 px-2 text-xs font-semibold text-emerald-600 hover:text-emerald-800"
                               title="Publish Now"
                             >
@@ -1046,8 +1071,6 @@ export const StaffNotificationsPage: React.FC = () => {
                       setFormData({
                         ...formData,
                         category: e.target.value as NoticeCategory,
-                        deliver_emergency:
-                          e.target.value === 'EMERGENCY' ? true : formData.deliver_emergency,
                       })
                     }
                     className="w-full text-xs sm:text-sm px-3 py-2 rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -1411,7 +1434,11 @@ export const StaffNotificationsPage: React.FC = () => {
                     type="checkbox"
                     checked={formData.deliver_emergency}
                     onChange={(e) =>
-                      setFormData({ ...formData, deliver_emergency: e.target.checked })
+                      setFormData({
+                        ...formData,
+                        deliver_emergency: e.target.checked,
+                        confirm_emergency_broadcast: e.target.checked ? formData.confirm_emergency_broadcast : false,
+                      })
                     }
                     className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 h-4 w-4"
                   />
@@ -1419,6 +1446,27 @@ export const StaffNotificationsPage: React.FC = () => {
                     <Flame className="h-3.5 w-3.5 text-rose-600" /> Dispatch immediate emergency notification & outbox broadcast to all targeted residents
                   </span>
                 </label>
+
+                {formData.deliver_emergency && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg space-y-2 mt-2">
+                    <p className="text-xs text-rose-800 font-medium">
+                      ⚠️ <strong>Emergency Confirmation Gate:</strong> This notice will trigger mandatory multi-channel broadcasts bypassing normal resident mute preferences. Please explicitly confirm this broadcast.
+                    </p>
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formData.confirm_emergency_broadcast}
+                        onChange={(e) =>
+                          setFormData({ ...formData, confirm_emergency_broadcast: e.target.checked })
+                        }
+                        className="rounded border-rose-400 text-rose-600 focus:ring-rose-500 h-4 w-4"
+                      />
+                      <span className="text-xs font-bold text-rose-900">
+                        I confirm this is an authentic emergency broadcast authorized for immediate dispatch.
+                      </span>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
 

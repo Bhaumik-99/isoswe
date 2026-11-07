@@ -274,7 +274,14 @@ All booking creations, confirmations, cancellations, and payment failures emit t
 - **Deduplication & Version-Scoped Idempotency**:
   - Each notice maintains a monotonically increasing `version` sequence incremented on every publish or content update.
   - Outbox broadcast events carry deterministic, version-scoped broadcast keys: `notice_publish:{id}:v{version}` and `notice_emergency:{id}:v{version}`.
-  - Worker execution idempotently checks existing outbox events to prevent duplicate fan-outs.
+  - `_enqueue_outbox()` inspects the payload's `broadcast_key` and version to allow updated notice versions to emit new outbox events while deduplicating exact version replays.
+  - Delivery idempotency keys (`in_app:{id}:v{version}:{resident_id}`, `email:{id}:v{version}:{resident_id}`, `sms:{id}:v{version}:{resident_id}`) guarantee that each resident receives only one delivery attempt per channel per notice version.
+- **Emergency Broadcast Confirmation Gate**:
+  - Notices with category `EMERGENCY` or priority `URGENT` provide visual alert classification, but immediate broadcast dispatch requires an explicit action flag (`deliver_emergency: true`) paired with a mandatory confirmation gate (`confirm_emergency_broadcast: true`).
+  - Unconfirmed emergency broadcasts fail fast with `422 Unprocessable Entity` (`EMERGENCY_CONFIRMATION_REQUIRED`), preventing accidental township-wide alert blasts.
+- **Granular Staff Authorization**:
+  - All staff notice endpoints—including listing, detail, overview statistics, and dynamic targeting directories—are protected by `require_permissions(Permission.COMMUNICATIONS_MANAGE)`.
+  - Gate-only personnel possessing `RoleType.HELPDESK` and `Permission.GATE_OPERATIONS` receive `403 Forbidden` (`INSUFFICIENT_PERMISSIONS`) on all notice endpoints.
 
 ### 9.3 Notification Worker Integration & Multi-Channel Fan-Out
 - **Event Subscriptions**: The background notification worker (`NotificationHandler`) subscribes directly to `notice.published` and `notice.emergency_broadcast`.
