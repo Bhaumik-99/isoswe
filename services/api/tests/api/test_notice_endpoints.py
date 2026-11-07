@@ -10,6 +10,7 @@ Validates:
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -226,3 +227,199 @@ def test_cross_society_access_denied(client: TestClient, db_session: Session) ->
         headers=STAFF_HELPDESK_HEADERS,
     )
     assert res.status_code == 403
+
+
+def test_resident_notice_access_control_idor_and_status_enforcement_api(
+    client: TestClient, db_session: Session
+) -> None:
+    now = datetime.now(UTC)
+    tower_12_id = "22222222-2222-2222-2222-222222222212"  # Swati's tower
+    flat_0408_id = "33333333-3333-3333-3333-333333330408"  # Swati's flat
+
+    # 1. Staff creates draft notice
+    r_draft = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Secret Committee Draft Notice",
+            "body": "Draft circular body.",
+            "category": "GENERAL",
+            "status": "DRAFT",
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_draft.status_code == 201
+    draft_id = r_draft.json()["id"]
+
+    # 2. Staff creates and archives a notice
+    r_arch = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Past Archived Circular",
+            "body": "Archived circular body.",
+            "category": "GENERAL",
+            "status": "PUBLISHED",
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_arch.status_code == 201
+    arch_id = r_arch.json()["id"]
+    client.post(
+        f"/api/v1/notifications/staff/notices/{arch_id}/archive",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+
+    # 3. Staff creates future scheduled notice
+    r_sched = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Future Scheduled Notice",
+            "body": "Scheduled for future publication.",
+            "category": "MAINTENANCE",
+            "status": "PUBLISHED",
+            "published_at": (now + timedelta(days=2)).isoformat(),
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_sched.status_code == 201
+    sched_id = r_sched.json()["id"]
+
+    # 4. Staff creates expired notice
+    r_exp = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Expired Maintenance Notice",
+            "body": "Expired yesterday.",
+            "category": "MAINTENANCE",
+            "status": "PUBLISHED",
+            "published_at": (now - timedelta(days=3)).isoformat(),
+            "expires_at": (now - timedelta(days=1)).isoformat(),
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_exp.status_code == 201
+    exp_id = r_exp.json()["id"]
+
+    # 5. Staff creates notice targeted specifically to Tower 12 (Swati only, not Neeraj)
+    r_tow12 = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Tower 12 Generator Test Notice",
+            "body": "Power disruption in Tower 12 only.",
+            "category": "MAINTENANCE",
+            "status": "PUBLISHED",
+            "target_type": "TOWER",
+            "target_tower_id": tower_12_id,
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_tow12.status_code == 201
+    tow12_id = r_tow12.json()["id"]
+
+    # 6. Staff creates notice targeted specifically to Flat 0408 (Swati only, not Neeraj)
+    r_flat0408 = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Flat 0408 Balcony Repair Advisory",
+            "body": "Private to Flat 0408 resident.",
+            "category": "GENERAL",
+            "status": "PUBLISHED",
+            "target_type": "FLAT",
+            "target_flat_id": flat_0408_id,
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert r_flat0408.status_code == 201
+    flat0408_id = r_flat0408.json()["id"]
+
+    # --- IDOR & Status Access Control: Neeraj Attempts Access ---
+    # Neeraj belongs to Tower 7, Flat 1203. None of these 6 notices should be accessible.
+    forbidden_ids = [draft_id, arch_id, sched_id, exp_id, tow12_id, flat0408_id]
+
+    for n_id in forbidden_ids:
+        # GET /resident/notices/{id} must reject with 404
+        get_res = client.get(
+            f"/api/v1/notifications/resident/notices/{n_id}",
+            headers=RESIDENT_NEERAJ_HEADERS,
+        )
+        assert get_res.status_code == 404, f"Neeraj must not access notice {n_id}"
+
+        # PATCH /resident/notices/{id}/read must reject with 404
+        read_res = client.patch(
+            f"/api/v1/notifications/resident/notices/{n_id}/read",
+            headers=RESIDENT_NEERAJ_HEADERS,
+        )
+        assert read_res.status_code == 404, f"Neeraj must not mark notice {n_id} as read"
+
+    # --- Swati Access: Belongs to Tower 12, Flat 0408 ---
+    # Swati MUST be able to access Tower 12 and Flat 0408 notices
+    swati_tow_res = client.get(
+        f"/api/v1/notifications/resident/notices/{tow12_id}",
+        headers=RESIDENT_SWATI_HEADERS,
+    )
+    assert swati_tow_res.status_code == 200
+    assert swati_tow_res.json()["title"] == "Tower 12 Generator Test Notice"
+
+    swati_flat_res = client.get(
+        f"/api/v1/notifications/resident/notices/{flat0408_id}",
+        headers=RESIDENT_SWATI_HEADERS,
+    )
+    assert swati_flat_res.status_code == 200
+    assert swati_flat_res.json()["title"] == "Flat 0408 Balcony Repair Advisory"
+
+    swati_read_res = client.patch(
+        f"/api/v1/notifications/resident/notices/{flat0408_id}/read",
+        headers=RESIDENT_SWATI_HEADERS,
+    )
+    assert swati_read_res.status_code == 200
+    assert swati_read_res.json()["status"] == "success"
+
+    # But Swati still CANNOT access draft, archived, scheduled, or expired notices
+    for n_id in [draft_id, arch_id, sched_id, exp_id]:
+        assert (
+            client.get(
+                f"/api/v1/notifications/resident/notices/{n_id}",
+                headers=RESIDENT_SWATI_HEADERS,
+            ).status_code
+            == 404
+        )
+
+    # --- Staff Can Still View All Society Notices via Staff Endpoint ---
+    assert (
+        client.get(
+            f"/api/v1/notifications/staff/notices/{draft_id}",
+            headers=STAFF_HELPDESK_HEADERS,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/notifications/staff/notices/{arch_id}",
+            headers=STAFF_HELPDESK_HEADERS,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/notifications/staff/notices/{sched_id}",
+            headers=STAFF_HELPDESK_HEADERS,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/notifications/staff/notices/{tow12_id}",
+            headers=STAFF_HELPDESK_HEADERS,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/notifications/staff/notices/{flat0408_id}",
+            headers=STAFF_HELPDESK_HEADERS,
+        ).status_code
+        == 200
+    )

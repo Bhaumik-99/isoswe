@@ -152,6 +152,7 @@ class NoticeService:
                 FlatMembership.society_id == notice.society_id,
                 FlatMembership.status == MembershipStatus.APPROVED,
                 User.status == UserStatus.ACTIVE,
+                or_(FlatMembership.valid_from.is_(None), FlatMembership.valid_from <= now),
                 or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
             )
         )
@@ -511,26 +512,25 @@ class NoticeService:
         notice_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
     ) -> NoticeResponseSchema:
+        """Retrieves a single notice.
+
+        When user_id is provided, resident access controls, membership validity,
+        and target-scope predicates are strictly enforced.
+        """
+        if user_id is not None:
+            return self.get_resident_notice(
+                society_id=society_id,
+                user_id=user_id,
+                notice_id=notice_id,
+            )
+
         notice = self.db.scalars(
             select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
         ).first()
         if not notice:
             raise ResourceNotFoundError(f"Notice {notice_id} not found.")
 
-        is_read = False
-        read_at = None
-        if user_id:
-            read_record = self.db.scalars(
-                select(NoticeRead).where(
-                    NoticeRead.notice_id == notice_id,
-                    NoticeRead.user_id == user_id,
-                )
-            ).first()
-            if read_record:
-                is_read = True
-                read_at = read_record.read_at
-
-        return self._to_schema(notice, is_read=is_read, read_at=read_at)
+        return self._to_schema(notice, is_read=False, read_at=None)
 
     def list_staff_notices(
         self,
@@ -575,18 +575,26 @@ class NoticeService:
     # Resident Notice Feed & Read Tracking
     # -------------------------------------------------------------------------
 
-    def list_resident_notices(
+    def _build_resident_notice_predicate(
         self,
         society_id: uuid.UUID,
         user_id: uuid.UUID,
-        page: int = 1,
-        page_size: int = 20,
-        category: NoticeCategory | None = None,
-        unread_only: bool = False,
-    ) -> PaginatedNoticesResponse:
-        now = utc_now()
+        now: datetime,
+    ) -> tuple[bool, Any]:
+        """Builds the security and targeting predicate for a resident in a society.
 
-        # 1. Fetch user's active flat and tower memberships in this society
+        Enforces:
+        - Resident has an approved, active flat membership in the society.
+        - Membership validity window (valid_from <= now, valid_until >= now).
+        - Notice society_id boundary.
+        - Notice status == PUBLISHED (draft and archived notices are completely inaccessible).
+        - Publication schedule (published_at is not null and <= now).
+        - Expiry date (expires_at is null or > now).
+        - Target scope (SOCIETY, or TOWER in resident's towers, or FLAT in resident's flats).
+
+        Returns:
+            (has_active_membership, sql_predicate)
+        """
         memberships_stmt = (
             select(FlatMembership, Flat)
             .join(Flat, Flat.id == FlatMembership.flat_id)
@@ -594,14 +602,17 @@ class NoticeService:
                 FlatMembership.society_id == society_id,
                 FlatMembership.user_id == user_id,
                 FlatMembership.status == MembershipStatus.APPROVED,
+                or_(FlatMembership.valid_from.is_(None), FlatMembership.valid_from <= now),
                 or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
             )
         )
         rows = self.db.execute(memberships_stmt).all()
+        if not rows:
+            return False, None
+
         flat_ids = [m.flat_id for m, _ in rows]
         tower_ids = [f.tower_id for _, f in rows if f.tower_id is not None]
 
-        # 2. Targeting predicate
         target_conditions = [Notice.target_type == NoticeTargetType.SOCIETY]
         if tower_ids:
             target_conditions.append(
@@ -618,8 +629,7 @@ class NoticeService:
                 )
             )
 
-        # 3. Base published notices query (must be published, published_at <= now, unexpired)
-        base_stmt = select(Notice).where(
+        predicate = and_(
             Notice.society_id == society_id,
             Notice.status == NoticeStatus.PUBLISHED,
             Notice.published_at.is_not(None),
@@ -627,29 +637,69 @@ class NoticeService:
             or_(Notice.expires_at.is_(None), Notice.expires_at > now),
             or_(*target_conditions),
         )
+        return True, predicate
 
-        if category:
-            base_stmt = base_stmt.where(Notice.category == category)
+    def get_resident_notice(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+        notice_id: uuid.UUID,
+    ) -> NoticeResponseSchema:
+        """Retrieves a single notice for a resident, strictly enforcing membership and targeting."""
+        now = utc_now()
+        has_access, predicate = self._build_resident_notice_predicate(society_id, user_id, now)
+        if not has_access or predicate is None:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
 
-        # Read status subquery / join
+        stmt = select(Notice).where(Notice.id == notice_id, predicate)
+        notice = self.db.scalars(stmt).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        read_record = self.db.scalars(
+            select(NoticeRead).where(
+                NoticeRead.notice_id == notice_id,
+                NoticeRead.user_id == user_id,
+            )
+        ).first()
+
+        return self._to_schema(
+            notice,
+            is_read=(read_record is not None),
+            read_at=read_record.read_at if read_record else None,
+        )
+
+    def list_resident_notices(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 20,
+        category: NoticeCategory | None = None,
+        unread_only: bool = False,
+    ) -> PaginatedNoticesResponse:
+        now = utc_now()
+        has_access, predicate = self._build_resident_notice_predicate(society_id, user_id, now)
+        if not has_access or predicate is None:
+            return PaginatedNoticesResponse(
+                items=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=1,
+                unread_count=0,
+            )
+
         read_subq = (
             select(NoticeRead.notice_id, NoticeRead.read_at)
             .where(NoticeRead.user_id == user_id)
             .subquery()
         )
 
-        # If unread_only, filter where read_at is null
         joined_stmt = (
             select(Notice, read_subq.c.read_at)
             .outerjoin(read_subq, read_subq.c.notice_id == Notice.id)
-            .where(
-                Notice.society_id == society_id,
-                Notice.status == NoticeStatus.PUBLISHED,
-                Notice.published_at.is_not(None),
-                Notice.published_at <= now,
-                or_(Notice.expires_at.is_(None), Notice.expires_at > now),
-                or_(*target_conditions),
-            )
+            .where(predicate)
         )
         if category:
             joined_stmt = joined_stmt.where(Notice.category == category)
@@ -657,17 +707,11 @@ class NoticeService:
         if unread_only:
             joined_stmt = joined_stmt.where(read_subq.c.read_at.is_(None))
 
-        # Total unread count for badge
         unread_count_stmt = (
             select(func.count(Notice.id))
             .outerjoin(read_subq, read_subq.c.notice_id == Notice.id)
             .where(
-                Notice.society_id == society_id,
-                Notice.status == NoticeStatus.PUBLISHED,
-                Notice.published_at.is_not(None),
-                Notice.published_at <= now,
-                or_(Notice.expires_at.is_(None), Notice.expires_at > now),
-                or_(*target_conditions),
+                predicate,
                 read_subq.c.read_at.is_(None),
             )
         )
@@ -676,7 +720,6 @@ class NoticeService:
         total = self.db.scalar(select(func.count()).select_from(joined_stmt.subquery())) or 0
         total_pages = max(1, (total + page_size - 1) // page_size)
 
-        # Sorting: pinned first, then published_at desc
         joined_stmt = (
             joined_stmt.order_by(Notice.is_pinned.desc(), desc(Notice.published_at))
             .offset((page - 1) * page_size)
@@ -704,13 +747,16 @@ class NoticeService:
         user_id: uuid.UUID,
         notice_id: uuid.UUID,
     ) -> MarkNoticeReadResponse:
-        notice = self.db.scalars(
-            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
-        ).first()
+        now = utc_now()
+        has_access, predicate = self._build_resident_notice_predicate(society_id, user_id, now)
+        if not has_access or predicate is None:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        stmt = select(Notice).where(Notice.id == notice_id, predicate)
+        notice = self.db.scalars(stmt).first()
         if not notice:
             raise ResourceNotFoundError(f"Notice {notice_id} not found.")
 
-        now = utc_now()
         read_record = self.db.scalars(
             select(NoticeRead).where(
                 NoticeRead.notice_id == notice_id,
@@ -740,46 +786,14 @@ class NoticeService:
         user_id: uuid.UUID,
     ) -> MarkAllNoticesReadResponse:
         now = utc_now()
-        # 1. Fetch user memberships to get eligible notices
-        memberships_stmt = (
-            select(FlatMembership, Flat)
-            .join(Flat, Flat.id == FlatMembership.flat_id)
-            .where(
-                FlatMembership.society_id == society_id,
-                FlatMembership.user_id == user_id,
-                FlatMembership.status == MembershipStatus.APPROVED,
-                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
-            )
-        )
-        rows = self.db.execute(memberships_stmt).all()
-        flat_ids = [m.flat_id for m, _ in rows]
-        tower_ids = [f.tower_id for _, f in rows if f.tower_id is not None]
-
-        target_conditions = [Notice.target_type == NoticeTargetType.SOCIETY]
-        if tower_ids:
-            target_conditions.append(
-                and_(
-                    Notice.target_type == NoticeTargetType.TOWER,
-                    Notice.target_tower_id.in_(tower_ids),
-                )
-            )
-        if flat_ids:
-            target_conditions.append(
-                and_(
-                    Notice.target_type == NoticeTargetType.FLAT,
-                    Notice.target_flat_id.in_(flat_ids),
-                )
-            )
+        has_access, predicate = self._build_resident_notice_predicate(society_id, user_id, now)
+        if not has_access or predicate is None:
+            return MarkAllNoticesReadResponse(marked_count=0, status="success")
 
         read_subq = select(NoticeRead.notice_id).where(NoticeRead.user_id == user_id).subquery()
 
         unread_notices_stmt = select(Notice.id).where(
-            Notice.society_id == society_id,
-            Notice.status == NoticeStatus.PUBLISHED,
-            Notice.published_at.is_not(None),
-            Notice.published_at <= now,
-            or_(Notice.expires_at.is_(None), Notice.expires_at > now),
-            or_(*target_conditions),
+            predicate,
             Notice.id.not_in(select(read_subq.c.notice_id)),
         )
         unread_ids = list(self.db.scalars(unread_notices_stmt).all())

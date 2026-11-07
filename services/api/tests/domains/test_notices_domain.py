@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.errors import ResourceNotFoundError
 from app.domains.identity.models import (
     Flat,
     FlatMembership,
@@ -496,3 +497,239 @@ def test_emergency_notice_delivery_via_existing_infrastructure(
     ).first()
     assert outbox is not None
     assert outbox.payload["recipients_count"] == 1
+
+
+def test_resident_notice_access_control_security_and_predicates(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+    tow2_id = notice_test_setup["tow2_id"]
+    flat1_id = notice_test_setup["flat1_id"]
+    flat2_id = notice_test_setup["flat2_id"]
+    res1_id = notice_test_setup["res1_id"]  # In Tower 1, Flat 101
+    res2_id = notice_test_setup["res2_id"]  # In Tower 2, Flat 201
+
+    now = utc_now()
+
+    # 1. Draft notice (society-wide)
+    n_draft = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Internal Staff Draft Notice",
+            body="Staff notes only.",
+            status=NoticeStatus.DRAFT,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+
+    # 2. Archived notice
+    n_archived = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Archived Circular",
+            body="This notice has been archived.",
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+    svc.archive_notice(society_id=soc_id, actor_id=staff_id, notice_id=n_archived.id)
+
+    # 3. Scheduled future notice
+    n_future = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Future Scheduled Circular",
+            body="Not yet visible.",
+            status=NoticeStatus.PUBLISHED,
+            published_at=now + timedelta(days=3),
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+
+    # 4. Expired notice
+    n_expired = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Expired Circular",
+            body="Expired yesterday.",
+            status=NoticeStatus.PUBLISHED,
+            published_at=now - timedelta(days=5),
+            expires_at=now - timedelta(days=1),
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+
+    # 5. Tower 2 specific notice
+    n_tow2 = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Tower 2 Power Advisory",
+            body="Maintenance for Tower 2 only.",
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow2_id,
+        ),
+    )
+
+    # 5b. Tower 1 specific notice
+    n_tow1 = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Tower 1 Power Advisory",
+            body="Maintenance for Tower 1 only.",
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+        ),
+    )
+
+    # 6. Flat 2 specific notice
+    n_flat2 = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="Flat 201 Maintenance Due Notice",
+            body="Private to Flat 201.",
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.FLAT,
+            target_flat_id=flat2_id,
+        ),
+    )
+
+    # 7. Society-wide active notice
+    n_soc = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="General Township Circular",
+            body="Visible to all active society residents.",
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.SOCIETY,
+        ),
+    )
+
+    # --- Resident 1 Access Checks (Resident 1 belongs only to Tower 1, Flat 101) ---
+    unauthorized_notices = [n_draft, n_archived, n_future, n_expired, n_tow2, n_flat2]
+
+    # Verify detail retrieval is forbidden / returns ResourceNotFoundError
+    for notice in unauthorized_notices:
+        with pytest.raises(ResourceNotFoundError):
+            svc.get_resident_notice(society_id=soc_id, user_id=res1_id, notice_id=notice.id)
+
+        # get_notice with user_id must also enforce resident predicate
+        with pytest.raises(ResourceNotFoundError):
+            svc.get_notice(
+                society_id=soc_id,
+                notice_id=notice.id,
+                user_id=res1_id,
+            )
+
+        # mark_notice_read must enforce resident predicate
+        with pytest.raises(ResourceNotFoundError):
+            svc.mark_notice_read(society_id=soc_id, user_id=res1_id, notice_id=notice.id)
+
+    # Authorized notice: Resident 1 can view and mark read n_soc
+    res1_soc = svc.get_resident_notice(society_id=soc_id, user_id=res1_id, notice_id=n_soc.id)
+    assert res1_soc.id == n_soc.id
+    assert res1_soc.is_read is False
+
+    read_res = svc.mark_notice_read(society_id=soc_id, user_id=res1_id, notice_id=n_soc.id)
+    assert read_res.status == "success"
+
+    res1_soc_after = svc.get_resident_notice(society_id=soc_id, user_id=res1_id, notice_id=n_soc.id)
+    assert res1_soc_after.is_read is True
+
+    # Resident 2 (in Tower 2, Flat 201) can view Tower 2 and Flat 201 notices
+    res2_tow2 = svc.get_resident_notice(society_id=soc_id, user_id=res2_id, notice_id=n_tow2.id)
+    assert res2_tow2.id == n_tow2.id
+    res2_flat2 = svc.get_resident_notice(society_id=soc_id, user_id=res2_id, notice_id=n_flat2.id)
+    assert res2_flat2.id == n_flat2.id
+
+    # Resident 1 can view Tower 1 notice, but Resident 2 cannot
+    res1_tow1 = svc.get_resident_notice(society_id=soc_id, user_id=res1_id, notice_id=n_tow1.id)
+    assert res1_tow1.id == n_tow1.id
+    with pytest.raises(ResourceNotFoundError):
+        svc.get_resident_notice(society_id=soc_id, user_id=res2_id, notice_id=n_tow1.id)
+
+    # Staff can inspect drafts, archived, and targeted notices via staff get_notice
+    staff_draft = svc.get_notice(society_id=soc_id, notice_id=n_draft.id)
+    assert staff_draft.id == n_draft.id
+    staff_archived = svc.get_notice(society_id=soc_id, notice_id=n_archived.id)
+    assert staff_archived.id == n_archived.id
+
+    # --- Membership Validity: Expired lease and future lease residents ---
+    # Resident 3: Expired lease
+    res3_id = uuid.uuid4()
+    res3 = User(
+        id=res3_id,
+        supabase_uid=uuid.uuid4(),
+        email="res3_expired@example.com",
+        phone="+919800000004",
+        full_name="Expired Tenant",
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(res3)
+    mem_expired = FlatMembership(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat1_id,
+        user_id=res3_id,
+        membership_type=MembershipType.TENANT,
+        status=MembershipStatus.APPROVED,
+        valid_from=now - timedelta(days=365),
+        valid_until=now - timedelta(days=1),  # Expired yesterday
+    )
+    db_session.add(mem_expired)
+
+    # Resident 4: Future lease
+    res4_id = uuid.uuid4()
+    res4 = User(
+        id=res4_id,
+        supabase_uid=uuid.uuid4(),
+        email="res4_future@example.com",
+        phone="+919800000005",
+        full_name="Future Tenant",
+        status=UserStatus.ACTIVE,
+    )
+    db_session.add(res4)
+    mem_future = FlatMembership(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat1_id,
+        user_id=res4_id,
+        membership_type=MembershipType.TENANT,
+        status=MembershipStatus.APPROVED,
+        valid_from=now + timedelta(days=5),  # Starts in 5 days
+        valid_until=now + timedelta(days=370),
+    )
+    db_session.add(mem_future)
+    db_session.commit()
+
+    # Expired tenant cannot view notices or mark as read
+    with pytest.raises(ResourceNotFoundError):
+        svc.get_resident_notice(society_id=soc_id, user_id=res3_id, notice_id=n_soc.id)
+    with pytest.raises(ResourceNotFoundError):
+        svc.mark_notice_read(society_id=soc_id, user_id=res3_id, notice_id=n_soc.id)
+    feed_res3 = svc.list_resident_notices(society_id=soc_id, user_id=res3_id)
+    assert len(feed_res3.items) == 0
+    all_read_res3 = svc.mark_all_notices_read(society_id=soc_id, user_id=res3_id)
+    assert all_read_res3.marked_count == 0
+
+    # Future tenant cannot view notices or mark as read
+    with pytest.raises(ResourceNotFoundError):
+        svc.get_resident_notice(society_id=soc_id, user_id=res4_id, notice_id=n_soc.id)
+    with pytest.raises(ResourceNotFoundError):
+        svc.mark_notice_read(society_id=soc_id, user_id=res4_id, notice_id=n_soc.id)
+    feed_res4 = svc.list_resident_notices(society_id=soc_id, user_id=res4_id)
+    assert len(feed_res4.items) == 0
+    all_read_res4 = svc.mark_all_notices_read(society_id=soc_id, user_id=res4_id)
+    assert all_read_res4.marked_count == 0

@@ -262,10 +262,10 @@ def get_resident_notice_detail(
 ) -> NoticeResponseSchema:
     target_society = _resolve_society_id(claims, society_id)
     service = NoticeService(db)
-    return service.get_notice(
+    return service.get_resident_notice(
         society_id=target_society,
-        notice_id=notice_id,
         user_id=claims.user_id,
+        notice_id=notice_id,
     )
 
 
