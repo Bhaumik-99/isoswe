@@ -1,14 +1,14 @@
 """Unit & Integration Tests for Official Township Notices Domain Service"""
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.errors import ResourceNotFoundError
+from app.core.errors import ResourceNotFoundError, ValidationError
 from app.domains.identity.models import (
     Flat,
     FlatMembership,
@@ -22,11 +22,14 @@ from app.domains.identity.models import (
     UserStatus,
 )
 from app.domains.notifications.models import (
+    DeliveryStatus,
+    Notice,
     NoticeCategory,
     NoticePriority,
     NoticeStatus,
     NoticeTargetType,
     Notification,
+    NotificationDelivery,
 )
 from app.domains.notifications.notice_service import NoticeService, utc_now
 from app.domains.notifications.schemas import (
@@ -733,3 +736,307 @@ def test_resident_notice_access_control_security_and_predicates(
     assert len(feed_res4.items) == 0
     all_read_res4 = svc.mark_all_notices_read(society_id=soc_id, user_id=res4_id)
     assert all_read_res4.marked_count == 0
+
+
+def test_future_scheduled_emergency_notice_not_delivered_early(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that scheduled emergency notices are NOT delivered early when published_at is in the future."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+    res1_id = notice_test_setup["res1_id"]
+
+    now = utc_now()
+    future_time = now + timedelta(days=2)
+
+    # Create scheduled emergency notice
+    emergency_req = CreateNoticeRequest(
+        title="SCHEDULED POWER SUBSTATION OVERHAUL",
+        body="High voltage overhaul in Tower 1 in 2 days. Backup generators only.",
+        category=NoticeCategory.EMERGENCY,
+        priority=NoticePriority.URGENT,
+        status=NoticeStatus.PUBLISHED,
+        published_at=future_time,
+        target_type=NoticeTargetType.TOWER,
+        target_tower_id=tow1_id,
+        deliver_emergency=True,
+    )
+    notice = svc.create_notice(society_id=soc_id, author_id=staff_id, req=emergency_req)
+
+    # 1. Notice should be created with future published_at
+    assert notice.status == NoticeStatus.PUBLISHED
+    assert (
+        notice.published_at.replace(tzinfo=UTC)
+        if notice.published_at.tzinfo is None
+        else notice.published_at
+    ) == future_time
+
+    # 2. Resident MUST NOT receive early emergency notification
+    early_notifs = list(
+        db_session.scalars(
+            select(Notification).where(
+                Notification.recipient_user_id == res1_id,
+                Notification.event_type == "notice.emergency",
+                Notification.aggregate_id == str(notice.id),
+            )
+        ).all()
+    )
+    assert len(early_notifs) == 0, "Emergency notice must NOT be delivered before scheduled time"
+
+    # 3. Outbox MUST NOT have broadcast event yet
+    outbox_events = list(
+        db_session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == str(notice.id),
+                OutboxEvent.event_type == "notice.emergency_broadcast",
+            )
+        ).all()
+    )
+    assert len(outbox_events) == 0, "Outbox event must NOT be enqueued before scheduled time"
+
+    # 4. Now simulate arrival of scheduled publication time
+    db_notice = db_session.get(Notice, notice.id)
+    assert db_notice is not None
+    db_notice.published_at = now - timedelta(minutes=1)
+    db_session.flush()
+
+    # Trigger processing of due scheduled notices
+    activated = svc.publish_due_scheduled_notices(society_id=soc_id)
+    assert any(n.id == notice.id for n in activated)
+
+    # Now notifications and outbox event should exist
+    delivered_notifs = list(
+        db_session.scalars(
+            select(Notification).where(
+                Notification.recipient_user_id == res1_id,
+                Notification.event_type == "notice.emergency",
+                Notification.aggregate_id == str(notice.id),
+            )
+        ).all()
+    )
+    assert len(delivered_notifs) == 1
+    assert "SCHEDULED POWER SUBSTATION OVERHAUL" in delivered_notifs[0].title
+
+    outbox_after = db_session.scalars(
+        select(OutboxEvent).where(
+            OutboxEvent.aggregate_id == str(notice.id),
+            OutboxEvent.event_type == "notice.emergency_broadcast",
+        )
+    ).first()
+    assert outbox_after is not None
+    assert outbox_after.payload["broadcast_key"] == f"emergency_broadcast:{notice.id}"
+
+
+def test_publish_notice_state_transition_and_repeated_requests_idempotency(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that publish_notice guards against already-published notices and repeated requests."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+    res1_id = notice_test_setup["res1_id"]
+
+    # 1. Create a draft notice
+    draft_req = CreateNoticeRequest(
+        title="Water Tank Inspection Circular",
+        body="Periodic water tank inspection will occur next week.",
+        category=NoticeCategory.MAINTENANCE,
+        priority=NoticePriority.NORMAL,
+        status=NoticeStatus.DRAFT,
+        target_type=NoticeTargetType.SOCIETY,
+    )
+    draft_notice = svc.create_notice(society_id=soc_id, author_id=staff_id, req=draft_req)
+    assert draft_notice.status == NoticeStatus.DRAFT
+
+    # 2. First publish request
+    pub_1 = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=draft_notice.id)
+    assert pub_1.status == NoticeStatus.PUBLISHED
+    orig_published_at = pub_1.published_at
+
+    # Count outbox events and audit events
+    outbox_count_1 = len(
+        list(
+            db_session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == str(draft_notice.id),
+                    OutboxEvent.event_type == "notice.published",
+                )
+            ).all()
+        )
+    )
+    audit_count_1 = len(
+        list(
+            db_session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.resource_id == str(draft_notice.id),
+                    AuditEvent.action == "NOTICE_PUBLISHED",
+                )
+            ).all()
+        )
+    )
+    assert outbox_count_1 == 1
+    assert audit_count_1 == 1
+
+    # 3. Repeated publish request (simulating double click, network retry)
+    pub_2 = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=draft_notice.id)
+    assert pub_2.status == NoticeStatus.PUBLISHED
+    assert pub_2.published_at == orig_published_at
+
+    # Outbox events and audit records MUST NOT duplicate
+    outbox_count_2 = len(
+        list(
+            db_session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == str(draft_notice.id),
+                    OutboxEvent.event_type == "notice.published",
+                )
+            ).all()
+        )
+    )
+    audit_count_2 = len(
+        list(
+            db_session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.resource_id == str(draft_notice.id),
+                    AuditEvent.action == "NOTICE_PUBLISHED",
+                )
+            ).all()
+        )
+    )
+    assert outbox_count_2 == 1, "Repeated publish request must NOT create additional outbox events"
+    assert audit_count_2 == 1, "Repeated publish request must NOT create additional audit events"
+
+    # 4. Emergency draft publish repetition guard
+    emg_draft = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="GAS LEAK IMMEDIATE EVACUATION",
+            body="Immediate evacuation required.",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.DRAFT,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+        ),
+    )
+
+    emg_pub_1 = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=emg_draft.id)
+    assert emg_pub_1.status == NoticeStatus.PUBLISHED
+
+    emg_notifs_1 = len(
+        list(
+            db_session.scalars(
+                select(Notification).where(
+                    Notification.recipient_user_id == res1_id,
+                    Notification.aggregate_id == str(emg_draft.id),
+                )
+            ).all()
+        )
+    )
+    assert emg_notifs_1 == 1
+
+    # Repeated publish of emergency notice
+    emg_pub_2 = svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=emg_draft.id)
+    assert emg_pub_2.status == NoticeStatus.PUBLISHED
+
+    emg_notifs_2 = len(
+        list(
+            db_session.scalars(
+                select(Notification).where(
+                    Notification.recipient_user_id == res1_id,
+                    Notification.aggregate_id == str(emg_draft.id),
+                )
+            ).all()
+        )
+    )
+    assert emg_notifs_2 == 1, (
+        "Repeated publish request must NOT create additional emergency notifications"
+    )
+
+    # 5. Publishing an archived notice is forbidden
+    svc.archive_notice(society_id=soc_id, actor_id=staff_id, notice_id=draft_notice.id)
+    with pytest.raises(ValidationError) as exc_info:
+        svc.publish_notice(society_id=soc_id, actor_id=staff_id, notice_id=draft_notice.id)
+    assert exc_info.value.code == "INVALID_STATUS_TRANSITION"
+
+
+def test_idempotent_emergency_broadcast_keys(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that emergency broadcast keys prevent duplicate deliveries on repeated invocation."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+    res1_id = notice_test_setup["res1_id"]
+
+    notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="CRITICAL BOILER FAILURE",
+            body="Central boiler failure; avoid hot water taps.",
+            category=NoticeCategory.EMERGENCY,
+            priority=NoticePriority.URGENT,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_id=tow1_id,
+            deliver_emergency=True,
+        ),
+    )
+
+    expected_broadcast_key = f"emergency_broadcast:{notice.id}"
+
+    # Check broadcast key in outbox event payload
+    outbox = db_session.scalars(
+        select(OutboxEvent).where(
+            OutboxEvent.aggregate_id == str(notice.id),
+            OutboxEvent.event_type == "notice.emergency_broadcast",
+        )
+    ).first()
+    assert outbox is not None
+    assert outbox.payload.get("broadcast_key") == expected_broadcast_key
+
+    # Check notification delivery idempotency key
+    delivery = db_session.scalars(
+        select(NotificationDelivery).where(
+            NotificationDelivery.idempotency_key == f"in_app:{notice.id}:{res1_id}"
+        )
+    ).first()
+    assert delivery is not None
+    assert delivery.status == DeliveryStatus.DELIVERED
+
+    # Re-invoking _deliver_emergency_notice directly on the same notice must be a no-op
+    db_notice = db_session.get(Notice, notice.id)
+    assert db_notice is not None
+    result = svc._deliver_emergency_notice(db_notice)
+    assert result == 0, "Duplicate invocation must return 0 and skip re-delivery"
+
+    # Must still have exactly 1 outbox event and 1 notification
+    total_outbox = len(
+        list(
+            db_session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == str(notice.id),
+                    OutboxEvent.event_type == "notice.emergency_broadcast",
+                )
+            ).all()
+        )
+    )
+    assert total_outbox == 1
+
+    total_notifs = len(
+        list(
+            db_session.scalars(
+                select(Notification).where(
+                    Notification.recipient_user_id == res1_id,
+                    Notification.aggregate_id == str(notice.id),
+                )
+            ).all()
+        )
+    )
+    assert total_notifs == 1

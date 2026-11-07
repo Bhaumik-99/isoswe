@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.security import CurrentUserClaims, get_current_user
@@ -527,3 +528,123 @@ def test_gate_only_staff_forbidden_from_notice_mutations_api(
     )
     assert auth_arch_res.status_code == 200
     assert auth_arch_res.json()["status"] == "ARCHIVED"
+
+
+def test_future_scheduled_emergency_notice_api_not_delivered_early(
+    client: TestClient, db_session: Session
+) -> None:
+    """API Verification: Future scheduled emergency notices must NOT be delivered to resident inboxes early."""
+    future_time = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+
+    # Staff creates a scheduled emergency notice for 2 days in the future
+    create_res = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "SCHEDULED SUBSTATION OVERHAUL",
+            "body": "Substation maintenance in 2 days. Power will be on backup generators.",
+            "category": "EMERGENCY",
+            "priority": "URGENT",
+            "status": "PUBLISHED",
+            "published_at": future_time,
+            "target_type": "SOCIETY",
+            "deliver_emergency": True,
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert create_res.status_code == 201
+    notice_id = create_res.json()["id"]
+
+    # 1. Resident notices feed MUST NOT display future notice
+    feed_res = client.get(
+        "/api/v1/notifications/resident/notices",
+        headers=RESIDENT_NEERAJ_HEADERS,
+    )
+    assert feed_res.status_code == 200
+    feed_ids = [n["id"] for n in feed_res.json()["items"]]
+    assert notice_id not in feed_ids
+
+    # 2. Resident personal notification inbox MUST NOT have early emergency notification
+    inbox_res = client.get(
+        "/api/v1/notifications/me",
+        headers=RESIDENT_NEERAJ_HEADERS,
+    )
+    assert inbox_res.status_code == 200
+    inbox_items = inbox_res.json()["items"]
+    early_items = [it for it in inbox_items if "SCHEDULED SUBSTATION OVERHAUL" in it["title"]]
+    assert len(early_items) == 0, "Future scheduled emergency notice must not be delivered early"
+
+
+def test_repeated_publish_requests_api_idempotency(client: TestClient, db_session: Session) -> None:
+    """API Verification: Repeated publish requests on an already published notice are idempotent."""
+    from app.domains.reliability.models import OutboxEvent
+
+    # 1. Staff creates draft notice
+    create_res = client.post(
+        "/api/v1/notifications/staff/notices",
+        json={
+            "title": "Township General Circular",
+            "body": "Upcoming society garden cleaning drive.",
+            "category": "CIRCULAR",
+            "priority": "NORMAL",
+            "status": "DRAFT",
+            "target_type": "SOCIETY",
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert create_res.status_code == 201
+    notice_id = create_res.json()["id"]
+
+    # 2. First publish call
+    pub_1 = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/publish?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert pub_1.status_code == 200
+    assert pub_1.json()["status"] == "PUBLISHED"
+
+    outbox_count_1 = len(
+        list(
+            db_session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == notice_id,
+                    OutboxEvent.event_type == "notice.published",
+                )
+            ).all()
+        )
+    )
+    assert outbox_count_1 == 1
+
+    # 3. Second publish call (repeated request / double-click)
+    pub_2 = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/publish?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert pub_2.status_code == 200
+    assert pub_2.json()["status"] == "PUBLISHED"
+
+    # Outbox count MUST NOT increase
+    outbox_count_2 = len(
+        list(
+            db_session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == notice_id,
+                    OutboxEvent.event_type == "notice.published",
+                )
+            ).all()
+        )
+    )
+    assert outbox_count_2 == 1, "Repeated publish request must NOT create additional outbox events"
+
+    # 4. Attempting to publish an ARCHIVED notice should fail with 400
+    arch_res = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/archive?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert arch_res.status_code == 200
+
+    pub_arch = client.post(
+        f"/api/v1/notifications/staff/notices/{notice_id}/publish?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert pub_arch.status_code == 400
+    assert pub_arch.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
