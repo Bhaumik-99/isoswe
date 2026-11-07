@@ -9,6 +9,7 @@ import json
 import math
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload
@@ -43,9 +44,39 @@ from app.domains.billing.provider import SimulatedPaymentProvider
 from app.domains.identity.models import Flat, FlatMembership, MembershipStatus, User
 from app.domains.reliability.models import AuditEvent, IdempotencyKey, OutboxEvent, OutboxStatus
 
+FACILITY_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def facility_now() -> datetime:
+    """Current timestamp converted to facility-local timezone (Asia/Kolkata)."""
+    return utc_now().astimezone(FACILITY_TIMEZONE)
+
+
+def facility_today() -> date:
+    """Current calendar date in the facility's local timezone (Asia/Kolkata)."""
+    return facility_now().date()
+
+
+def slot_to_facility_dt(booking_date: date, time_str: str) -> datetime:
+    """Constructs a facility-local timezone-aware datetime for a given date and time string."""
+    sh, sm = map(int, time_str.split(":"))
+    return datetime(
+        booking_date.year,
+        booking_date.month,
+        booking_date.day,
+        sh,
+        sm,
+        tzinfo=FACILITY_TIMEZONE,
+    )
+
+
+def slot_to_utc(booking_date: date, time_str: str) -> datetime:
+    """Converts facility-local date and time string into a timezone-aware UTC datetime."""
+    return slot_to_facility_dt(booking_date, time_str).astimezone(UTC)
 
 
 def time_to_minutes(time_str: str) -> int:
@@ -261,8 +292,8 @@ class AmenityService:
                 message=f"Amenity '{amenity.name}' is currently inactive.",
             )
 
-        now = utc_now()
-        today = now.date()
+        now_utc = utc_now()
+        today = facility_today()
         if booking_date < today:
             raise ValidationError(
                 code="PAST_DATE",
@@ -285,7 +316,7 @@ class AmenityService:
                     AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
                     or_(
                         AmenityBooking.payment_expires_at.is_(None),
-                        AmenityBooking.payment_expires_at > now,
+                        AmenityBooking.payment_expires_at > now_utc,
                     ),
                 ),
             ),
@@ -306,19 +337,16 @@ class AmenityService:
         duration = amenity.slot_duration_minutes
 
         slots: list[TimeSlotAvailability] = []
-        lead_time_cutoff = now + timedelta(hours=amenity.min_advance_hours)
+        lead_time_cutoff_utc = now_utc + timedelta(hours=amenity.min_advance_hours)
 
         while start_min + duration <= end_min:
             s_time = minutes_to_time(start_min)
             e_time = minutes_to_time(start_min + duration)
 
-            sh, sm = map(int, s_time.split(":"))
-            slot_start_dt = datetime(
-                booking_date.year, booking_date.month, booking_date.day, sh, sm, tzinfo=UTC
-            )
+            slot_start_utc = slot_to_utc(booking_date, s_time)
 
-            is_past = slot_start_dt <= now
-            violates_lead_time = slot_start_dt < lead_time_cutoff
+            is_past = slot_start_utc <= now_utc
+            violates_lead_time = slot_start_utc < lead_time_cutoff_utc
 
             # Check maintenance / management blocks
             is_blocked = False
@@ -462,8 +490,8 @@ class AmenityService:
         )
 
         # Validate booking date and timing
-        now = utc_now()
-        today = now.date()
+        now_utc = utc_now()
+        today = facility_today()
         if req.booking_date < today:
             raise ValidationError(
                 code="PAST_DATE",
@@ -524,19 +552,17 @@ class AmenityService:
             )
 
         # Lead time and past slot check
-        sh, sm = map(int, req.start_time.split(":"))
-        slot_start_dt = datetime(
-            req.booking_date.year, req.booking_date.month, req.booking_date.day, sh, sm, tzinfo=UTC
-        )
-        if slot_start_dt <= now:
+        slot_start_utc = slot_to_utc(req.booking_date, req.start_time)
+        slot_end_utc = slot_to_utc(req.booking_date, req.end_time)
+        if slot_start_utc <= now_utc:
             raise ValidationError(
                 code="PAST_SLOT",
                 message="Cannot book a slot that has already begun or passed.",
             )
 
         if amenity.min_advance_hours > 0:
-            lead_time_cutoff = now + timedelta(hours=amenity.min_advance_hours)
-            if slot_start_dt < lead_time_cutoff:
+            lead_time_cutoff_utc = now_utc + timedelta(hours=amenity.min_advance_hours)
+            if slot_start_utc < lead_time_cutoff_utc:
                 raise ValidationError(
                     code="MIN_ADVANCE_HOURS_VIOLATION",
                     message=f"Booking must be made at least {amenity.min_advance_hours} hours in advance.",
@@ -555,7 +581,7 @@ class AmenityService:
                         AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
                         or_(
                             AmenityBooking.payment_expires_at.is_(None),
-                            AmenityBooking.payment_expires_at > now,
+                            AmenityBooking.payment_expires_at > now_utc,
                         ),
                     ),
                 ),
@@ -589,7 +615,7 @@ class AmenityService:
                     AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
                     or_(
                         AmenityBooking.payment_expires_at.is_(None),
-                        AmenityBooking.payment_expires_at > now,
+                        AmenityBooking.payment_expires_at > now_utc,
                     ),
                 ),
             ),
@@ -606,7 +632,7 @@ class AmenityService:
         if total_fee_paise > 0:
             booking_status = BookingStatus.PENDING_PAYMENT
             payment_status = BookingPaymentStatus.PENDING
-            payment_expires_at = now + timedelta(minutes=15)
+            payment_expires_at = now_utc + timedelta(minutes=15)
             payment_ref = None
             refund_status = RefundStatus.NOT_APPLICABLE
         else:
@@ -640,9 +666,12 @@ class AmenityService:
                 "unit_fee_paise": amenity.booking_fee_paise,
                 "cancellation_deadline_hours": amenity.cancellation_deadline_hours,
                 "refund_percentage": amenity.refund_percentage,
+                "slot_start_utc": slot_start_utc.isoformat(),
+                "slot_end_utc": slot_end_utc.isoformat(),
+                "facility_timezone": "Asia/Kolkata",
             },
-            created_at=now,
-            updated_at=now,
+            created_at=now_utc,
+            updated_at=now_utc,
         )
         self.db.add(booking)
         self.db.flush()
@@ -756,7 +785,7 @@ class AmenityService:
         if status:
             filters.append(AmenityBooking.status == status)
         if upcoming_only:
-            today = utc_now().date()
+            today = facility_today()
             filters.append(AmenityBooking.booking_date >= today)
             filters.append(AmenityBooking.status == BookingStatus.CONFIRMED)
 
@@ -882,20 +911,12 @@ class AmenityService:
             )
 
         amenity = booking.amenity
-        now = utc_now()
+        now_utc = utc_now()
 
-        # Check cancellation deadline
-        sh, sm = map(int, booking.start_time.split(":"))
-        slot_start_dt = datetime(
-            booking.booking_date.year,
-            booking.booking_date.month,
-            booking.booking_date.day,
-            sh,
-            sm,
-            tzinfo=UTC,
-        )
-        deadline = slot_start_dt - timedelta(hours=amenity.cancellation_deadline_hours)
-        if now > deadline:
+        # Check cancellation deadline using facility-to-UTC converted slot start
+        slot_start_utc = slot_to_utc(booking.booking_date, booking.start_time)
+        deadline_utc = slot_start_utc - timedelta(hours=amenity.cancellation_deadline_hours)
+        if now_utc > deadline_utc:
             raise ConflictError(
                 code="CANCELLATION_DEADLINE_EXPIRED",
                 message=f"Cancellation window expired. Cancellations must be made at least {amenity.cancellation_deadline_hours} hours prior to slot start.",
@@ -914,12 +935,12 @@ class AmenityService:
             refund_status = RefundStatus.NOT_APPLICABLE
 
         booking.status = BookingStatus.CANCELLED
-        booking.cancelled_at = now
+        booking.cancelled_at = now_utc
         booking.cancelled_by_user_id = user_id
         booking.cancellation_reason = reason.strip() if reason else "Cancelled by resident"
         booking.refund_status = refund_status
         booking.refund_amount_paise = refund_amount
-        booking.updated_at = now
+        booking.updated_at = now_utc
         self.db.flush()
 
         # Audit Event
