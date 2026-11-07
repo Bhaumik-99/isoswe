@@ -1,18 +1,19 @@
 # Township Operations Platform — Production Deployment Guide
 **Target System**: Gated Township Operations (Pune, Maharashtra — 2,400 Apartments, 28 Towers, 180 Staff)  
-**Deliverable**: Phase 5 Complete Financial Governance, Service Desk, Automated Reconciliation & Offline PWA
+**Deliverable**: Phase 8 Complete (Official Township Notices & Full System Hardening)
 
 ---
 
 ## 1. System Architecture & Topology
 
-The platform is designed as a cloud-native, multi-tenant township management system adhering to strict SOC 2 financial governance, tenant isolation, and high availability.
+The platform is designed as a cloud-native, serverless, multi-tenant township management system adhering to strict SOC 2 financial governance, tenant isolation, and high availability using **Option B: Supabase Auth & PostgreSQL + AWS Serverless Lambda**.
 
 ```mermaid
 flowchart TD
     subgraph ClientTiers["Client Presentation Layer"]
-        PWA["Offline-Capable Resident PWA (Vite / React 18 / Tailwind)"]
-        StaffPortal["Staff Operations Desktop (Helpdesk, Billing, Recon, Committee)"]
+        PWA["Offline-Capable Resident PWA (Vite / React 19 / Tailwind)"]
+        StaffPortal["Staff Operations Desktop (Helpdesk, Billing, Recon, Committee, Gate, Amenities, Notices)"]
+        Tablet["Gate Security Tablet (Offline-First IndexedDB PWA)"]
     end
 
     subgraph EdgeCDN["AWS CloudFront Edge Layer"]
@@ -20,27 +21,38 @@ flowchart TD
         S3Web["S3 Static Bucket (SPA Assets & sw.js with Cache-Control: no-cache)"]
     end
 
-    subgraph Compute["AWS Application Compute"]
-        ALB["Application Load Balancer / API Gateway HTTP API"]
-        FastAPIService["FastAPI Container (ECS Fargate / Lambda Web Adapter)"]
-        WorkerService["Background Event Consumer (Outbox Processor / Job Runner)"]
+    subgraph Ingress["AWS Ingress & API Gateway"]
+        APIGW["Amazon API Gateway (REST API / CORS / WAF)"]
     end
 
-    subgraph Persistence["Storage & Database Layer"]
-        RDS["PostgreSQL 16 Multi-AZ (Row-Level Security, FORCE RLS)"]
-        SecretsMgr["AWS Secrets Manager (Structured DB & JWT Credentials)"]
-        S3Docs["S3 Bucket (Invoices, Receipts, Bank Statements, CSV Exports)"]
+    subgraph Compute["AWS Serverless Compute"]
+        FastAPILambda["FastAPI Lambda via Mangum (pool_size=1, prepare_threshold=None)"]
+        WorkerLambda["Worker Lambda (SQS Batch Consumer with report_batch_item_failures)"]
+    end
+
+    subgraph SQSQueues["AWS Asynchronous Messaging"]
+        Q["Amazon SQS Domain Queues + KMS CMK Encryption + DLQs"]
+    end
+
+    subgraph Persistence["Storage & Supabase Cloud (ap-south-1 Mumbai)"]
+        SupabaseAuth["Supabase Auth (Phone OTP, JWKS Endpoint)"]
+        TxPooler["Supabase Transaction Pooler (PgBouncer Port 6543)"]
+        PostgreSQL["Supabase PostgreSQL 16 (Row-Level Security, FORCE RLS)"]
+        TxPooler --> PostgreSQL
+        SecretsMgr["AWS Secrets Manager (Encrypted with AWS KMS CMK)"]
+        S3Docs["S3 Bucket (Attachments, Statements, Visitor Photos - 90-Day Retention Lifecycle)"]
     end
 
     ClientTiers --> CF
     CF --> S3Web
-    CF --> ALB
-    ALB --> FastAPIService
-    FastAPIService --> RDS
-    FastAPIService --> SecretsMgr
-    FastAPIService --> S3Docs
-    FastAPIService --> WorkerService
-    WorkerService --> RDS
+    CF --> APIGW
+    APIGW --> FastAPILambda
+    FastAPILambda --> TxPooler
+    FastAPILambda --> SecretsMgr
+    FastAPILambda --> S3Docs
+    FastAPILambda --> Q
+    Q --> WorkerLambda
+    WorkerLambda --> TxPooler
 ```
 
 ---
@@ -52,11 +64,10 @@ flowchart TD
 - **Node.js**: `20.x` or `22.x` LTS with `npm 10+`
 - **AWS CLI**: `v2.x` configured with deployment IAM credentials (`AdministratorAccess` or scoped CDK role)
 - **AWS CDK CLI**: `npm install -g aws-cdk@^2.100.0`
-- **Docker**: `24+` with Buildx support
 - **PostgreSQL Client**: `psql` (libpq 16+)
 
 ### 2.2 Repository Checkout
-All deployment commands assume `REPO_ROOT` is set to the cloned repository root so sections can be executed sequentially or independently without working-directory drift:
+All deployment commands assume `REPO_ROOT` is set to the cloned repository root:
 ```bash
 git clone https://github.com/Bhaumik-99/isoswe.git
 cd isoswe
@@ -77,10 +88,10 @@ ENVIRONMENT=production
 DEBUG=false
 TZ=Asia/Kolkata
 
-# Multi-Tenant Database
-DATABASE_URL=postgresql+psycopg://app_user:<SECRET_PASSWORD>@db.township.internal:5432/township_ops
-DB_POOL_SIZE=20
-DB_MAX_OVERFLOW=10
+# Multi-Tenant Database (Supabase Transaction Pooler via PgBouncer port 6543)
+DATABASE_URL=postgresql+psycopg://postgres.<project-ref>:<SECRET_PASSWORD>@aws-0-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require
+DB_POOL_SIZE=1
+DB_MAX_OVERFLOW=0
 DB_POOL_TIMEOUT=30
 
 # Authentication & Supabase
@@ -94,7 +105,7 @@ ALLOWED_ORIGINS=["https://township.example.com", "https://d1234abcd.cloudfront.n
 
 # Outbox & Reliability
 MESSAGING_PROVIDER=sqs
-SQS_OUTBOX_QUEUE_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/township-outbox-prod
+SQS_OUTBOX_QUEUE_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/township-billing-jobs-prod
 EVENT_RETRY_MAX_ATTEMPTS=5
 ```
 
@@ -115,11 +126,8 @@ The CDK `SecurityConstruct` (`infra/cdk/township_constructs/security.py`) automa
 1. `GUEST_PASS_HMAC_SECRET`: Automatically generated 64-character high-entropy cryptographic secret via `SecretStringGenerator(password_length=64)`. This strictly satisfies the platform invariant requiring `>= 32` characters in staging/production, eliminating runtime HTTP 500 errors.
 2. `DATABASE_URL` & `SUPABASE_URL`: Initialized in the JSON template for operator configuration.
 
-> [!SECURITY]
-> **Never commit `GUEST_PASS_HMAC_SECRET`, database passwords, or private keys to Git.**
-
 #### Operator Configuration & Secrets Population Command
-After CDK stack deployment, administrators populate the live connection strings using the AWS CLI. To preserve or set the 64-character `GUEST_PASS_HMAC_SECRET`:
+After CDK stack deployment, administrators populate the live connection strings using the AWS CLI:
 
 ```bash
 # Retrieve existing generated secret or generate a fresh 64-character secret
@@ -147,7 +155,7 @@ aws secretsmanager put-secret-value \
 
 ## 4. Database Provisioning & Migrations
 
-The database utilizes **PostgreSQL 16** with **Row Level Security (RLS)** strictly enforced on all financial and tenant tables.
+The database utilizes **Supabase PostgreSQL 16** (Mumbai `ap-south-1`) with **Row Level Security (RLS)** strictly enforced on all financial, tenant, and amenity tables.
 
 ### 4.1 Execute Alembic Migrations
 Run Alembic migrations up to head to create tables, triggers, indexes, and RLS policies:
@@ -158,19 +166,19 @@ python -m venv .venv
 source .venv/bin/activate  # Or on Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# Run migrations to head
+# Run migrations to head (018_official_township_notices)
 python -m alembic upgrade head
 cd "$REPO_ROOT"
 ```
 
 ### 4.2 Seed Baseline Demographics & Society Data
-From the repository root, seed the Pune township baseline data (Marvel Greenfield Residences: 3 Towers, Sample Flats, Resident Accounts, and Authorized Helpdesk/Committee staff) and optionally populate the full 2,400-flat / 28-tower / 180-staff target-scale dataset:
+From the repository root, seed the Pune township baseline data (Marvel Greenfield Residences: 28 Towers, 2,400 Flats, 180 Staff, Amenities, Notices, and Sample Ledger):
 
 ```bash
 cd "$REPO_ROOT"
 PYTHONPATH=services/api python scripts/seed.py
 
-# Optional: Populate full target-scale township population (28 towers, 2,400 flats, 180 staff)
+# Populate full target-scale township population (28 towers, 2,400 flats, 180 staff)
 PYTHONPATH=services/api python scripts/generate_sample_data.py
 ```
 
@@ -179,18 +187,18 @@ PYTHONPATH=services/api python scripts/generate_sample_data.py
 -- Verify FORCE ROW LEVEL SECURITY on critical tables
 SELECT tablename, rowsecurity FROM pg_tables 
 WHERE schemaname = 'public' 
-AND tablename IN ('societies', 'flats', 'invoices', 'payments', 'financial_ledger_entries', 'bank_transactions', 'user_permissions');
+AND tablename IN ('societies', 'flats', 'invoices', 'payments', 'financial_ledger_entries', 'bank_transactions', 'user_permissions', 'amenities', 'amenity_bookings', 'notices');
 
--- Confirm all migrations applied cleanly
+-- Confirm all migrations applied cleanly up to 018
 SELECT version_num FROM alembic_version;
--- Expected: 012_user_permissions
+-- Expected: 018_official_township_notices
 ```
 
 ---
 
 ## 5. Infrastructure as Code (AWS CDK) Deployment
 
-The infrastructure is defined under `infra/cdk` (`infra/cdk/app.py` reads context key `-c env=<dev|staging|prod>`) in AWS Region `ap-south-1` (Mumbai).
+The infrastructure is defined under `infra/cdk` in AWS Region `ap-south-1` (Mumbai).
 
 ```bash
 cd "$REPO_ROOT/infra/cdk"
@@ -209,11 +217,13 @@ cdk deploy --all -c env=prod --require-approval never
 cd "$REPO_ROOT"
 ```
 
-The CDK deploys:
-1. **NetworkStack**: VPC with 2 public subnets, 2 private application subnets, and 2 isolated database subnets with NAT Gateways.
-2. **DatabaseStack**: Amazon RDS PostgreSQL 16 Multi-AZ instance, automated daily snapshots, storage auto-scaling.
-3. **ComputeStack**: ECS Fargate Service with auto-scaling (min 2, max 10 tasks) fronted by an Application Load Balancer with ACM SSL certificate.
-4. **FrontendStack**: Amazon S3 bucket for SPA assets with CloudFront Origin Access Control (OAC), TLS 1.3, security headers Lambda@Edge/CloudFront Functions.
+The CDK constructs provision:
+1. **SecurityConstruct**: KMS Customer Managed Keys (CMK) and AWS Secrets Manager secret (`township-supabase-credentials-prod`) with auto-generated 64-char `GUEST_PASS_HMAC_SECRET`.
+2. **StorageConstruct**: Private S3 Document & Visitor Photo bucket with KMS encryption, automated 90-day expiration lifecycle for visitor photos, and CORS configuration.
+3. **MessagingConstruct**: 5 Amazon SQS queues (`billing-jobs`, `payment-events`, `reconciliation-jobs`, `complaint-ai-jobs`, `notification-jobs`) with KMS encryption and paired Dead Letter Queues (DLQs).
+4. **ComputeConstruct**: FastAPI Lambda function via Mangum with direct TLS connectivity to Supabase PgBouncer (eliminating NAT Gateways), and SQS Worker Lambda with `report_batch_item_failures`.
+5. **ApiGatewayConstruct**: Amazon API Gateway REST API with CORS headers, WAF rate limiting, and API keys.
+6. **FrontendStack**: Amazon S3 bucket for SPA assets with CloudFront Origin Access Control (OAC), TLS 1.3, and security headers.
 
 ---
 
@@ -260,26 +270,25 @@ cd "$REPO_ROOT"
 
 ### 7.1 Health Check Endpoints
 - **Liveness Probe**: `GET https://api.township.example.com/health` (Returns HTTP 200 `{ "status": "healthy" }`)
-- **Readiness Probe**: `GET https://api.township.example.com/health/ready` (Verifies PostgreSQL connection pool, SQS connectivity, and cache availability)
+- **Readiness Probe**: `GET https://api.township.example.com/health/ready` (Verifies Supabase PostgreSQL connection pool, SQS connectivity, and cache availability)
 
 ### 7.2 CloudWatch Metrics & Alarms
-- **API Latency (p95)**: Alarm if `p95 > 500ms` for 3 consecutive 1-minute periods.
-- **5xx HTTP Errors**: Alarm if `HTTPCode_Target_5XX_Count > 5` over a 5-minute period.
-- **Dead Letter Queue (DLQ)**: Alarm if `ApproximateNumberOfMessagesVisible > 0` on `township-outbox-dlq`.
+- **Lambda Duration**: Alarm if API Lambda duration `p95 > 1000ms` for 3 consecutive evaluation periods.
+- **5xx HTTP Errors**: Alarm if API Gateway `5XXError > 5` over a 5-minute period.
+- **Dead Letter Queue (DLQ)**: Alarm if `ApproximateNumberOfMessagesVisible > 0` on any of the 5 DLQ queues.
 
 ---
 
 ## 8. Rollback & Disaster Recovery Procedures
 
-### 8.1 Zero-Downtime Application Rollback
+### 8.1 Serverless Application Rollback
 If an application defect is detected post-deployment:
 ```bash
-# Roll back ECS service to previous task definition revision
-aws ecs update-service \
-  --cluster township-ops-prod \
-  --service api-service \
-  --task-definition township-api-prod:<PREVIOUS_REVISION_NUMBER> \
-  --force-new-deployment
+# Roll back API Lambda to previous published version / alias
+aws lambda update-alias \
+  --function-name township-api-prod \
+  --name live \
+  --function-version <PREVIOUS_VERSION_NUMBER>
 ```
 
 ### 8.2 Database Rollback Strategy
@@ -292,6 +301,5 @@ cd "$REPO_ROOT"
 ```
 
 For major state recovery:
-- RDS Point-in-Time Recovery (PITR) is enabled with 35-day retention.
-- Automated snapshots are taken before every scheduled release window.
-
+- Supabase Point-in-Time Recovery (PITR) is enabled with continuous WAL archiving.
+- Daily automated snapshots and pre-deployment backups are maintained.

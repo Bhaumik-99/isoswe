@@ -11,103 +11,14 @@ import os
 import zipfile
 from datetime import datetime
 
-# 1. Generate Markdown Deliverable
-TDD_CONTENT_MARKDOWN = """# Technical Design Document (TDD)
-# Township Operations Platform
-**Target Scope**: 2,400 Apartments | 28 Towers | 180 Facility Staff | Pune, Maharashtra  
-**Document Revision**: Phase 5 Complete  
-**Date**: November 2026  
-**Status**: APPROVED & IMPLEMENTED  
 
----
-
-## 1. Executive Summary & Problem Context
-
-The Township Operations Platform is an enterprise-grade multi-tenant property governance system purpose-built for a large-scale residential gated community in Pune, Maharashtra comprising:
-- **2,400 residential flats** distributed across **28 residential towers**.
-- **180 on-site facility management staff** across helpdesk, electrical, plumbing, civil, security, and administrative teams.
-- **₹6.50 per sq. ft. per month** standard maintenance billing (e.g., ₹7,475/month for a 1,150 sq. ft. 2BHK flat).
-- **Payment channels**: Cheque, NEFT/RTGS bank transfer, and UPI.
-- **Key operational challenges**: Automated invoice reconciliation against noisy bank narrations, tenant onboarding with lease tracking, SLA enforcement for emergency complaints, and committee-level financial governance.
-
----
-
-## 2. Architecture & Multi-Tenancy Principles
-
-### 2.1 Two-Role Strict RBAC with Granular Permissions
-The platform enforces strictly two application roles at the identity layer:
-- `RESIDENT`: Scoped strictly to active, approved flat memberships.
-- `HELPDESK`: Authorized facility management staff.
-
-Operational capabilities are granted via granular permissions:
-- `COMPLAINT_MANAGE`: Triage, update, assign, and resolve complaint tickets.
-- `BANK_IMPORT`: Upload and confirm bank statement CSV files.
-- `RECONCILIATION_REVIEW`: Propose and approve financial matching allocations.
-- `BILLING_MANAGE`: Configure billing cycles, generate monthly invoice runs, and apply late fees.
-- `COMMITTEE_REPORT_READ`: Explicitly granted permission enabling access to executive financial summaries, ageing arrears, and CSV export.
-
-### 2.2 PostgreSQL Row-Level Security (RLS)
-Every financial and transactional table enforces `FORCE ROW LEVEL SECURITY`:
-- Financial tables (`invoices`, `payments`, `payment_allocations`, `financial_ledger_entries`, `bank_transactions`) enforce tenant isolation by `society_id`.
-- Residents can read only records bound to flats for which they hold an active, non-expired `FlatMembership`.
-- Staff access is strictly restricted to assigned societies via security definer helper `public.is_helpdesk_for_society(society_id)`.
-
----
-
-## 3. Core Domain Subsystems
-
-### 3.1 Identity & Resident Registry
-- **Membership Types**: `OWNER`, `TENANT`, `FAMILY_MEMBER`.
-- **Lease Window Enforcement**: Leases require `valid_from` and `valid_until` with validation ensuring end date is not prior to start date. Expired tenant leases automatically forfeit flat data access.
-- **Resident Onboarding**: Phone numbers normalized to international E.164 (`+91XXXXXXXXXX`). Self-registration requests enter `PENDING` state until staff verification.
-- **Audit Logging**: Every membership state change records structured audit events (`identity.membership.created`, `identity.membership.updated`, `identity.membership.approved`, `identity.membership.terminated`).
-
-### 3.2 Maintenance Billing & Append-Only Financial Ledger
-- **Integer Paise Arithmetic**: All monetary quantities are stored as 64-bit BigInt paise (₹1.00 = 100 paise) preventing floating-point rounding discrepancies.
-- **Formula**: `area_sqft * rate_paise_per_sqft` (1,150 sq. ft. * 650 paise = 747,500 paise = ₹7,475.00).
-- **Snapshot Pricing**: Generated invoices snapshot current rates, shielding historical obligations from future tariff modifications.
-- **Append-Only Ledger**: Balances are calculated dynamically from immutable ledger entries (`INVOICE`, `PAYMENT`, `ADJUSTMENT`, `LATE_FEE`). Updates or deletes to ledger entries are blocked by database triggers.
-- **Late-Fee Engine**: Society bye-law policy evaluation supporting Flat Fee (paise), Monthly Percentage (basis points), and Daily Simple Interest (`(unpaid * amount_or_rate_bps * days + 1825000) // 3650000`).
-
-### 3.3 Automated Bank Statement Reconciliation
-- **Deduplication**: Concurrency-safe SHA-256 fingerprinting on `(society_id, transaction_date, amount_paise, narration)` with unique database constraint.
-- **UPI VPA Normalization**: Regex extraction of UPI VPAs from banker narrations (`UPI/123456789012/PAYMENT/resident@okhdfcbank/...`).
-- **Confidence Scoring & Promotion**:
-  - Exact UPI VPA mapping match: `confidence = 0.98` -> Auto-promoted to match.
-  - Narration containing exact Tower + Flat + Amount: `confidence = 0.95` -> Promoted to match.
-  - Partial match: Suggestion created for manual review.
-- **Financial Maker-Checker**: Mandatory separation of duties. Users cannot approve proposals they submitted; requires `PENDING_APPROVAL` status before financial settlement.
-
-### 3.4 Complaints & Service Desk
-- **Auto-Assignment**: Round-robin assignment to active staff in the society with the fewest open tickets.
-- **SLA Tracking**:
-  - First Response SLA (e.g. 15 minutes for EMERGENCY, 2 hours for HIGH).
-  - Resolution SLA (e.g. 4 hours for EMERGENCY, 24 hours for HIGH).
-- **Category Correction & Duplication**: Staff can reclassify misrouted categories while preserving `original_category`, and link duplicate complaints to a primary parent ticket.
-- **Persistent Safety Alerts**: Dedicated high-priority emergency queue for urgent health/safety hazards.
-
-### 3.5 Committee Financial Governance
-- **SQL Aggregates**: Zero memory limit aggregation over all 2,400 flats directly in database queries.
-- **Ageing Arrears Buckets**: Live segregation of outstanding receivables:
-  - 0-30 Days (Current)
-  - 31-60 Days (Overdue)
-  - 61-90 Days (Delinquent)
-  - 90+ Days (Critical Recovery)
-- **Tower Breakdown**: Tower-by-tower collection percentages and complaint volume.
-- **CSV Export Sanitization**: Formula injection mitigation (CWE-1236) prepending single-quote `'` to cells starting with `=`, `+`, `-`, `@`, `\\t`, or `\\r`.
-
-### 3.6 Offline-Capable Resident PWA
-- Progressive Web Application with responsive layout, app shell caching via `sw.js`, and installable web manifest.
-- 1-tap quick actions: Pay Maintenance Bill, Raise Urgent Complaint.
-
----
-
-## 4. Infrastructure & Deployment Architecture
-
-- **AWS CDK v2**: Infrastructure-as-code deploying VPC, RDS PostgreSQL 16 Multi-AZ, ECS Fargate API container, and CloudFront S3 SPA distribution.
-- **Secrets Management**: AWS Secrets Manager with fail-closed production validation.
-- **CI/CD Pipeline**: GitHub Actions running Ruff linting, Mypy strict typing, Pytest unit/integration tests, Vitest frontend tests, Gitleaks secret scanning, and CodeQL SAST.
-"""
+def get_tdd_markdown(docs_dir: str) -> str:
+    """Reads existing technical_design_document.md if available, otherwise returns fallback."""
+    md_path = os.path.join(docs_dir, "technical_design_document.md")
+    if os.path.exists(md_path):
+        with open(md_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
 
 
 def generate_docx(output_path: str) -> None:
@@ -140,7 +51,7 @@ def generate_docx(output_path: str) -> None:
     p_sub = doc.add_paragraph()
     p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run_sub = p_sub.add_run(
-        "Pune Gated Township (2,400 Flats · 28 Towers · 180 Staff)\nPhase 5: Financial Governance, Automated Reconciliation & PWA Handover"
+        "Pune Gated Township (2,400 Flats · 28 Towers · 180 Staff)\nPhase 8: Complete Operations, Facility Booking, Communications & Security"
     )
     run_sub.font.name = "Arial"
     run_sub.font.size = Pt(12)
@@ -150,17 +61,24 @@ def generate_docx(output_path: str) -> None:
     doc.add_paragraph()  # Spacing
 
     # Metadata Table
-    table = doc.add_table(rows=5, cols=2)
+    table = doc.add_table(rows=6, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     metadata = [
-        ("Platform Name", "Isoswe Township Operations Platform"),
-        ("Architecture Version", "Phase 5 Core Production Release"),
+        ("Platform Name", "Township Operations Platform (township-ops)"),
+        ("Architecture Version", "Phase 8 Complete (Official Notices & Hardening)"),
         ("Date", datetime.now().strftime("%B %d, %Y")),
         (
             "Security Compliance",
-            "SOC 2 Type II Invariants, OWASP Top 10, CWE-1236 Shield",
+            "SOC 2 Type II Invariants, OWASP Top 10, CWE-1236 Shield, Row-Level Security",
         ),
-        ("Target Deployment", "AWS ap-south-1 (Mumbai) / ECS Fargate + RDS Multi-AZ"),
+        (
+            "Target Deployment",
+            "Supabase Cloud (ap-south-1 Mumbai) + AWS Serverless Lambda (Option B)",
+        ),
+        (
+            "Core Architectural Decisions",
+            "ADRs 001-010: PgBouncer pool_size=1, Transactional Outbox, Integer Paise Arithmetic",
+        ),
     ]
     for idx, (k, v) in enumerate(metadata):
         cell_k = table.cell(idx, 0)
@@ -181,7 +99,8 @@ def generate_docx(output_path: str) -> None:
         "(yielding ₹7,475/mo for standard 1,150 sq. ft. apartments). Residents execute transactions across UPI, NEFT/RTGS, "
         "and physical cheques. This technical design document formalizes the production-grade architecture that resolves "
         "high-volume financial reconciliation, automated SLA service desk management, tenant registry lifecycle tracking, "
-        "and committee financial governance."
+        "gate security operations with offline tablet sync, multi-channel resident alerts, official township circulars, and "
+        "race-condition-free amenity slot reservations."
     )
 
     # Section 2
@@ -189,9 +108,9 @@ def generate_docx(output_path: str) -> None:
     doc.add_paragraph(
         "The system enforces strictly two application roles (RESIDENT and HELPDESK) across all APIs. "
         "Fine-grained operational permissions govern specific staff actions: COMPLAINT_MANAGE, BANK_IMPORT, "
-        "RECONCILIATION_REVIEW, BILLING_MANAGE, and COMMITTEE_REPORT_READ. Database isolation is guaranteed via "
-        "PostgreSQL FORCE ROW LEVEL SECURITY (RLS) on all financial tables, ensuring cross-society tenant isolation "
-        "is enforced at the database kernel."
+        "RECONCILIATION_REVIEW, BILLING_MANAGE, COMMITTEE_REPORT_READ, and GATE_OPERATIONS. Database isolation is guaranteed via "
+        "PostgreSQL FORCE ROW LEVEL SECURITY (RLS) on all financial, tenant, visitor, notice, and amenity tables, ensuring "
+        "cross-society tenant isolation is enforced at the database engine level."
     )
 
     # Section 3
@@ -209,12 +128,13 @@ def generate_docx(output_path: str) -> None:
         "Financial computations are conducted entirely in 64-bit integer paise (₹1.00 = 100 paise) preventing precision "
         "loss. Invoices snapshot historical unit rates. An append-only double-entry financial ledger records all invoice debits, "
         "payment credits, and late fee assessments. The late-fee engine supports Flat Fee, Monthly Percentage, and Daily "
-        "Simple Interest calculated as (unpaid * amount_or_rate_bps * days + 1825000) // 3650000."
+        "Simple Interest calculated as (unpaid * amount_or_rate_bps * days + 1825000) // 3650000. Concurrent payment allocation "
+        "enforces row-level locking (SELECT ... FOR UPDATE) and mandatory Idempotency-Key headers."
     )
 
-    doc.add_heading("3.3 UPI-Aware Automated Bank Reconciliation", level=2)
+    doc.add_heading("3.3 Automated Bank Statement Reconciliation", level=2)
     doc.add_paragraph(
-        "Bank statement CSVs undergo concurrent SHA-256 deduplication. An intelligent narration normalizer extracts UPI VPAs "
+        "Bank statement imports undergo concurrent SHA-256 deduplication. An intelligent narration normalizer extracts UPI VPAs "
         "and fuzzy matches apartment identifiers (Tower + Flat). Confident matches (>= 90%) are promoted to reconciliation matches. "
         "Settlement enforces two-person maker-checker governance before posting financial allocations."
     )
@@ -233,18 +153,35 @@ def generate_docx(output_path: str) -> None:
         "against formula injection (CWE-1236)."
     )
 
-    doc.add_heading("3.6 Offline-Capable Resident PWA", level=2)
+    doc.add_heading("3.6 Gate & Visitor Management with Offline Sync", level=2)
     doc.add_paragraph(
-        "A responsive mobile-first Progressive Web Application with client-side service worker caching (sw.js), "
-        "instant bill payment shortcuts, and offline-resilient access."
+        "Decoupled approval and entry state machines. Pre-approved guest passes (GP-XXXX) are generated using CSPRNG salt/hash storage. "
+        "Offline-first tablet architecture captures walk-in visitors into IndexedDB and synchronizes reconnection batches using nested "
+        "database savepoints. Visitor photos are stored in private KMS S3 with short-lived presigned URLs and enforced 90-day retention."
+    )
+
+    doc.add_heading("3.7 Multi-Channel Communications & Official Notices", level=2)
+    doc.add_paragraph(
+        "Outbox-driven notification engine evaluates user channel preferences (In-App, Email, SMS) with exponential backoff and PII masking. "
+        "Official township circulars and maintenance advisories support granular targeting by society, tower, and flat, scheduled publishing, "
+        "resident read tracking, and emergency broadcast outbox escalation."
+    )
+
+    doc.add_heading("3.8 Amenity & Facility Booking Management", level=2)
+    doc.add_paragraph(
+        "Discrete time-slot booking engine with Asia/Kolkata facility timezone awareness, PostgreSQL row locking (SELECT ... FOR UPDATE) "
+        "for concurrency protection, 15-minute payment expiration locks, fee immutability, staff maintenance blocking, and transparent "
+        "cancellation policies."
     )
 
     # Section 4
-    doc.add_heading("4. Cloud Infrastructure & DevOps Pipeline", level=1)
+    doc.add_heading("4. Cloud Infrastructure & DevOps Pipeline (Option B)", level=1)
     doc.add_paragraph(
-        "The infrastructure is codified using AWS CDK v2 in Python, provisioning Amazon VPC (ap-south-1), "
-        "Amazon RDS PostgreSQL 16 Multi-AZ, ECS Fargate FastAPI container clusters, and CloudFront CDN. "
-        "Automated CI/CD pipelines in GitHub Actions enforce Ruff, Mypy, Pytest, Vitest, Gitleaks, and CodeQL SAST."
+        "The infrastructure is codified using AWS CDK v2 in Python, pairing Supabase Cloud (PostgreSQL 16 Multi-AZ, Row-Level Security, "
+        "and PgBouncer shared transaction pooler on port 6543) with AWS Serverless (FastAPI Lambda via Mangum, Amazon API Gateway, "
+        "Amazon SQS with DLQs, Amazon S3 KMS, and CloudFront CDN). This architecture eliminates costly VPC NAT Gateways while "
+        "ensuring predictable cloud expenditure and zero lost messages. Automated CI/CD pipelines in GitHub Actions enforce Ruff, "
+        "Mypy strict typing, Pytest unit/integration/concurrency tests, Vitest, Gitleaks, and CodeQL SAST."
     )
 
     doc.save(output_path)
@@ -328,7 +265,7 @@ def generate_pdf(output_path: str) -> None:
     story.append(Paragraph("TECHNICAL DESIGN DOCUMENT", title_style))
     story.append(
         Paragraph(
-            "Township Operations Platform — Phase 5 Production Release", title_style
+            "Township Operations Platform — Phase 8 Complete Release", title_style
         )
     )
     story.append(Spacer(1, 10))
@@ -344,32 +281,37 @@ def generate_pdf(output_path: str) -> None:
     meta_data = [
         [
             Paragraph("<b>Target System:</b>", body_style),
-            Paragraph("Pune Gated Township (2,400 Flats, 28 Towers)", body_style),
+            Paragraph("Pune Gated Township (2,400 Flats, 28 Towers, 180 Staff)", body_style),
         ],
         [
-            Paragraph("<b>Maintenance Tariff:</b>", body_style),
-            Paragraph(
-                "₹6.50 per sq. ft. per month (₹7,475/mo for 1,150 sq. ft.)", body_style
-            ),
+            Paragraph("<b>Architecture Model:</b>", body_style),
+            Paragraph("Option B: Supabase PostgreSQL 16 (RLS) + AWS Serverless Lambda", body_style),
         ],
         [
             Paragraph("<b>Security & Roles:</b>", body_style),
             Paragraph(
-                "Strict 2-Role RBAC (RESIDENT, HELPDESK) + PostgreSQL Force RLS",
+                "Strict 2-Role RBAC (RESIDENT, HELPDESK) + Granular Permissions + Force RLS",
                 body_style,
             ),
         ],
         [
-            Paragraph("<b>Reconciliation:</b>", body_style),
+            Paragraph("<b>Financial Ledger:</b>", body_style),
             Paragraph(
-                "UPI VPA Normalizer + Fuzzy Matching (>= 90%) + Dual Verification",
+                "64-bit Integer Paise + Append-Only Double-Entry Engine + Trigger Immutability",
                 body_style,
             ),
         ],
         [
-            Paragraph("<b>Cloud Platform:</b>", body_style),
+            Paragraph("<b>Gate & Communications:</b>", body_style),
             Paragraph(
-                "AWS ap-south-1 (Mumbai) / ECS Fargate + RDS PostgreSQL 16 Multi-AZ",
+                "Offline IndexedDB Tablet Sync + 90-Day S3 Photo Retention + Targeted Circulars",
+                body_style,
+            ),
+        ],
+        [
+            Paragraph("<b>Amenity Reservations:</b>", body_style),
+            Paragraph(
+                "Asia/Kolkata Timezone + Row-Locking Concurrency Safety + 15m Expiration Lock",
                 body_style,
             ),
         ],
@@ -394,8 +336,9 @@ def generate_pdf(output_path: str) -> None:
         Paragraph(
             "The platform coordinates township management across 2,400 apartments in Pune, Maharashtra. "
             "It features automated maintenance billing, multi-channel payment reconciliation (UPI/NEFT/Cheque), "
-            "resident registry management, SLA-driven complaint ticketing, and committee executive reporting. "
-            "All calculations strictly utilize integer paise arithmetic to guarantee financial integrity.",
+            "resident registry management, SLA-driven complaint ticketing, committee executive reporting, "
+            "offline-first gate security tablet synchronization, multi-channel notification dispatch, official township notices, "
+            "and race-condition-free amenity slot reservations. All financial operations utilize strict integer paise arithmetic.",
             body_style,
         )
     )
@@ -405,9 +348,9 @@ def generate_pdf(output_path: str) -> None:
     story.append(
         Paragraph(
             "The platform maintains strictly two application roles: RESIDENT and HELPDESK. Fine-grained permissions "
-            "(COMPLAINT_MANAGE, BANK_IMPORT, RECONCILIATION_REVIEW, BILLING_MANAGE, COMMITTEE_REPORT_READ) govern "
-            "operational capabilities. Multi-tenant isolation is enforced at the database engine level via PostgreSQL "
-            "FORCE ROW LEVEL SECURITY across all five financial tables.",
+            "(COMPLAINT_MANAGE, BANK_IMPORT, RECONCILIATION_REVIEW, BILLING_MANAGE, COMMITTEE_REPORT_READ, GATE_OPERATIONS) "
+            "govern operational capabilities. Multi-tenant isolation is enforced at the database engine level via PostgreSQL "
+            "FORCE ROW LEVEL SECURITY across all application tables.",
             body_style,
         )
     )
@@ -430,7 +373,8 @@ def generate_pdf(output_path: str) -> None:
     story.append(
         Paragraph(
             "Invoices snapshot unit rates at generation. Balances are derived dynamically from an append-only double-entry "
-            "financial ledger. The late-fee engine supports Flat Fee, Monthly Percentage, and Daily Simple Interest in basis points.",
+            "financial ledger. The late-fee engine supports Flat Fee, Monthly Percentage, and Daily Simple Interest in basis points. "
+            "Row-level locking (SELECT ... FOR UPDATE) and idempotency keys protect payment allocations.",
             body_style,
         )
     )
@@ -455,22 +399,45 @@ def generate_pdf(output_path: str) -> None:
     )
 
     story.append(
-        Paragraph("3.5 Committee Reporting & PWA Resident Experience", h2_style)
+        Paragraph("3.5 Gate Management, Offline Sync & Photo Retention", h2_style)
     )
     story.append(
         Paragraph(
-            "Live SQL aggregates calculate arrears across 0-30, 31-60, 61-90, and 90+ day buckets. CSV exports include formula injection "
-            "mitigation (CWE-1236). The resident portal is delivered as an installable, offline-capable Progressive Web Application (PWA).",
+            "Decoupled approval and entry state machines. Salted guest passes (GP-XXXX). Offline-first tablet architecture "
+            "using IndexedDB with replay protection. 90-day visitor photo retention enforced via S3 lifecycle and purge workers.",
+            body_style,
+        )
+    )
+
+    story.append(
+        Paragraph("3.6 Multi-Channel Communications & Official Notices", h2_style)
+    )
+    story.append(
+        Paragraph(
+            "Outbox-driven notification engine over Amazon SQS queues with DLQs. Granular targeting for official notices "
+            "by society, tower, and flat. Supports draft/publish states, auto-expiry, pinning, read tracking, and emergency outbox broadcast.",
+            body_style,
+        )
+    )
+
+    story.append(
+        Paragraph("3.7 Amenity Booking & Concurrency Control", h2_style)
+    )
+    story.append(
+        Paragraph(
+            "Discrete time-slot booking engine with Asia/Kolkata timezone awareness, PostgreSQL row locking (SELECT ... FOR UPDATE) "
+            "preventing capacity oversubscription, 15-minute payment expiration lock, cancellation policies, and staff maintenance blocking.",
             body_style,
         )
     )
 
     # Section 4
-    story.append(Paragraph("4. Deployment & Infrastructure Architecture", h1_style))
+    story.append(Paragraph("4. Deployment & Infrastructure Architecture (Option B)", h1_style))
     story.append(
         Paragraph(
-            "AWS CDK v2 provisions Amazon VPC in Mumbai (ap-south-1), RDS PostgreSQL 16 Multi-AZ, ECS Fargate FastAPI container tasks, "
-            "and CloudFront S3 static hosting. CI/CD pipelines enforce Ruff, Mypy, Pytest, Vitest, Gitleaks, and CodeQL SAST.",
+            "AWS CDK v2 provisions AWS Serverless compute (FastAPI on AWS Lambda with Mangum, Amazon API Gateway, Amazon SQS + DLQs, "
+            "KMS-encrypted S3, and CloudFront CDN) paired with Supabase PostgreSQL 16 (Multi-AZ, RLS, PgBouncer port 6543 pooler). "
+            "CI/CD pipelines enforce Ruff, Mypy strict typing, Pytest unit/integration/concurrency tests, Vitest, Gitleaks, and CodeQL SAST.",
             body_style,
         )
     )
@@ -498,9 +465,10 @@ def main() -> None:
     os.makedirs(docs_dir, exist_ok=True)
 
     md_path = os.path.join(docs_dir, "technical_design_document.md")
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(TDD_CONTENT_MARKDOWN)
-    print(f"Generated Markdown: {md_path}")
+    if not os.path.exists(md_path):
+        print(f"Warning: {md_path} not found.")
+    else:
+        print(f"Verified Markdown: {md_path}")
 
     docx_path = os.path.join(docs_dir, "Technical_Design_Document.docx")
     generate_docx(docx_path)
