@@ -465,7 +465,7 @@ class AmenityService:
         lock_stmt = (
             select(Amenity)
             .where(Amenity.id == amenity_id, Amenity.society_id == society_id)
-            .with_for_update()
+            .with_for_update(of=Amenity)
         )
         amenity = self.db.execute(lock_stmt).scalar_one_or_none()
         if not amenity:
@@ -569,24 +569,20 @@ class AmenityService:
                 )
 
         # Capacity & duplicate slot check
-        active_bookings_stmt = (
-            select(AmenityBooking)
-            .where(
-                AmenityBooking.amenity_id == amenity.id,
-                AmenityBooking.booking_date == req.booking_date,
-                AmenityBooking.start_time == req.start_time,
-                or_(
-                    AmenityBooking.status == BookingStatus.CONFIRMED,
-                    and_(
-                        AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
-                        or_(
-                            AmenityBooking.payment_expires_at.is_(None),
-                            AmenityBooking.payment_expires_at > now_utc,
-                        ),
+        active_bookings_stmt = select(AmenityBooking).where(
+            AmenityBooking.amenity_id == amenity.id,
+            AmenityBooking.booking_date == req.booking_date,
+            AmenityBooking.start_time == req.start_time,
+            or_(
+                AmenityBooking.status == BookingStatus.CONFIRMED,
+                and_(
+                    AmenityBooking.status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        AmenityBooking.payment_expires_at.is_(None),
+                        AmenityBooking.payment_expires_at > now_utc,
                     ),
                 ),
-            )
-            .with_for_update()
+            ),
         )
         active_slot_bookings = list(self.db.scalars(active_bookings_stmt).all())
 
@@ -1137,7 +1133,7 @@ class AmenityService:
             select(AmenityBooking)
             .options(joinedload(AmenityBooking.amenity), joinedload(AmenityBooking.flat))
             .where(AmenityBooking.id == booking_id, AmenityBooking.society_id == society_id)
-            .with_for_update()
+            .with_for_update(of=AmenityBooking)
         )
         booking = self.db.execute(lock_stmt).scalar_one_or_none()
         if not booking:

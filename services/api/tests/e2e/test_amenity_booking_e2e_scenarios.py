@@ -290,6 +290,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
     with Session(engine) as setup_session:
         with contextlib.suppress(Exception):
             setup_session.execute(text("RESET ROLE;"))
+            setup_session.execute(text("SET ROLE service_role;"))
 
         soc = Society(
             id=soc_id,
@@ -381,6 +382,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
         with Session(engine) as worker_session:
             with contextlib.suppress(Exception):
                 worker_session.execute(text("RESET ROLE;"))
+                worker_session.execute(text("SET ROLE service_role;"))
             service = AmenityService(worker_session)
             # Both threads reach the barrier before either starts its booking transaction
             barrier.wait(timeout=5)
@@ -430,6 +432,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
     with Session(engine) as verify_session:
         with contextlib.suppress(Exception):
             verify_session.execute(text("RESET ROLE;"))
+            verify_session.execute(text("SET ROLE service_role;"))
         persisted_bookings = list(
             verify_session.scalars(
                 select(AmenityBooking).where(
