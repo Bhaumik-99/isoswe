@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NoticeCategory, NoticeItem, NoticePriority, NoticeStatus, NoticeTargetType } from '../../../types';
+import { NoticeCategory, NoticeItem } from '../../../types';
 
 export const filterNotices = (
   notices: NoticeItem[],
