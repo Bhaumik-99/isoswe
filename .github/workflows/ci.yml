@@ -70,6 +70,7 @@ jobs:
       - name: Run Pytest Suite with Coverage
         env:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/township_ops_test
+          TEST_POSTGRES_URL: postgresql+psycopg://postgres:postgres@localhost:5432/township_ops_test
           ENABLE_LOCAL_AUTH_BYPASS: "true"
           ENVIRONMENT: "development"
           MESSAGING_PROVIDER: "local"

@@ -52,7 +52,7 @@ from app.domains.identity.models import (
 POSTGRES_BASE_URL = os.environ.get(
     "TEST_POSTGRES_URL",
     "postgresql://postgres:postgres@localhost:5432/postgres",
-)
+).replace("postgresql+psycopg://", "postgresql://")
 TEST_DB_NAME = "township_ops_rls_integration_test"
 TEST_DB_URL = f"postgresql+psycopg://postgres:postgres@localhost:5432/{TEST_DB_NAME}"
 

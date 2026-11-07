@@ -20,16 +20,18 @@ Validates:
    - Scenario J: An unauthorized resident attempts to perform staff actions (RBAC enforcement).
 """
 
+import logging
 import os
 import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, pool, select, text
+from sqlalchemy import create_engine, delete, func, pool, select, text
 from sqlalchemy.orm import Session
 
 from app.core.database import Base
@@ -56,8 +58,10 @@ from app.domains.identity.models import (
     User,
     UserStatus,
 )
-from app.domains.reliability.models import AuditEvent
+from app.domains.reliability.models import AuditEvent, OutboxEvent
 from app.main import app  # noqa: F401 Ensure all model tables are registered in Base.metadata
+
+logger = logging.getLogger(__name__)
 
 # Fixed deterministic IDs & Dev User Auth Headers
 SOCIETY_PUNE_ID = "11111111-1111-1111-1111-111111111111"
@@ -71,22 +75,86 @@ RESIDENT_SWATI_HEADERS = {"X-Dev-User": "swati"}
 STAFF_HELPDESK_HEADERS = {"X-Dev-User": "helpdesk"}
 
 
+def is_valid_test_database_url(url: str | None) -> tuple[bool, str]:
+    """Validates that a candidate database URL explicitly targets a designated test database.
+
+    Enforces that:
+    1. A non-empty URL is provided.
+    2. The scheme is a PostgreSQL dialect (postgresql, postgresql+psycopg, postgres).
+    3. An explicit database name is present in the path.
+    4. The database name contains 'test' (e.g. 'township_ops_test').
+    5. Disallows production databases, default system databases ('postgres', 'template0', 'template1'),
+       or hosts indicating production environments.
+    """
+    if not url or not url.strip():
+        return False, "Database URL is empty or not configured"
+
+    try:
+        parsed = urlparse(url.strip())
+    except Exception as exc:
+        return False, f"Failed to parse database URL: {exc}"
+
+    valid_schemes = {"postgresql", "postgresql+psycopg", "postgresql+psycopg2", "postgres"}
+    if parsed.scheme.lower() not in valid_schemes:
+        return (
+            False,
+            f"Unsupported scheme '{parsed.scheme}'. Must be a PostgreSQL connection URL.",
+        )
+
+    db_name = parsed.path.lstrip("/").split("?")[0].strip()
+    if not db_name:
+        return False, "Database URL path does not specify a target database name."
+
+    # Disallow common default/system or non-test databases
+    disallowed_exact_names = {"postgres", "template0", "template1", "defaultdb"}
+    if db_name.lower() in disallowed_exact_names:
+        return (
+            False,
+            f"Target database '{db_name}' is a system/default database, not a dedicated test database.",
+        )
+
+    if "test" not in db_name.lower():
+        return (
+            False,
+            f"Target database '{db_name}' is not explicitly designated as a test database (must contain 'test').",
+        )
+
+    hostname = (parsed.hostname or "").lower()
+    if "prod" in hostname or "production" in hostname:
+        return (
+            False,
+            f"Target host '{parsed.hostname}' appears to be a production host; test execution forbidden.",
+        )
+
+    return True, f"Valid test database: {db_name}"
+
+
 def get_postgres_test_url() -> str | None:
-    candidates = [
-        os.environ.get("TEST_POSTGRES_URL"),
-        os.environ.get("DATABASE_URL"),
-        "postgresql://postgres:postgres@localhost:5432/postgres",
-    ]
-    for candidate in candidates:
-        if candidate and "sqlite" not in candidate:
-            connect_url = candidate.replace("postgresql+psycopg://", "postgresql://")
-            try:
-                conn = psycopg.connect(connect_url, connect_timeout=3)
-                conn.close()
-                return candidate
-            except Exception:
-                continue
-    return None
+    """Retrieves and validates an explicitly configured PostgreSQL test database URL.
+
+    Security & Isolation Rules:
+    - ONLY reads from TEST_POSTGRES_URL.
+    - NEVER falls back to DATABASE_URL (which could point to staging/production).
+    - NEVER falls back silently to default postgres system databases.
+    - Strictly validates that the database name contains 'test'.
+    """
+    raw_url = os.environ.get("TEST_POSTGRES_URL")
+    if not raw_url:
+        return None
+
+    is_valid, reason = is_valid_test_database_url(raw_url)
+    if not is_valid:
+        logger.warning("TEST_POSTGRES_URL rejected for safety: %s", reason)
+        return None
+
+    connect_url = raw_url.replace("postgresql+psycopg://", "postgresql://")
+    try:
+        conn = psycopg.connect(connect_url, connect_timeout=3)
+        conn.close()
+        return raw_url
+    except Exception as exc:
+        logger.warning("Could not connect to TEST_POSTGRES_URL: %s", exc)
+        return None
 
 
 def is_postgres_available() -> bool:
@@ -255,7 +323,7 @@ def test_e2e_complete_resident_to_staff_booking_lifecycle(
 
 @pytest.mark.skipif(
     not is_postgres_available(),
-    reason="PostgreSQL integration test requires a reachable PostgreSQL database (localhost:5432 or TEST_POSTGRES_URL/DATABASE_URL)",
+    reason="PostgreSQL integration test requires an explicit TEST_POSTGRES_URL pointing to a validated test database (e.g. postgresql://postgres:postgres@localhost:5432/township_ops_test)",
 )
 def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
     """Scenario A: Real PostgreSQL integration test for concurrency safety.
@@ -266,9 +334,13 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
     - With amenity capacity strictly set to one, SELECT ... FOR UPDATE row locking
       ensures exactly one booking succeeds and the other receives CAPACITY_EXCEEDED.
     - PostgreSQL prevents overbooking; exactly one booking is persisted.
+    - Comprehensive teardown cleanup ensures all synthetic test records are deleted,
+      leaving no permanent test records in the target database.
     """
     pg_url = get_postgres_test_url()
-    assert pg_url is not None
+    assert pg_url is not None, (
+        "A valid TEST_POSTGRES_URL pointing to a test database must be provided"
+    )
     engine_url = (
         pg_url.replace("postgresql://", "postgresql+psycopg://", 1)
         if not pg_url.startswith("postgresql+psycopg://")
@@ -286,163 +358,274 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
     user2_id = uuid.uuid4()
     amenity_id = uuid.uuid4()
     target_date = facility_today() + timedelta(days=3)
-
-    # 1. Setup society, users, flats, approved memberships, and capacity 1 amenity
-    with Session(engine) as setup_session:
-        setup_session.execute(text("RESET ROLE;"))
-
-        soc = Society(
-            id=soc_id,
-            name=f"Concurrency Society {soc_id.hex[:6]}",
-            status=SocietyStatus.ACTIVE,
-        )
-        tow = Tower(id=tow_id, society_id=soc_id, tower_number="T1", name="Tower 1")
-        flat1 = Flat(
-            id=flat1_id,
-            society_id=soc_id,
-            tower_id=tow_id,
-            flat_number="101",
-            area_sqft=1000,
-            status=FlatStatus.OCCUPIED,
-        )
-        flat2 = Flat(
-            id=flat2_id,
-            society_id=soc_id,
-            tower_id=tow_id,
-            flat_number="102",
-            area_sqft=1000,
-            status=FlatStatus.OCCUPIED,
-        )
-        user1 = User(
-            id=user1_id,
-            supabase_uid=uuid.uuid4(),
-            email=f"neeraj-conc-{user1_id.hex[:6]}@example.com",
-            phone=f"+9198{user1_id.int % 100000000:08d}",
-            full_name="Neeraj Concurrency",
-            status=UserStatus.ACTIVE,
-        )
-        user2 = User(
-            id=user2_id,
-            supabase_uid=uuid.uuid4(),
-            email=f"swati-conc-{user2_id.hex[:6]}@example.com",
-            phone=f"+9197{user2_id.int % 100000000:08d}",
-            full_name="Swati Concurrency",
-            status=UserStatus.ACTIVE,
-        )
-        now = utc_now()
-        mem1 = FlatMembership(
-            id=uuid.uuid4(),
-            society_id=soc_id,
-            flat_id=flat1_id,
-            user_id=user1_id,
-            membership_type=MembershipType.OWNER,
-            status=MembershipStatus.APPROVED,
-            valid_from=now - timedelta(days=1),
-        )
-        mem2 = FlatMembership(
-            id=uuid.uuid4(),
-            society_id=soc_id,
-            flat_id=flat2_id,
-            user_id=user2_id,
-            membership_type=MembershipType.TENANT,
-            status=MembershipStatus.APPROVED,
-            valid_from=now - timedelta(days=1),
-        )
-        # Amenity with strict capacity 1
-        amenity = Amenity(
-            id=amenity_id,
-            society_id=soc_id,
-            name="Badminton Court 1 (Capacity 1)",
-            description="Championship court with single-player/team capacity 1",
-            amenity_type=AmenityType.BADMINTON_COURT,
-            location="Sports Complex",
-            tower_id=None,
-            capacity=1,
-            slot_duration_minutes=60,
-            opening_time="06:00",
-            closing_time="22:00",
-            booking_fee_paise=15000,
-            advance_booking_days=7,
-            min_advance_hours=0,
-            max_slots_per_day_per_resident=2,
-            cancellation_deadline_hours=2,
-            refund_percentage=80,
-            allowed_membership_types=["OWNER", "TENANT", "FAMILY_MEMBER"],
-            is_active=True,
-        )
-        setup_session.add_all([soc, tow, flat1, flat2, user1, user2, mem1, mem2, amenity])
-        setup_session.commit()
-
-    # 2. Concurrency Barrier and Execution
-    barrier = threading.Barrier(2)
     results: dict[str, Any] = {}
 
-    def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
-        with Session(engine) as worker_session:
-            worker_session.execute(text("RESET ROLE;"))
-            service = AmenityService(worker_session)
-            # Both threads reach the barrier before either starts its booking transaction
-            barrier.wait(timeout=5)
-            try:
-                booking = service.create_booking(
-                    society_id=soc_id,
-                    user_id=u_id,
-                    amenity_id=amenity_id,
-                    req=CreateBookingRequest(
-                        flat_id=f_id,
-                        booking_date=target_date,
-                        start_time="18:00",
-                        end_time="19:00",
-                        booked_units=1,
-                        auto_pay=True,
-                    ),
-                )
-                worker_session.commit()
-                results[worker_name] = {"status": "SUCCESS", "booking_id": booking.id}
-            except Exception as exc:
-                worker_session.rollback()
-                results[worker_name] = {"status": "ERROR", "exception": exc}
+    try:
+        # 1. Setup society, users, flats, approved memberships, and capacity 1 amenity
+        with Session(engine) as setup_session:
+            setup_session.execute(text("RESET ROLE;"))
 
-    t1 = threading.Thread(target=attempt_booking, args=("neeraj", user1_id, flat1_id))
-    t2 = threading.Thread(target=attempt_booking, args=("swati", user2_id, flat2_id))
+            soc = Society(
+                id=soc_id,
+                name=f"Concurrency Society {soc_id.hex[:6]}",
+                status=SocietyStatus.ACTIVE,
+            )
+            tow = Tower(id=tow_id, society_id=soc_id, tower_number="T1", name="Tower 1")
+            flat1 = Flat(
+                id=flat1_id,
+                society_id=soc_id,
+                tower_id=tow_id,
+                flat_number="101",
+                area_sqft=1000,
+                status=FlatStatus.OCCUPIED,
+            )
+            flat2 = Flat(
+                id=flat2_id,
+                society_id=soc_id,
+                tower_id=tow_id,
+                flat_number="102",
+                area_sqft=1000,
+                status=FlatStatus.OCCUPIED,
+            )
+            user1 = User(
+                id=user1_id,
+                supabase_uid=uuid.uuid4(),
+                email=f"neeraj-conc-{user1_id.hex[:6]}@example.com",
+                phone=f"+9198{user1_id.int % 100000000:08d}",
+                full_name="Neeraj Concurrency",
+                status=UserStatus.ACTIVE,
+            )
+            user2 = User(
+                id=user2_id,
+                supabase_uid=uuid.uuid4(),
+                email=f"swati-conc-{user2_id.hex[:6]}@example.com",
+                phone=f"+9197{user2_id.int % 100000000:08d}",
+                full_name="Swati Concurrency",
+                status=UserStatus.ACTIVE,
+            )
+            now = utc_now()
+            mem1 = FlatMembership(
+                id=uuid.uuid4(),
+                society_id=soc_id,
+                flat_id=flat1_id,
+                user_id=user1_id,
+                membership_type=MembershipType.OWNER,
+                status=MembershipStatus.APPROVED,
+                valid_from=now - timedelta(days=1),
+            )
+            mem2 = FlatMembership(
+                id=uuid.uuid4(),
+                society_id=soc_id,
+                flat_id=flat2_id,
+                user_id=user2_id,
+                membership_type=MembershipType.TENANT,
+                status=MembershipStatus.APPROVED,
+                valid_from=now - timedelta(days=1),
+            )
+            # Amenity with strict capacity 1
+            amenity = Amenity(
+                id=amenity_id,
+                society_id=soc_id,
+                name="Badminton Court 1 (Capacity 1)",
+                description="Championship court with single-player/team capacity 1",
+                amenity_type=AmenityType.BADMINTON_COURT,
+                location="Sports Complex",
+                tower_id=None,
+                capacity=1,
+                slot_duration_minutes=60,
+                opening_time="06:00",
+                closing_time="22:00",
+                booking_fee_paise=15000,
+                advance_booking_days=7,
+                min_advance_hours=0,
+                max_slots_per_day_per_resident=2,
+                cancellation_deadline_hours=2,
+                refund_percentage=80,
+                allowed_membership_types=["OWNER", "TENANT", "FAMILY_MEMBER"],
+                is_active=True,
+            )
+            setup_session.add_all([soc, tow, flat1, flat2, user1, user2, mem1, mem2, amenity])
+            setup_session.commit()
 
-    t1.start()
-    t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
+        # 2. Concurrency Barrier and Execution
+        barrier = threading.Barrier(2)
 
-    # 3. Assertions: Exactly one succeeds, exactly one gets CAPACITY_EXCEEDED
-    statuses = [results.get("neeraj", {}).get("status"), results.get("swati", {}).get("status")]
-    assert statuses.count("SUCCESS") == 1, (
-        f"Expected exactly 1 booking to succeed in PostgreSQL, got outcomes: {results}"
-    )
-    assert statuses.count("ERROR") == 1, (
-        f"Expected exactly 1 booking to fail in PostgreSQL, got outcomes: {results}"
-    )
+        def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
+            with Session(engine) as worker_session:
+                worker_session.execute(text("RESET ROLE;"))
+                service = AmenityService(worker_session)
+                # Both threads reach the barrier before either starts its booking transaction
+                barrier.wait(timeout=5)
+                try:
+                    booking = service.create_booking(
+                        society_id=soc_id,
+                        user_id=u_id,
+                        amenity_id=amenity_id,
+                        req=CreateBookingRequest(
+                            flat_id=f_id,
+                            booking_date=target_date,
+                            start_time="18:00",
+                            end_time="19:00",
+                            booked_units=1,
+                            auto_pay=True,
+                        ),
+                    )
+                    worker_session.commit()
+                    results[worker_name] = {"status": "SUCCESS", "booking_id": booking.id}
+                except Exception as exc:
+                    worker_session.rollback()
+                    results[worker_name] = {"status": "ERROR", "exception": exc}
 
-    losing_worker = "neeraj" if results["neeraj"]["status"] == "ERROR" else "swati"
-    exc = results[losing_worker]["exception"]
-    assert isinstance(exc, ConflictError), f"Expected ConflictError, got: {type(exc)}: {exc}"
-    assert exc.code == "CAPACITY_EXCEEDED", f"Expected CAPACITY_EXCEEDED, got: {exc.code}"
+        t1 = threading.Thread(target=attempt_booking, args=("neeraj", user1_id, flat1_id))
+        t2 = threading.Thread(target=attempt_booking, args=("swati", user2_id, flat2_id))
 
-    # 4. Independent Database Session Verification
-    with Session(engine) as verify_session:
-        verify_session.execute(text("RESET ROLE;"))
-        persisted_bookings = list(
-            verify_session.scalars(
-                select(AmenityBooking).where(
-                    AmenityBooking.amenity_id == amenity_id,
-                    AmenityBooking.booking_date == target_date,
-                    AmenityBooking.start_time == "18:00",
-                )
-            ).all()
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # 3. Assertions: Exactly one succeeds, exactly one gets CAPACITY_EXCEEDED
+        statuses = [results.get("neeraj", {}).get("status"), results.get("swati", {}).get("status")]
+        assert statuses.count("SUCCESS") == 1, (
+            f"Expected exactly 1 booking to succeed in PostgreSQL, got outcomes: {results}"
         )
-        assert len(persisted_bookings) == 1, (
-            f"Expected strictly 1 booking in PostgreSQL, found: {len(persisted_bookings)}"
+        assert statuses.count("ERROR") == 1, (
+            f"Expected exactly 1 booking to fail in PostgreSQL, got outcomes: {results}"
         )
-        assert persisted_bookings[0].booked_units == 1
 
-    engine.dispose()
+        losing_worker = "neeraj" if results["neeraj"]["status"] == "ERROR" else "swati"
+        exc = results[losing_worker]["exception"]
+        assert isinstance(exc, ConflictError), f"Expected ConflictError, got: {type(exc)}: {exc}"
+        assert exc.code == "CAPACITY_EXCEEDED", f"Expected CAPACITY_EXCEEDED, got: {exc.code}"
+
+        # 4. Independent Database Session Verification
+        with Session(engine) as verify_session:
+            verify_session.execute(text("RESET ROLE;"))
+            persisted_bookings = list(
+                verify_session.scalars(
+                    select(AmenityBooking).where(
+                        AmenityBooking.amenity_id == amenity_id,
+                        AmenityBooking.booking_date == target_date,
+                        AmenityBooking.start_time == "18:00",
+                    )
+                ).all()
+            )
+            assert len(persisted_bookings) == 1, (
+                f"Expected strictly 1 booking in PostgreSQL, found: {len(persisted_bookings)}"
+            )
+            assert persisted_bookings[0].booked_units == 1
+    finally:
+        # Teardown Cleanup: delete all synthetic records created during this test
+        try:
+            with Session(engine) as cleanup_session:
+                cleanup_session.execute(text("RESET ROLE;"))
+                # Delete outbox events for created bookings
+                booking_ids = [
+                    str(res["booking_id"])
+                    for res in results.values()
+                    if isinstance(res, dict) and "booking_id" in res
+                ]
+                if booking_ids:
+                    cleanup_session.execute(
+                        delete(OutboxEvent).where(
+                            OutboxEvent.aggregate_type == "amenity_booking",
+                            OutboxEvent.aggregate_id.in_(booking_ids),
+                        )
+                    )
+                # Delete payments
+                cleanup_session.execute(delete(Payment).where(Payment.society_id == soc_id))
+                # Delete bookings
+                cleanup_session.execute(
+                    delete(AmenityBooking).where(AmenityBooking.society_id == soc_id)
+                )
+                # Delete amenities
+                cleanup_session.execute(delete(Amenity).where(Amenity.society_id == soc_id))
+                # Delete memberships
+                cleanup_session.execute(
+                    delete(FlatMembership).where(FlatMembership.society_id == soc_id)
+                )
+                # Delete flats
+                cleanup_session.execute(delete(Flat).where(Flat.society_id == soc_id))
+                # Delete towers
+                cleanup_session.execute(delete(Tower).where(Tower.society_id == soc_id))
+                # Delete users
+                cleanup_session.execute(delete(User).where(User.id.in_([user1_id, user2_id])))
+                # Delete audit events
+                cleanup_session.execute(delete(AuditEvent).where(AuditEvent.society_id == soc_id))
+                # Delete society
+                cleanup_session.execute(delete(Society).where(Society.id == soc_id))
+                cleanup_session.commit()
+        except Exception as cleanup_err:
+            logger.warning("Failed to clean up synthetic concurrency records: %s", cleanup_err)
+        finally:
+            engine.dispose()
+
+
+def test_test_database_url_validation_and_security(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that test database URL validation strictly requires TEST_POSTGRES_URL,
+    validates database naming conventions to prevent accidental writes to production,
+    and never silently falls back to DATABASE_URL or arbitrary databases.
+    """
+    # 1. Valid test database URLs
+    valid_urls = [
+        "postgresql://postgres:postgres@localhost:5432/township_ops_test",
+        "postgresql+psycopg://postgres:postgres@localhost:5432/township_ops_test",
+        "postgresql://user:pass@127.0.0.1:5432/test_amenity_concurrency",
+        "postgresql://user:pass@localhost:5432/test_db",
+    ]
+    for url in valid_urls:
+        is_valid, msg = is_valid_test_database_url(url)
+        assert is_valid is True, f"Expected {url} to be valid, got: {msg}"
+
+    # 2. Rejected URLs: non-test databases, missing URLs, system databases, production hosts
+    invalid_cases = [
+        (None, "empty or not configured"),
+        ("", "empty or not configured"),
+        ("   ", "empty or not configured"),
+        ("sqlite:///:memory:", "Unsupported scheme"),
+        ("mysql://user:pass@localhost/test_db", "Unsupported scheme"),
+        ("postgresql://localhost:5432/", "does not specify a target database name"),
+        ("postgresql://postgres:postgres@localhost:5432/postgres", "system/default database"),
+        ("postgresql://postgres:postgres@localhost:5432/template0", "system/default database"),
+        ("postgresql://postgres:postgres@localhost:5432/template1", "system/default database"),
+        ("postgresql://postgres:postgres@localhost:5432/defaultdb", "system/default database"),
+        ("postgresql://postgres:postgres@localhost:5432/township_ops", "must contain 'test'"),
+        ("postgresql://postgres:postgres@localhost:5432/production", "must contain 'test'"),
+        ("postgresql://user:pass@prod-db.example.com:5432/township_ops_test", "production host"),
+    ]
+    for url, expected_err_fragment in invalid_cases:
+        is_valid, reason = is_valid_test_database_url(url)
+        assert is_valid is False, f"Expected {url} to be rejected"
+        assert expected_err_fragment.lower() in reason.lower(), (
+            f"Expected '{expected_err_fragment}' in rejection reason '{reason}' for URL '{url}'"
+        )
+
+    # 3. get_postgres_test_url MUST ignore DATABASE_URL
+    monkeypatch.delenv("TEST_POSTGRES_URL", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://postgres:postgres@localhost:5432/production_app",
+    )
+    assert get_postgres_test_url() is None, (
+        "get_postgres_test_url must NEVER fall back to DATABASE_URL!"
+    )
+
+    # 4. get_postgres_test_url MUST reject unsafe TEST_POSTGRES_URL
+    monkeypatch.setenv(
+        "TEST_POSTGRES_URL",
+        "postgresql://postgres:postgres@localhost:5432/postgres",
+    )
+    assert get_postgres_test_url() is None, (
+        "get_postgres_test_url must reject default system database 'postgres'"
+    )
+
+    monkeypatch.setenv(
+        "TEST_POSTGRES_URL",
+        "postgresql://postgres:postgres@localhost:5432/production_ops",
+    )
+    assert get_postgres_test_url() is None, (
+        "get_postgres_test_url must reject non-test database 'production_ops'"
+    )
 
 
 def test_scenario_b_resident_attempts_to_book_inactive_amenity(
