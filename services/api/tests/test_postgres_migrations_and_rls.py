@@ -1588,7 +1588,6 @@ def test_postgres_amenity_concurrency_race_condition_prevents_overbooking(
     # 1. Setup society, tower, flats, users, approved memberships, and capacity 1 amenity
     with Session(engine) as setup_session:
         setup_session.execute(text("RESET ROLE;"))
-        setup_session.execute(text("SET ROLE service_role;"))
 
         soc = Society(
             id=soc_id,
@@ -1678,7 +1677,6 @@ def test_postgres_amenity_concurrency_race_condition_prevents_overbooking(
     def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
         with Session(engine) as worker_session:
             worker_session.execute(text("RESET ROLE;"))
-            worker_session.execute(text("SET ROLE service_role;"))
             service = AmenityService(worker_session)
             # Both threads reach the barrier before either starts its booking transaction
             barrier.wait(timeout=5)
@@ -1732,7 +1730,6 @@ def test_postgres_amenity_concurrency_race_condition_prevents_overbooking(
     # 4. Independent Database Session Verification
     with Session(engine) as verify_session:
         verify_session.execute(text("RESET ROLE;"))
-        verify_session.execute(text("SET ROLE service_role;"))
         persisted_bookings = list(
             verify_session.scalars(
                 select(AmenityBooking).where(

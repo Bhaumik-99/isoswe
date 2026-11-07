@@ -20,7 +20,6 @@ Validates:
    - Scenario J: An unauthorized resident attempts to perform staff actions (RBAC enforcement).
 """
 
-import contextlib
 import os
 import threading
 import uuid
@@ -57,6 +56,7 @@ from app.domains.identity.models import (
     User,
     UserStatus,
 )
+from app.main import app  # noqa: F401 Ensure all model tables are registered in Base.metadata
 
 # Fixed deterministic IDs & Dev User Auth Headers
 SOCIETY_PUNE_ID = "11111111-1111-1111-1111-111111111111"
@@ -288,9 +288,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
 
     # 1. Setup society, users, flats, approved memberships, and capacity 1 amenity
     with Session(engine) as setup_session:
-        with contextlib.suppress(Exception):
-            setup_session.execute(text("RESET ROLE;"))
-            setup_session.execute(text("SET ROLE service_role;"))
+        setup_session.execute(text("RESET ROLE;"))
 
         soc = Society(
             id=soc_id,
@@ -380,9 +378,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
 
     def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
         with Session(engine) as worker_session:
-            with contextlib.suppress(Exception):
-                worker_session.execute(text("RESET ROLE;"))
-                worker_session.execute(text("SET ROLE service_role;"))
+            worker_session.execute(text("RESET ROLE;"))
             service = AmenityService(worker_session)
             # Both threads reach the barrier before either starts its booking transaction
             barrier.wait(timeout=5)
@@ -430,9 +426,7 @@ def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
 
     # 4. Independent Database Session Verification
     with Session(engine) as verify_session:
-        with contextlib.suppress(Exception):
-            verify_session.execute(text("RESET ROLE;"))
-            verify_session.execute(text("SET ROLE service_role;"))
+        verify_session.execute(text("RESET ROLE;"))
         persisted_bookings = list(
             verify_session.scalars(
                 select(AmenityBooking).where(
