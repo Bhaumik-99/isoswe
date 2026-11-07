@@ -30,15 +30,12 @@ from sqlalchemy.orm import Session
 
 from app.domains.amenities.models import (
     Amenity,
-    AmenityBlock,
     AmenityBooking,
     AmenityType,
     BookingPaymentStatus,
     BookingStatus,
-    RefundStatus,
 )
 from app.domains.billing.models import Payment, PaymentStatus
-from app.domains.reliability.models import AuditEvent, OutboxEvent
 
 # Fixed deterministic IDs & Dev User Auth Headers
 SOCIETY_PUNE_ID = "11111111-1111-1111-1111-111111111111"
@@ -493,9 +490,7 @@ def test_scenario_f_duplicate_payment_callback_or_retry_idempotency(
 
     # Verify database has strictly 1 payment record for this booking
     payments = list(
-        db_session.scalars(
-            select(Payment).where(Payment.booking_id == uuid.UUID(booking_id))
-        ).all()
+        db_session.scalars(select(Payment).where(Payment.booking_id == uuid.UUID(booking_id))).all()
     )
     assert len(payments) == 1
     assert payments[0].status == PaymentStatus.SUCCESS
@@ -556,16 +551,16 @@ def test_scenario_h_resident_attempts_to_cancel_outside_cancellation_window(
     resident cancellation must be rejected with 409 CANCELLATION_DEADLINE_EXPIRED.
     """
     now = datetime.now(UTC)
-    today = now.date()
+    past_date = (now - timedelta(days=1)).date()
 
-    # Create confirmed booking for today with start_time in the past or immediately upcoming
+    # Create confirmed booking for past date where cancellation deadline has expired
     booking = AmenityBooking(
         id=uuid.uuid4(),
         society_id=uuid.UUID(SOCIETY_PUNE_ID),
         amenity_id=e2e_badminton_amenity.id,
         user_id=uuid.UUID("44444444-4444-4444-4444-444444440001"),  # Neeraj
         flat_id=uuid.UUID(FLAT_1203_ID),
-        booking_date=today,
+        booking_date=past_date,
         start_time="07:00",
         end_time="08:00",
         booked_units=1,

@@ -31,12 +31,10 @@ from app.domains.amenities.models import (
     RefundStatus,
 )
 from app.domains.amenities.schemas import (
-    AmenityBlockResponse,
     AmenityCreateRequest,
     AmenityUpdateRequest,
     CreateAmenityBlockRequest,
     CreateBookingRequest,
-    PayBookingRequest,
 )
 from app.domains.amenities.service import AmenityService, utc_now
 from app.domains.billing.models import Payment, PaymentStatus
@@ -661,9 +659,9 @@ def test_resident_cancellation_within_deadline(
 def test_resident_cancellation_fails_after_deadline(
     amenity_service: AmenityService, sample_tennis_court: Amenity, db_session: Session
 ) -> None:
-    # Create booking for today where cancellation deadline has expired
+    # Create booking for past date where cancellation deadline has expired
     now = utc_now()
-    today = now.date()
+    past_date = (now - timedelta(days=1)).date()
 
     booking = AmenityBooking(
         id=uuid.uuid4(),
@@ -671,7 +669,7 @@ def test_resident_cancellation_fails_after_deadline(
         amenity_id=sample_tennis_court.id,
         user_id=NEERAJ_ID,
         flat_id=FLAT_1203_ID,
-        booking_date=today,
+        booking_date=past_date,
         start_time="10:00",
         end_time="11:00",
         booked_units=1,
@@ -802,9 +800,7 @@ def test_concurrency_race_condition_prevents_overbooking(
 # -----------------------------------------------------------------------------
 
 
-def test_pay_booking_lifecycle_success(
-    sample_tennis_court: Amenity, db_session: Session
-) -> None:
+def test_pay_booking_lifecycle_success(sample_tennis_court: Amenity, db_session: Session) -> None:
     """Proves that a pending paid booking transitions to CONFIRMED upon payment success."""
     service = AmenityService(db_session)
     target_date = utc_now().date() + timedelta(days=2)
@@ -863,9 +859,7 @@ def test_pay_booking_lifecycle_success(
     assert outbox[0].payload["payment_id"] == str(payment.id)
 
 
-def test_pay_booking_lifecycle_failure(
-    sample_tennis_court: Amenity, db_session: Session
-) -> None:
+def test_pay_booking_lifecycle_failure(sample_tennis_court: Amenity, db_session: Session) -> None:
     """Proves simulated payment failure transitions booking to PAYMENT_FAILED."""
     service = AmenityService(db_session)
     target_date = utc_now().date() + timedelta(days=2)
@@ -913,9 +907,7 @@ def test_pay_booking_lifecycle_failure(
     assert len(outbox) == 1
 
 
-def test_pay_booking_idempotency(
-    sample_tennis_court: Amenity, db_session: Session
-) -> None:
+def test_pay_booking_idempotency(sample_tennis_court: Amenity, db_session: Session) -> None:
     """Proves repeating pay_booking with the same idempotency key returns cached result."""
     service = AmenityService(db_session)
     target_date = utc_now().date() + timedelta(days=2)
@@ -955,16 +947,12 @@ def test_pay_booking_idempotency(
 
     # Strictly 1 payment record exists for this booking
     payments = list(
-        db_session.scalars(
-            select(Payment).where(Payment.booking_id == booking.id)
-        ).all()
+        db_session.scalars(select(Payment).where(Payment.booking_id == booking.id)).all()
     )
     assert len(payments) == 1
 
 
-def test_pay_booking_window_expired(
-    sample_tennis_court: Amenity, db_session: Session
-) -> None:
+def test_pay_booking_window_expired(sample_tennis_court: Amenity, db_session: Session) -> None:
     """Proves paying an expired pending booking is rejected and marked PAYMENT_FAILED."""
     service = AmenityService(db_session)
     target_date = utc_now().date() + timedelta(days=2)

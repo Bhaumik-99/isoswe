@@ -529,9 +529,7 @@ def test_resident_pay_booking_failure_and_idempotency_api(
     assert pay2_resp.json()["payment_id"] == pay1_resp.json()["payment_id"]
 
 
-def test_staff_booking_search_and_filters_api(
-    client: TestClient, test_amenity: Amenity
-) -> None:
+def test_staff_booking_search_and_filters_api(client: TestClient, test_amenity: Amenity) -> None:
     # Query staff bookings with various filters
     resp_all = client.get(
         "/api/v1/amenities/staff/bookings",

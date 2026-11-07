@@ -223,4 +223,3 @@ class CreateAmenityBlockRequest(BaseModel):
         if start and v and v <= start:
             raise ValueError("end_time must be later than start_time")
         return v
-

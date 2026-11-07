@@ -301,4 +301,3 @@ class AmenityBlock(Base):
     __table_args__ = (
         Index("ix_amenity_blocks_society_amenity_date", "society_id", "amenity_id", "block_date"),
     )
-

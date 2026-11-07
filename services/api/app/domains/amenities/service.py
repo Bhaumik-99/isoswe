@@ -29,7 +29,6 @@ from app.domains.amenities.models import (
     RefundStatus,
 )
 from app.domains.amenities.schemas import (
-    AmenityBlockResponse,
     AmenityCreateRequest,
     AmenitySlotsResponse,
     AmenityUpdateRequest,
@@ -827,12 +826,16 @@ class AmenityService:
 
         if search and search.strip():
             s = f"%{search.strip()}%"
-            stmt = stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id).join(
-                Flat, AmenityBooking.flat_id == Flat.id
-            ).join(User, AmenityBooking.user_id == User.id)
-            total_stmt = total_stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id).join(
-                Flat, AmenityBooking.flat_id == Flat.id
-            ).join(User, AmenityBooking.user_id == User.id)
+            stmt = (
+                stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id)
+                .join(Flat, AmenityBooking.flat_id == Flat.id)
+                .join(User, AmenityBooking.user_id == User.id)
+            )
+            total_stmt = (
+                total_stmt.join(Amenity, AmenityBooking.amenity_id == Amenity.id)
+                .join(Flat, AmenityBooking.flat_id == Flat.id)
+                .join(User, AmenityBooking.user_id == User.id)
+            )
             filters.append(
                 or_(
                     Amenity.name.ilike(s),
@@ -1085,9 +1088,7 @@ class AmenityService:
     ) -> BookingResponse:
         """Processes simulated payment for an amenity booking with idempotency and state safety."""
         now = utc_now()
-        req_hash = hashlib.sha256(
-            f"{user_id}:{booking_id}:{simulate_failure}".encode()
-        ).hexdigest()
+        req_hash = hashlib.sha256(f"{user_id}:{booking_id}:{simulate_failure}".encode()).hexdigest()
 
         # Step 1: Idempotency reservation
         if idempotency_key:
@@ -1131,9 +1132,9 @@ class AmenityService:
             )
 
         # If already confirmed/paid, return idempotently
-        if (
-            booking.status == BookingStatus.CONFIRMED
-            and booking.payment_status in (BookingPaymentStatus.PAID, BookingPaymentStatus.FREE)
+        if booking.status == BookingStatus.CONFIRMED and booking.payment_status in (
+            BookingPaymentStatus.PAID,
+            BookingPaymentStatus.FREE,
         ):
             resp = self._to_booking_response(booking)
             if idempotency_key:
@@ -1494,4 +1495,3 @@ class AmenityService:
         )
         self.db.add(audit)
         self.db.flush()
-
