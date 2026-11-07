@@ -10,7 +10,10 @@ Defines models for:
 import enum
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.domains.identity.models import Flat, Tower, User
 
 from sqlalchemy import (
     Boolean,
@@ -253,4 +256,150 @@ class NotificationPreference(Base):
 
     __table_args__ = (
         UniqueConstraint("society_id", "user_id", name="uq_notification_preference_user_society"),
+    )
+
+
+# =============================================================================
+# Official Township Notices & Circulars
+# =============================================================================
+
+
+class NoticeCategory(str, enum.Enum):
+    CIRCULAR = "CIRCULAR"
+    MAINTENANCE = "MAINTENANCE"
+    EMERGENCY = "EMERGENCY"
+    EVENT = "EVENT"
+    GENERAL = "GENERAL"
+
+
+class NoticePriority(str, enum.Enum):
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
+class NoticeStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    ARCHIVED = "ARCHIVED"
+
+
+class NoticeTargetType(str, enum.Enum):
+    SOCIETY = "SOCIETY"
+    TOWER = "TOWER"
+    FLAT = "FLAT"
+
+
+class Notice(Base):
+    """Official society notices, circulars, advisories and emergency announcements."""
+
+    __tablename__ = "notices"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    society_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("societies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[NoticeCategory] = mapped_column(
+        SAEnum(NoticeCategory, native_enum=False),
+        nullable=False,
+        default=NoticeCategory.GENERAL,
+    )
+    priority: Mapped[NoticePriority] = mapped_column(
+        SAEnum(NoticePriority, native_enum=False),
+        nullable=False,
+        default=NoticePriority.NORMAL,
+    )
+    status: Mapped[NoticeStatus] = mapped_column(
+        SAEnum(NoticeStatus, native_enum=False),
+        nullable=False,
+        default=NoticeStatus.DRAFT,
+    )
+    target_type: Mapped[NoticeTargetType] = mapped_column(
+        SAEnum(NoticeTargetType, native_enum=False),
+        nullable=False,
+        default=NoticeTargetType.SOCIETY,
+    )
+    target_tower_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("towers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    target_flat_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("flats.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    # Relationships
+    author: Mapped["User"] = relationship("User", foreign_keys=[author_id])
+    target_tower: Mapped["Tower | None"] = relationship("Tower", foreign_keys=[target_tower_id])
+    target_flat: Mapped["Flat | None"] = relationship("Flat", foreign_keys=[target_flat_id])
+    reads: Mapped[list["NoticeRead"]] = relationship(
+        "NoticeRead", back_populates="notice", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_notices_society_status", "society_id", "status"),
+        Index("ix_notices_society_published", "society_id", "published_at"),
+        Index(
+            "ix_notices_society_target",
+            "society_id",
+            "target_type",
+            "target_tower_id",
+            "target_flat_id",
+        ),
+        Index("ix_notices_pinned_published", "society_id", "is_pinned", "published_at"),
+    )
+
+
+class NoticeRead(Base):
+    """Tracks read status of official notices per user."""
+
+    __tablename__ = "notice_reads"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notice_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("notices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    notice: Mapped["Notice"] = relationship("Notice", back_populates="reads")
+
+    __table_args__ = (
+        UniqueConstraint("notice_id", "user_id", name="uq_notice_reads_notice_user"),
+        Index("ix_notice_reads_user_notice", "user_id", "notice_id"),
     )

@@ -13,6 +13,7 @@ import {
   Menu,
   X,
   ChevronDown,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
@@ -37,7 +38,7 @@ export const ResidentLayout: React.FC = () => {
     { name: 'Payment Receipts', path: '/resident/payments', icon: CreditCard },
     { name: 'Helpdesk & Requests', path: '/resident/complaints', icon: LifeBuoy },
     { name: 'Notifications', path: '/resident/notifications', icon: Bell },
-    { name: 'Township Notices', path: '/resident/notices', icon: Bell },
+    { name: 'Township Notices', path: '/resident/notices', icon: FileText },
   ];
 
   return (

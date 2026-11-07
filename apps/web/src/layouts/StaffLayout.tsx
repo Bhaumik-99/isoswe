@@ -50,7 +50,7 @@ export const StaffLayout: React.FC = () => {
       : []),
     { name: 'Amenity Operations', path: '/staff/amenities', icon: Building2 },
     { name: 'Residents Directory', path: '/staff/residents', icon: Users },
-    { name: 'Notification Deliveries', path: '/staff/notifications', icon: Bell },
+    { name: 'Notices & Deliveries', path: '/staff/notifications', icon: Bell },
   ];
 
   const primaryRole = roles[0] || 'STAFF';

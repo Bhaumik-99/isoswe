@@ -11,7 +11,7 @@ Provides REST endpoints for:
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -19,13 +19,25 @@ from app.core.errors import AuthorizationError
 from app.core.security import get_current_user, require_roles
 from app.domains.identity.models import RoleType
 from app.domains.identity.schemas import CurrentUserClaims
+from app.domains.notifications.models import (
+    NoticeCategory,
+    NoticeStatus,
+    NoticeTargetType,
+)
+from app.domains.notifications.notice_service import NoticeService
 from app.domains.notifications.schemas import (
+    CreateNoticeRequest,
+    MarkAllNoticesReadResponse,
     MarkAllReadResponse,
+    MarkNoticeReadResponse,
     MarkReadResponse,
+    NoticeResponseSchema,
     NotificationPreferenceSchema,
+    PaginatedNoticesResponse,
     PaginatedNotificationsResponse,
     StaffNotificationOverviewResponse,
     UnreadCountResponse,
+    UpdateNoticeRequest,
     UpdateNotificationPreferenceRequest,
 )
 from app.domains.notifications.service import NotificationService
@@ -203,4 +215,229 @@ def get_staff_notification_overview(
         society_id=target_society,
         page=page,
         page_size=page_size,
+    )
+
+
+# =============================================================================
+# Resident Official Notices Feed & Read Tracking Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/resident/notices",
+    response_model=PaginatedNoticesResponse,
+    summary="Get targeted official township notices feed for resident",
+)
+def get_resident_notices(
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    category: NoticeCategory | None = Query(None, description="Optional category filter"),
+    unread_only: bool = Query(False, description="Filter for unread notices only"),
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> PaginatedNoticesResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.list_resident_notices(
+        society_id=target_society,
+        user_id=claims.user_id,
+        page=page,
+        page_size=page_size,
+        category=category,
+        unread_only=unread_only,
+    )
+
+
+@router.get(
+    "/resident/notices/{notice_id}",
+    response_model=NoticeResponseSchema,
+    summary="Get single official notice details for resident",
+)
+def get_resident_notice_detail(
+    notice_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.get_notice(
+        society_id=target_society,
+        notice_id=notice_id,
+        user_id=claims.user_id,
+    )
+
+
+@router.patch(
+    "/resident/notices/{notice_id}/read",
+    response_model=MarkNoticeReadResponse,
+    summary="Mark single official notice as read for current resident",
+)
+def mark_resident_notice_read(
+    notice_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> MarkNoticeReadResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.mark_notice_read(
+        society_id=target_society,
+        user_id=claims.user_id,
+        notice_id=notice_id,
+    )
+
+
+@router.patch(
+    "/resident/notices/read-all",
+    response_model=MarkAllNoticesReadResponse,
+    summary="Mark all visible unread notices as read for current resident",
+)
+def mark_all_resident_notices_read(
+    claims: Annotated[CurrentUserClaims, Depends(get_current_user)],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> MarkAllNoticesReadResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.mark_all_notices_read(
+        society_id=target_society,
+        user_id=claims.user_id,
+    )
+
+
+# =============================================================================
+# Staff Official Notice Management Endpoints
+# =============================================================================
+
+
+@router.get(
+    "/staff/notices",
+    response_model=PaginatedNoticesResponse,
+    summary="List all official notices with management filters for staff",
+)
+def list_staff_notices(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    status: NoticeStatus | None = Query(None, description="Filter by notice status"),
+    category: NoticeCategory | None = Query(None, description="Filter by category"),
+    target_type: NoticeTargetType | None = Query(None, description="Filter by target type"),
+    search: str | None = Query(None, description="Search in title or body"),
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> PaginatedNoticesResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.list_staff_notices(
+        society_id=target_society,
+        page=page,
+        page_size=page_size,
+        status=status,
+        category=category,
+        target_type=target_type,
+        search=search,
+    )
+
+
+@router.post(
+    "/staff/notices",
+    response_model=NoticeResponseSchema,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create official township notice (draft, published, or scheduled)",
+)
+def create_staff_notice(
+    payload: CreateNoticeRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.create_notice(
+        society_id=target_society,
+        author_id=claims.user_id,
+        req=payload,
+    )
+
+
+@router.get(
+    "/staff/notices/{notice_id}",
+    response_model=NoticeResponseSchema,
+    summary="Get single official notice details for staff",
+)
+def get_staff_notice_detail(
+    notice_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.get_notice(
+        society_id=target_society,
+        notice_id=notice_id,
+    )
+
+
+@router.put(
+    "/staff/notices/{notice_id}",
+    response_model=NoticeResponseSchema,
+    summary="Edit and update an official township notice",
+)
+def update_staff_notice(
+    notice_id: UUID,
+    payload: UpdateNoticeRequest,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.update_notice(
+        society_id=target_society,
+        actor_id=claims.user_id,
+        notice_id=notice_id,
+        req=payload,
+    )
+
+
+@router.post(
+    "/staff/notices/{notice_id}/publish",
+    response_model=NoticeResponseSchema,
+    summary="Publish draft notice to active status",
+)
+def publish_staff_notice(
+    notice_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.publish_notice(
+        society_id=target_society,
+        actor_id=claims.user_id,
+        notice_id=notice_id,
+    )
+
+
+@router.post(
+    "/staff/notices/{notice_id}/archive",
+    response_model=NoticeResponseSchema,
+    summary="Archive published notice",
+)
+def archive_staff_notice(
+    notice_id: UUID,
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeResponseSchema:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.archive_notice(
+        society_id=target_society,
+        actor_id=claims.user_id,
+        notice_id=notice_id,
     )

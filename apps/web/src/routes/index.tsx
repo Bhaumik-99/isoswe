@@ -12,6 +12,7 @@ import { ResidentPayments } from '../features/resident/ResidentPayments';
 import { ResidentComplaints } from '../features/resident/ResidentComplaints';
 import { ResidentVisitorsPage } from '../features/resident/ResidentVisitorsPage';
 import { ResidentNotificationsPage } from '../features/resident/notifications/ResidentNotificationsPage';
+import { ResidentNoticesPage } from '../features/resident/notices/ResidentNoticesPage';
 import { ResidentAmenitiesPage } from '../features/resident/amenities/ResidentAmenitiesPage';
 import { StaffAmenitiesPage } from '../features/staff/amenities/StaffAmenitiesPage';
 import { StaffOverview } from '../features/staff/StaffOverview';
@@ -22,7 +23,6 @@ import { ResidentsDirectory } from '../features/staff/residents/ResidentsDirecto
 import { StaffNotificationsPage } from '../features/staff/notifications/StaffNotificationsPage';
 import { CommitteeOverview } from '../features/committee/CommitteeOverview';
 import { GateTabletPage } from '../features/gate/GateTabletPage';
-import { UpcomingModuleNotice } from '../components/UpcomingModuleNotice';
 import { NotFound } from '../components/NotFound';
 import { LoadingScreen } from '../components/LoadingScreen';
 
@@ -94,20 +94,7 @@ export const AppRoutes: React.FC = () => {
         <Route path="payments" element={<ResidentPayments />} />
         <Route path="complaints" element={<ResidentComplaints />} />
         <Route path="notifications" element={<ResidentNotificationsPage />} />
-        <Route
-          path="notices"
-          element={
-            <UpcomingModuleNotice
-              moduleName="Township Communications & Notices"
-              plannedPhase="Phase 2 - Communications"
-              description="Official federation circulars, power/water maintenance advisories, and emergency alerts."
-              deliverables={[
-                'Multi-tower targeted broadcasts',
-                'SMS and email delivery via notification-jobs SQS queue',
-              ]}
-            />
-          }
-        />
+        <Route path="notices" element={<ResidentNoticesPage />} />
       </Route>
 
       {/* Staff Operations Portal */}

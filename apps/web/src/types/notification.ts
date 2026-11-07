@@ -98,3 +98,89 @@ export interface StaffNotificationOverview {
   page_size: number;
   total_pages: number;
 }
+
+export type NoticeCategory =
+  | 'CIRCULAR'
+  | 'MAINTENANCE'
+  | 'EMERGENCY'
+  | 'EVENT'
+  | 'GENERAL';
+
+export type NoticePriority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+export type NoticeStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+export type NoticeTargetType = 'SOCIETY' | 'TOWER' | 'FLAT';
+
+export interface NoticeItem {
+  id: string;
+  society_id: string;
+  title: string;
+  body: string;
+  category: NoticeCategory;
+  priority: NoticePriority;
+  status: NoticeStatus;
+  target_type: NoticeTargetType;
+  target_tower_id?: string | null;
+  target_tower_name?: string | null;
+  target_flat_id?: string | null;
+  target_flat_number?: string | null;
+  is_pinned: boolean;
+  published_at?: string | null;
+  expires_at?: string | null;
+  author_id: string;
+  author_name?: string | null;
+  is_read?: boolean;
+  read_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedNotices {
+  items: NoticeItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  unread_count?: number;
+}
+
+export interface CreateNoticePayload {
+  title: string;
+  body: string;
+  category: NoticeCategory;
+  priority: NoticePriority;
+  status: NoticeStatus;
+  target_type: NoticeTargetType;
+  target_tower_id?: string | null;
+  target_flat_id?: string | null;
+  is_pinned?: boolean;
+  published_at?: string | null;
+  expires_at?: string | null;
+  deliver_emergency?: boolean;
+}
+
+export interface UpdateNoticePayload {
+  title?: string;
+  body?: string;
+  category?: NoticeCategory;
+  priority?: NoticePriority;
+  status?: NoticeStatus;
+  target_type?: NoticeTargetType;
+  target_tower_id?: string | null;
+  target_flat_id?: string | null;
+  is_pinned?: boolean;
+  published_at?: string | null;
+  expires_at?: string | null;
+  deliver_emergency?: boolean;
+}
+
+export interface MarkNoticeReadResponse {
+  notice_id: string;
+  read_at: string;
+  status: string;
+}
+
+export interface MarkAllNoticesReadResponse {
+  marked_count: number;
+  status: string;
+}
+

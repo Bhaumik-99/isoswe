@@ -7,6 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domains.notifications.models import (
     DeliveryStatus,
+    NoticeCategory,
+    NoticePriority,
+    NoticeStatus,
+    NoticeTargetType,
     NotificationChannel,
     NotificationPriority,
 )
@@ -112,3 +116,82 @@ class StaffNotificationOverviewResponse(BaseModel):
     sent_count: int
     delivered_count: int
     suppressed_count: int
+
+
+# =============================================================================
+# Official Notices & Circulars Schemas
+# =============================================================================
+
+
+class CreateNoticeRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255)
+    body: str = Field(..., min_length=1)
+    category: NoticeCategory = NoticeCategory.GENERAL
+    priority: NoticePriority = NoticePriority.NORMAL
+    status: NoticeStatus = NoticeStatus.DRAFT
+    target_type: NoticeTargetType = NoticeTargetType.SOCIETY
+    target_tower_id: UUID | None = None
+    target_flat_id: UUID | None = None
+    is_pinned: bool = False
+    published_at: datetime | None = None
+    expires_at: datetime | None = None
+    deliver_emergency: bool = False
+
+
+class UpdateNoticeRequest(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=255)
+    body: str | None = Field(None, min_length=1)
+    category: NoticeCategory | None = None
+    priority: NoticePriority | None = None
+    status: NoticeStatus | None = None
+    target_type: NoticeTargetType | None = None
+    target_tower_id: UUID | None = None
+    target_flat_id: UUID | None = None
+    is_pinned: bool | None = None
+    published_at: datetime | None = None
+    expires_at: datetime | None = None
+    deliver_emergency: bool | None = None
+
+
+class NoticeResponseSchema(BaseSchema):
+    id: UUID
+    society_id: UUID
+    title: str
+    body: str
+    category: NoticeCategory
+    priority: NoticePriority
+    status: NoticeStatus
+    target_type: NoticeTargetType
+    target_tower_id: UUID | None = None
+    target_tower_name: str | None = None
+    target_flat_id: UUID | None = None
+    target_flat_number: str | None = None
+    is_pinned: bool = False
+    published_at: datetime | None = None
+    expires_at: datetime | None = None
+    author_id: UUID
+    author_name: str | None = None
+    is_read: bool = False
+    read_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaginatedNoticesResponse(BaseModel):
+    items: list[NoticeResponseSchema]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    unread_count: int = 0
+
+
+class MarkNoticeReadResponse(BaseModel):
+    notice_id: UUID
+    read_at: datetime
+    status: str = "success"
+
+
+class MarkAllNoticesReadResponse(BaseModel):
+    marked_count: int
+    status: str = "success"

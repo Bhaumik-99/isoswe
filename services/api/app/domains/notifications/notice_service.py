@@ -1,0 +1,844 @@
+"""Official Township Notices Domain Service
+
+Coordinates:
+- Staff notice creation, editing, draft, publish, and archive lifecycles.
+- Multi-tier targeting (Society-wide, Tower-specific, Flat-specific).
+- Scheduled publishing, pinning, and expiry evaluation.
+- Resident notice feeds with personalized read/unread status.
+- Emergency notice broadcasting through the existing Notification & Outbox infrastructure.
+- Audit event logging for all notice lifecycle transitions.
+"""
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy.orm import Session
+
+from app.core.errors import ResourceNotFoundError, ValidationError
+from app.core.logging import logger
+from app.domains.identity.models import (
+    Flat,
+    FlatMembership,
+    MembershipStatus,
+    Tower,
+    User,
+    UserStatus,
+)
+from app.domains.notifications.models import (
+    Notice,
+    NoticeCategory,
+    NoticePriority,
+    NoticeRead,
+    NoticeStatus,
+    NoticeTargetType,
+    Notification,
+    NotificationChannel,
+    NotificationPriority,
+)
+from app.domains.notifications.schemas import (
+    CreateNoticeRequest,
+    MarkAllNoticesReadResponse,
+    MarkNoticeReadResponse,
+    NoticeResponseSchema,
+    PaginatedNoticesResponse,
+    UpdateNoticeRequest,
+)
+from app.domains.notifications.service import NotificationService
+from app.domains.reliability.models import AuditEvent, OutboxEvent, OutboxStatus
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class NoticeService:
+    def __init__(
+        self, db: Session, notification_service: NotificationService | None = None
+    ) -> None:
+        self.db = db
+        self.notification_service = notification_service or NotificationService(db)
+
+    # -------------------------------------------------------------------------
+    # Helper: Audit Logging
+    # -------------------------------------------------------------------------
+
+    def _record_audit(
+        self,
+        society_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        action: str,
+        resource_id: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        audit = AuditEvent(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            actor_id=actor_id,
+            action=action,
+            resource_type="notice",
+            resource_id=resource_id,
+            correlation_id=str(uuid.uuid4()),
+            event_metadata=metadata,
+        )
+        self.db.add(audit)
+
+    # -------------------------------------------------------------------------
+    # Helper: Enqueue Outbox Event
+    # -------------------------------------------------------------------------
+
+    def _enqueue_outbox(
+        self,
+        event_type: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        outbox = OutboxEvent(
+            id=uuid.uuid4(),
+            event_type=event_type,
+            aggregate_type="notice",
+            aggregate_id=aggregate_id,
+            payload=payload,
+            status=OutboxStatus.PENDING,
+        )
+        self.db.add(outbox)
+
+    # -------------------------------------------------------------------------
+    # Helper: Targeting Validation
+    # -------------------------------------------------------------------------
+
+    def _validate_targeting(
+        self,
+        society_id: uuid.UUID,
+        target_type: NoticeTargetType,
+        target_tower_id: uuid.UUID | None,
+        target_flat_id: uuid.UUID | None,
+    ) -> None:
+        if target_type == NoticeTargetType.TOWER:
+            if not target_tower_id:
+                raise ValidationError(
+                    code="TARGET_TOWER_REQUIRED",
+                    message="Target tower must be specified for TOWER targeted notice.",
+                )
+            tower = self.db.scalars(
+                select(Tower).where(Tower.id == target_tower_id, Tower.society_id == society_id)
+            ).first()
+            if not tower:
+                raise ResourceNotFoundError(f"Tower {target_tower_id} not found in this society.")
+
+        elif target_type == NoticeTargetType.FLAT:
+            if not target_flat_id:
+                raise ValidationError(
+                    code="TARGET_FLAT_REQUIRED",
+                    message="Target flat must be specified for FLAT targeted notice.",
+                )
+            flat = self.db.scalars(
+                select(Flat).where(Flat.id == target_flat_id, Flat.society_id == society_id)
+            ).first()
+            if not flat:
+                raise ResourceNotFoundError(f"Flat {target_flat_id} not found in this society.")
+
+    # -------------------------------------------------------------------------
+    # Helper: Resolve Recipients for Emergency Notice
+    # -------------------------------------------------------------------------
+
+    def _resolve_target_residents(self, notice: Notice) -> list[User]:
+        now = utc_now()
+        base_query = (
+            select(User)
+            .join(FlatMembership, FlatMembership.user_id == User.id)
+            .where(
+                FlatMembership.society_id == notice.society_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+                User.status == UserStatus.ACTIVE,
+                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
+            )
+        )
+
+        if notice.target_type == NoticeTargetType.TOWER:
+            if not notice.target_tower_id:
+                return []
+            base_query = base_query.join(Flat, Flat.id == FlatMembership.flat_id).where(
+                Flat.tower_id == notice.target_tower_id
+            )
+        elif notice.target_type == NoticeTargetType.FLAT:
+            if not notice.target_flat_id:
+                return []
+            base_query = base_query.where(FlatMembership.flat_id == notice.target_flat_id)
+
+        residents = list(self.db.scalars(base_query.distinct()).all())
+        return residents
+
+    # -------------------------------------------------------------------------
+    # Helper: Emergency Delivery Broadcast
+    # -------------------------------------------------------------------------
+
+    def _deliver_emergency_notice(self, notice: Notice) -> int:
+        """Broadcasts emergency notice directly through the existing notification infrastructure."""
+        residents = self._resolve_target_residents(notice)
+        now = utc_now()
+
+        for resident in residents:
+            in_app = Notification(
+                id=uuid.uuid4(),
+                society_id=notice.society_id,
+                recipient_user_id=resident.id,
+                event_type="notice.emergency",
+                title=f"🚨 EMERGENCY: {notice.title}",
+                body=notice.body[:350] + ("..." if len(notice.body) > 350 else ""),
+                channel=NotificationChannel.IN_APP,
+                priority=NotificationPriority.URGENT,
+                aggregate_type="notice",
+                aggregate_id=str(notice.id),
+                action_url="/resident/notices",
+                event_metadata={
+                    "notice_id": str(notice.id),
+                    "category": notice.category.value,
+                    "target_type": notice.target_type.value,
+                    "is_emergency": True,
+                },
+                created_at=now,
+                updated_at=now,
+            )
+            self.db.add(in_app)
+
+        self._enqueue_outbox(
+            event_type="notice.emergency_broadcast",
+            aggregate_id=str(notice.id),
+            payload={
+                "notice_id": str(notice.id),
+                "society_id": str(notice.society_id),
+                "title": notice.title,
+                "category": notice.category.value,
+                "priority": notice.priority.value,
+                "target_type": notice.target_type.value,
+                "recipients_count": len(residents),
+                "published_at": notice.published_at.isoformat()
+                if notice.published_at
+                else now.isoformat(),
+            },
+        )
+        logger.info(
+            "Delivered emergency notice %s to %d resident(s)",
+            notice.id,
+            len(residents),
+        )
+        return len(residents)
+
+    # -------------------------------------------------------------------------
+    # Staff Notice Management
+    # -------------------------------------------------------------------------
+
+    def create_notice(
+        self,
+        society_id: uuid.UUID,
+        author_id: uuid.UUID,
+        req: CreateNoticeRequest,
+    ) -> NoticeResponseSchema:
+        now = utc_now()
+        self._validate_targeting(
+            society_id=society_id,
+            target_type=req.target_type,
+            target_tower_id=req.target_tower_id,
+            target_flat_id=req.target_flat_id,
+        )
+
+        published_at = req.published_at
+        if req.status == NoticeStatus.PUBLISHED and published_at is None:
+            published_at = now
+
+        if req.expires_at and published_at and req.expires_at <= published_at:
+            raise ValidationError(
+                code="INVALID_EXPIRY_DATE",
+                message="Notice expiry date must be strictly after the publication date.",
+            )
+
+        notice = Notice(
+            id=uuid.uuid4(),
+            society_id=society_id,
+            title=req.title.strip(),
+            body=req.body.strip(),
+            category=req.category,
+            priority=req.priority,
+            status=req.status,
+            target_type=req.target_type,
+            target_tower_id=req.target_tower_id,
+            target_flat_id=req.target_flat_id,
+            is_pinned=req.is_pinned,
+            published_at=published_at,
+            expires_at=req.expires_at,
+            author_id=author_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(notice)
+        self.db.flush()
+
+        self._record_audit(
+            society_id=society_id,
+            actor_id=author_id,
+            action="NOTICE_CREATED",
+            resource_id=str(notice.id),
+            metadata={
+                "title": notice.title,
+                "status": notice.status.value,
+                "category": notice.category.value,
+                "target_type": notice.target_type.value,
+                "is_pinned": notice.is_pinned,
+            },
+        )
+
+        is_emergency = (
+            req.deliver_emergency
+            or notice.category == NoticeCategory.EMERGENCY
+            or notice.priority == NoticePriority.URGENT
+        )
+
+        if notice.status == NoticeStatus.PUBLISHED:
+            self._enqueue_outbox(
+                event_type="notice.published",
+                aggregate_id=str(notice.id),
+                payload={
+                    "notice_id": str(notice.id),
+                    "society_id": str(society_id),
+                    "title": notice.title,
+                    "category": notice.category.value,
+                    "status": notice.status.value,
+                },
+            )
+            if is_emergency:
+                self._deliver_emergency_notice(notice)
+
+        self.db.commit()
+        self.db.refresh(notice)
+        return self._to_schema(notice, is_read=False, read_at=None)
+
+    def update_notice(
+        self,
+        society_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        notice_id: uuid.UUID,
+        req: UpdateNoticeRequest,
+    ) -> NoticeResponseSchema:
+        notice = self.db.scalars(
+            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
+        ).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        now = utc_now()
+        target_type = req.target_type if req.target_type is not None else notice.target_type
+        target_tower_id = (
+            req.target_tower_id if req.target_tower_id is not None else notice.target_tower_id
+        )
+        target_flat_id = (
+            req.target_flat_id if req.target_flat_id is not None else notice.target_flat_id
+        )
+
+        self._validate_targeting(
+            society_id=society_id,
+            target_type=target_type,
+            target_tower_id=target_tower_id,
+            target_flat_id=target_flat_id,
+        )
+
+        prev_status = notice.status
+
+        if req.title is not None:
+            notice.title = req.title.strip()
+        if req.body is not None:
+            notice.body = req.body.strip()
+        if req.category is not None:
+            notice.category = req.category
+        if req.priority is not None:
+            notice.priority = req.priority
+        if req.status is not None:
+            notice.status = req.status
+        if req.target_type is not None:
+            notice.target_type = req.target_type
+            notice.target_tower_id = req.target_tower_id
+            notice.target_flat_id = req.target_flat_id
+        if req.is_pinned is not None:
+            notice.is_pinned = req.is_pinned
+        if req.published_at is not None:
+            notice.published_at = req.published_at
+        if req.expires_at is not None:
+            notice.expires_at = req.expires_at
+
+        # Transitioning to published
+        if notice.status == NoticeStatus.PUBLISHED and not notice.published_at:
+            notice.published_at = now
+
+        if notice.expires_at and notice.published_at and notice.expires_at <= notice.published_at:
+            raise ValidationError(
+                code="INVALID_EXPIRY_DATE",
+                message="Notice expiry date must be strictly after the publication date.",
+            )
+
+        notice.updated_at = now
+        self.db.flush()
+
+        self._record_audit(
+            society_id=society_id,
+            actor_id=actor_id,
+            action="NOTICE_UPDATED",
+            resource_id=str(notice.id),
+            metadata={
+                "title": notice.title,
+                "status": notice.status.value,
+                "category": notice.category.value,
+                "is_pinned": notice.is_pinned,
+            },
+        )
+
+        # If transitioned from DRAFT to PUBLISHED or explicitly triggered emergency
+        is_emergency = (
+            req.deliver_emergency
+            or notice.category == NoticeCategory.EMERGENCY
+            or notice.priority == NoticePriority.URGENT
+        )
+
+        if notice.status == NoticeStatus.PUBLISHED and prev_status != NoticeStatus.PUBLISHED:
+            self._record_audit(
+                society_id=society_id,
+                actor_id=actor_id,
+                action="NOTICE_PUBLISHED",
+                resource_id=str(notice.id),
+                metadata={"title": notice.title, "published_at": str(notice.published_at)},
+            )
+            self._enqueue_outbox(
+                event_type="notice.published",
+                aggregate_id=str(notice.id),
+                payload={
+                    "notice_id": str(notice.id),
+                    "society_id": str(society_id),
+                    "title": notice.title,
+                    "category": notice.category.value,
+                },
+            )
+            if is_emergency:
+                self._deliver_emergency_notice(notice)
+        elif is_emergency and req.deliver_emergency:
+            self._deliver_emergency_notice(notice)
+
+        self.db.commit()
+        self.db.refresh(notice)
+        return self._to_schema(notice, is_read=False, read_at=None)
+
+    def publish_notice(
+        self,
+        society_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        notice_id: uuid.UUID,
+    ) -> NoticeResponseSchema:
+        notice = self.db.scalars(
+            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
+        ).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        now = utc_now()
+        notice.status = NoticeStatus.PUBLISHED
+        if not notice.published_at or notice.published_at > now:
+            notice.published_at = now
+        notice.updated_at = now
+        self.db.flush()
+
+        self._record_audit(
+            society_id=society_id,
+            actor_id=actor_id,
+            action="NOTICE_PUBLISHED",
+            resource_id=str(notice.id),
+            metadata={"title": notice.title, "published_at": str(notice.published_at)},
+        )
+
+        self._enqueue_outbox(
+            event_type="notice.published",
+            aggregate_id=str(notice.id),
+            payload={
+                "notice_id": str(notice.id),
+                "society_id": str(society_id),
+                "title": notice.title,
+                "category": notice.category.value,
+            },
+        )
+
+        if notice.category == NoticeCategory.EMERGENCY or notice.priority == NoticePriority.URGENT:
+            self._deliver_emergency_notice(notice)
+
+        self.db.commit()
+        self.db.refresh(notice)
+        return self._to_schema(notice, is_read=False, read_at=None)
+
+    def archive_notice(
+        self,
+        society_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        notice_id: uuid.UUID,
+    ) -> NoticeResponseSchema:
+        notice = self.db.scalars(
+            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
+        ).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        notice.status = NoticeStatus.ARCHIVED
+        notice.updated_at = utc_now()
+        self.db.flush()
+
+        self._record_audit(
+            society_id=society_id,
+            actor_id=actor_id,
+            action="NOTICE_ARCHIVED",
+            resource_id=str(notice.id),
+            metadata={"title": notice.title},
+        )
+
+        self._enqueue_outbox(
+            event_type="notice.archived",
+            aggregate_id=str(notice.id),
+            payload={"notice_id": str(notice.id), "society_id": str(society_id)},
+        )
+
+        self.db.commit()
+        self.db.refresh(notice)
+        return self._to_schema(notice, is_read=False, read_at=None)
+
+    def get_notice(
+        self,
+        society_id: uuid.UUID,
+        notice_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> NoticeResponseSchema:
+        notice = self.db.scalars(
+            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
+        ).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        is_read = False
+        read_at = None
+        if user_id:
+            read_record = self.db.scalars(
+                select(NoticeRead).where(
+                    NoticeRead.notice_id == notice_id,
+                    NoticeRead.user_id == user_id,
+                )
+            ).first()
+            if read_record:
+                is_read = True
+                read_at = read_record.read_at
+
+        return self._to_schema(notice, is_read=is_read, read_at=read_at)
+
+    def list_staff_notices(
+        self,
+        society_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 20,
+        status: NoticeStatus | None = None,
+        category: NoticeCategory | None = None,
+        target_type: NoticeTargetType | None = None,
+        search: str | None = None,
+    ) -> PaginatedNoticesResponse:
+        stmt = select(Notice).where(Notice.society_id == society_id)
+
+        if status:
+            stmt = stmt.where(Notice.status == status)
+        if category:
+            stmt = stmt.where(Notice.category == category)
+        if target_type:
+            stmt = stmt.where(Notice.target_type == target_type)
+        if search:
+            pattern = f"%{search.strip()}%"
+            stmt = stmt.where(or_(Notice.title.ilike(pattern), Notice.body.ilike(pattern)))
+
+        total = self.db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+        total_pages = max(1, (total + page_size - 1) // page_size)
+
+        stmt = (
+            stmt.order_by(Notice.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        )
+        notices = list(self.db.scalars(stmt).all())
+
+        return PaginatedNoticesResponse(
+            items=[self._to_schema(n, is_read=False, read_at=None) for n in notices],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            unread_count=0,
+        )
+
+    # -------------------------------------------------------------------------
+    # Resident Notice Feed & Read Tracking
+    # -------------------------------------------------------------------------
+
+    def list_resident_notices(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+        page: int = 1,
+        page_size: int = 20,
+        category: NoticeCategory | None = None,
+        unread_only: bool = False,
+    ) -> PaginatedNoticesResponse:
+        now = utc_now()
+
+        # 1. Fetch user's active flat and tower memberships in this society
+        memberships_stmt = (
+            select(FlatMembership, Flat)
+            .join(Flat, Flat.id == FlatMembership.flat_id)
+            .where(
+                FlatMembership.society_id == society_id,
+                FlatMembership.user_id == user_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
+            )
+        )
+        rows = self.db.execute(memberships_stmt).all()
+        flat_ids = [m.flat_id for m, _ in rows]
+        tower_ids = [f.tower_id for _, f in rows if f.tower_id is not None]
+
+        # 2. Targeting predicate
+        target_conditions = [Notice.target_type == NoticeTargetType.SOCIETY]
+        if tower_ids:
+            target_conditions.append(
+                and_(
+                    Notice.target_type == NoticeTargetType.TOWER,
+                    Notice.target_tower_id.in_(tower_ids),
+                )
+            )
+        if flat_ids:
+            target_conditions.append(
+                and_(
+                    Notice.target_type == NoticeTargetType.FLAT,
+                    Notice.target_flat_id.in_(flat_ids),
+                )
+            )
+
+        # 3. Base published notices query (must be published, published_at <= now, unexpired)
+        base_stmt = select(Notice).where(
+            Notice.society_id == society_id,
+            Notice.status == NoticeStatus.PUBLISHED,
+            Notice.published_at.is_not(None),
+            Notice.published_at <= now,
+            or_(Notice.expires_at.is_(None), Notice.expires_at > now),
+            or_(*target_conditions),
+        )
+
+        if category:
+            base_stmt = base_stmt.where(Notice.category == category)
+
+        # Read status subquery / join
+        read_subq = (
+            select(NoticeRead.notice_id, NoticeRead.read_at)
+            .where(NoticeRead.user_id == user_id)
+            .subquery()
+        )
+
+        # If unread_only, filter where read_at is null
+        joined_stmt = (
+            select(Notice, read_subq.c.read_at)
+            .outerjoin(read_subq, read_subq.c.notice_id == Notice.id)
+            .where(
+                Notice.society_id == society_id,
+                Notice.status == NoticeStatus.PUBLISHED,
+                Notice.published_at.is_not(None),
+                Notice.published_at <= now,
+                or_(Notice.expires_at.is_(None), Notice.expires_at > now),
+                or_(*target_conditions),
+            )
+        )
+        if category:
+            joined_stmt = joined_stmt.where(Notice.category == category)
+
+        if unread_only:
+            joined_stmt = joined_stmt.where(read_subq.c.read_at.is_(None))
+
+        # Total unread count for badge
+        unread_count_stmt = (
+            select(func.count(Notice.id))
+            .outerjoin(read_subq, read_subq.c.notice_id == Notice.id)
+            .where(
+                Notice.society_id == society_id,
+                Notice.status == NoticeStatus.PUBLISHED,
+                Notice.published_at.is_not(None),
+                Notice.published_at <= now,
+                or_(Notice.expires_at.is_(None), Notice.expires_at > now),
+                or_(*target_conditions),
+                read_subq.c.read_at.is_(None),
+            )
+        )
+        unread_count = self.db.scalar(unread_count_stmt) or 0
+
+        total = self.db.scalar(select(func.count()).select_from(joined_stmt.subquery())) or 0
+        total_pages = max(1, (total + page_size - 1) // page_size)
+
+        # Sorting: pinned first, then published_at desc
+        joined_stmt = (
+            joined_stmt.order_by(Notice.is_pinned.desc(), desc(Notice.published_at))
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        results = self.db.execute(joined_stmt).all()
+
+        items = [
+            self._to_schema(notice, is_read=(read_at is not None), read_at=read_at)
+            for notice, read_at in results
+        ]
+
+        return PaginatedNoticesResponse(
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            unread_count=unread_count,
+        )
+
+    def mark_notice_read(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+        notice_id: uuid.UUID,
+    ) -> MarkNoticeReadResponse:
+        notice = self.db.scalars(
+            select(Notice).where(Notice.id == notice_id, Notice.society_id == society_id)
+        ).first()
+        if not notice:
+            raise ResourceNotFoundError(f"Notice {notice_id} not found.")
+
+        now = utc_now()
+        read_record = self.db.scalars(
+            select(NoticeRead).where(
+                NoticeRead.notice_id == notice_id,
+                NoticeRead.user_id == user_id,
+            )
+        ).first()
+
+        if not read_record:
+            read_record = NoticeRead(
+                id=uuid.uuid4(),
+                notice_id=notice_id,
+                user_id=user_id,
+                read_at=now,
+            )
+            self.db.add(read_record)
+            self.db.commit()
+
+        return MarkNoticeReadResponse(
+            notice_id=notice_id,
+            read_at=read_record.read_at,
+            status="success",
+        )
+
+    def mark_all_notices_read(
+        self,
+        society_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> MarkAllNoticesReadResponse:
+        now = utc_now()
+        # 1. Fetch user memberships to get eligible notices
+        memberships_stmt = (
+            select(FlatMembership, Flat)
+            .join(Flat, Flat.id == FlatMembership.flat_id)
+            .where(
+                FlatMembership.society_id == society_id,
+                FlatMembership.user_id == user_id,
+                FlatMembership.status == MembershipStatus.APPROVED,
+                or_(FlatMembership.valid_until.is_(None), FlatMembership.valid_until >= now),
+            )
+        )
+        rows = self.db.execute(memberships_stmt).all()
+        flat_ids = [m.flat_id for m, _ in rows]
+        tower_ids = [f.tower_id for _, f in rows if f.tower_id is not None]
+
+        target_conditions = [Notice.target_type == NoticeTargetType.SOCIETY]
+        if tower_ids:
+            target_conditions.append(
+                and_(
+                    Notice.target_type == NoticeTargetType.TOWER,
+                    Notice.target_tower_id.in_(tower_ids),
+                )
+            )
+        if flat_ids:
+            target_conditions.append(
+                and_(
+                    Notice.target_type == NoticeTargetType.FLAT,
+                    Notice.target_flat_id.in_(flat_ids),
+                )
+            )
+
+        read_subq = select(NoticeRead.notice_id).where(NoticeRead.user_id == user_id).subquery()
+
+        unread_notices_stmt = select(Notice.id).where(
+            Notice.society_id == society_id,
+            Notice.status == NoticeStatus.PUBLISHED,
+            Notice.published_at.is_not(None),
+            Notice.published_at <= now,
+            or_(Notice.expires_at.is_(None), Notice.expires_at > now),
+            or_(*target_conditions),
+            Notice.id.not_in(select(read_subq.c.notice_id)),
+        )
+        unread_ids = list(self.db.scalars(unread_notices_stmt).all())
+
+        for n_id in unread_ids:
+            self.db.add(
+                NoticeRead(
+                    id=uuid.uuid4(),
+                    notice_id=n_id,
+                    user_id=user_id,
+                    read_at=now,
+                )
+            )
+
+        self.db.commit()
+        return MarkAllNoticesReadResponse(marked_count=len(unread_ids), status="success")
+
+    # -------------------------------------------------------------------------
+    # Helper: Serialization
+    # -------------------------------------------------------------------------
+
+    def _to_schema(
+        self,
+        notice: Notice,
+        is_read: bool = False,
+        read_at: datetime | None = None,
+    ) -> NoticeResponseSchema:
+        author_name = None
+        if notice.author:
+            author_name = notice.author.full_name
+
+        tower_name = None
+        if notice.target_tower:
+            tower_name = notice.target_tower.name or notice.target_tower.tower_number
+
+        flat_number = None
+        if notice.target_flat:
+            flat_number = notice.target_flat.flat_number
+
+        return NoticeResponseSchema(
+            id=notice.id,
+            society_id=notice.society_id,
+            title=notice.title,
+            body=notice.body,
+            category=notice.category,
+            priority=notice.priority,
+            status=notice.status,
+            target_type=notice.target_type,
+            target_tower_id=notice.target_tower_id,
+            target_tower_name=tower_name,
+            target_flat_id=notice.target_flat_id,
+            target_flat_number=flat_number,
+            is_pinned=notice.is_pinned,
+            published_at=notice.published_at,
+            expires_at=notice.expires_at,
+            author_id=notice.author_id,
+            author_name=author_name,
+            is_read=is_read,
+            read_at=read_at,
+            created_at=notice.created_at,
+            updated_at=notice.updated_at,
+        )
