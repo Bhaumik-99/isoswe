@@ -12,22 +12,36 @@ Validates against live PostgreSQL database:
 """
 
 import os
+import threading
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, inspect, pool, text
+from sqlalchemy import Engine, create_engine, inspect, pool, select, text
 from sqlalchemy.orm import Session
 
+from app.core.errors import ConflictError
+from app.domains.amenities.models import (
+    Amenity,
+    AmenityBooking,
+    AmenityType,
+    BookingStatus,
+)
+from app.domains.amenities.schemas import CreateBookingRequest
+from app.domains.amenities.service import AmenityService, facility_today, utc_now
 from app.domains.billing.models import Invoice, InvoiceStatus, PaymentStatus
 from app.domains.billing.service import BillingService
 from app.domains.identity.models import (
     Flat,
+    FlatMembership,
     FlatStatus,
+    MembershipStatus,
+    MembershipType,
     Society,
     SocietyStatus,
     Tower,
@@ -1548,3 +1562,188 @@ def test_postgres_rls_and_composite_fk_reconciliation(postgres_test_db: Engine) 
             "service_role must see allocations from all societies"
         )
         conn.execute(text("RESET ROLE;"))
+
+
+def test_postgres_amenity_concurrency_race_condition_prevents_overbooking(
+    postgres_test_db: Engine,
+) -> None:
+    """Requirement: Two independent PostgreSQL sessions attempt to book the final slot simultaneously.
+
+    - Uses two independent database sessions on live PostgreSQL.
+    - Synchronizes requests using a threading.Barrier(2) to guarantee concurrent overlapping execution.
+    - Uses an amenity with capacity strictly set to one.
+    - SELECT ... FOR UPDATE row locking enforces that exactly one booking succeeds and the other receives CAPACITY_EXCEEDED.
+    - Verifies that strictly one booking is committed in PostgreSQL.
+    """
+    engine = postgres_test_db
+    soc_id = uuid.uuid4()
+    tow_id = uuid.uuid4()
+    flat1_id = uuid.uuid4()
+    flat2_id = uuid.uuid4()
+    user1_id = uuid.uuid4()
+    user2_id = uuid.uuid4()
+    amenity_id = uuid.uuid4()
+    target_date = facility_today() + timedelta(days=3)
+
+    # 1. Setup society, tower, flats, users, approved memberships, and capacity 1 amenity
+    with Session(engine) as setup_session:
+        setup_session.execute(text("RESET ROLE;"))
+
+        soc = Society(
+            id=soc_id,
+            name=f"Amenity Conc Soc {soc_id.hex[:6]}",
+            status=SocietyStatus.ACTIVE,
+        )
+        tow = Tower(id=tow_id, society_id=soc_id, tower_number="T1", name="Tower 1")
+        flat1 = Flat(
+            id=flat1_id,
+            society_id=soc_id,
+            tower_id=tow_id,
+            flat_number="101",
+            area_sqft=1000,
+            status=FlatStatus.OCCUPIED,
+        )
+        flat2 = Flat(
+            id=flat2_id,
+            society_id=soc_id,
+            tower_id=tow_id,
+            flat_number="102",
+            area_sqft=1000,
+            status=FlatStatus.OCCUPIED,
+        )
+        user1 = User(
+            id=user1_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"amenity-neeraj-{user1_id.hex[:6]}@example.com",
+            phone=f"+9198{user1_id.int % 100000000:08d}",
+            full_name="Neeraj Concurrency",
+            status=UserStatus.ACTIVE,
+        )
+        user2 = User(
+            id=user2_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"amenity-swati-{user2_id.hex[:6]}@example.com",
+            phone=f"+9197{user2_id.int % 100000000:08d}",
+            full_name="Swati Concurrency",
+            status=UserStatus.ACTIVE,
+        )
+        now = utc_now()
+        mem1 = FlatMembership(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            flat_id=flat1_id,
+            user_id=user1_id,
+            membership_type=MembershipType.OWNER,
+            status=MembershipStatus.APPROVED,
+            valid_from=now - timedelta(days=1),
+        )
+        mem2 = FlatMembership(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            flat_id=flat2_id,
+            user_id=user2_id,
+            membership_type=MembershipType.TENANT,
+            status=MembershipStatus.APPROVED,
+            valid_from=now - timedelta(days=1),
+        )
+        amenity = Amenity(
+            id=amenity_id,
+            society_id=soc_id,
+            name="Squash Court 1 (Capacity 1)",
+            description="Championship squash court with capacity 1",
+            amenity_type=AmenityType.SQUASH_COURT,
+            location="Sports Wing Ground Floor",
+            tower_id=None,
+            capacity=1,
+            slot_duration_minutes=60,
+            opening_time="06:00",
+            closing_time="22:00",
+            booking_fee_paise=15000,
+            advance_booking_days=7,
+            min_advance_hours=0,
+            max_slots_per_day_per_resident=2,
+            cancellation_deadline_hours=2,
+            refund_percentage=80,
+            allowed_membership_types=["OWNER", "TENANT", "FAMILY_MEMBER"],
+            is_active=True,
+        )
+        setup_session.add_all([soc, tow, flat1, flat2, user1, user2, mem1, mem2, amenity])
+        setup_session.commit()
+
+    # 2. Concurrency Barrier and Execution across two independent sessions
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, Any] = {}
+
+    def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
+        with Session(engine) as worker_session:
+            worker_session.execute(text("RESET ROLE;"))
+            service = AmenityService(worker_session)
+            # Both threads reach the barrier before either starts its booking transaction
+            barrier.wait(timeout=5)
+            try:
+                booking = service.create_booking(
+                    society_id=soc_id,
+                    user_id=u_id,
+                    amenity_id=amenity_id,
+                    req=CreateBookingRequest(
+                        flat_id=f_id,
+                        booking_date=target_date,
+                        start_time="18:00",
+                        end_time="19:00",
+                        booked_units=1,
+                        auto_pay=True,
+                    ),
+                )
+                worker_session.commit()
+                outcomes[worker_name] = {"status": "SUCCESS", "booking_id": booking.id}
+            except Exception as exc:
+                worker_session.rollback()
+                outcomes[worker_name] = {"status": "ERROR", "exception": exc}
+
+    t1 = threading.Thread(target=attempt_booking, args=("worker1_neeraj", user1_id, flat1_id))
+    t2 = threading.Thread(target=attempt_booking, args=("worker2_swati", user2_id, flat2_id))
+
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    # 3. Assertions: Exactly one succeeds, exactly one receives CAPACITY_EXCEEDED
+    statuses = [
+        outcomes.get("worker1_neeraj", {}).get("status"),
+        outcomes.get("worker2_swati", {}).get("status"),
+    ]
+    assert statuses.count("SUCCESS") == 1, (
+        f"Expected exactly 1 booking transaction to succeed in PostgreSQL, got outcomes: {outcomes}"
+    )
+    assert statuses.count("ERROR") == 1, (
+        f"Expected exactly 1 booking transaction to fail in PostgreSQL, got outcomes: {outcomes}"
+    )
+
+    err_worker = (
+        "worker1_neeraj" if outcomes["worker1_neeraj"]["status"] == "ERROR" else "worker2_swati"
+    )
+    exc = outcomes[err_worker]["exception"]
+    assert isinstance(exc, ConflictError), f"Expected ConflictError, got {type(exc)}: {exc}"
+    assert exc.code == "CAPACITY_EXCEEDED", f"Expected CAPACITY_EXCEEDED, got {exc.code}"
+
+    # 4. Independent Database Session Verification
+    with Session(engine) as verify_session:
+        verify_session.execute(text("RESET ROLE;"))
+        persisted_bookings = list(
+            verify_session.scalars(
+                select(AmenityBooking).where(
+                    AmenityBooking.amenity_id == amenity_id,
+                    AmenityBooking.booking_date == target_date,
+                    AmenityBooking.start_time == "18:00",
+                )
+            ).all()
+        )
+        assert len(persisted_bookings) == 1, (
+            f"Expected strictly 1 booking persisted in PostgreSQL, found: {len(persisted_bookings)}"
+        )
+        assert persisted_bookings[0].booked_units == 1
+        assert persisted_bookings[0].status in (
+            BookingStatus.CONFIRMED,
+            BookingStatus.PENDING_PAYMENT,
+        )

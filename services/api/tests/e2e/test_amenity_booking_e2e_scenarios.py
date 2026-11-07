@@ -20,14 +20,21 @@ Validates:
    - Scenario J: An unauthorized resident attempts to perform staff actions (RBAC enforcement).
 """
 
+import contextlib
+import os
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, pool, select, text
 from sqlalchemy.orm import Session
 
+from app.core.database import Base
+from app.core.errors import ConflictError
 from app.domains.amenities.models import (
     Amenity,
     AmenityBooking,
@@ -35,7 +42,21 @@ from app.domains.amenities.models import (
     BookingPaymentStatus,
     BookingStatus,
 )
+from app.domains.amenities.schemas import CreateBookingRequest
+from app.domains.amenities.service import AmenityService, facility_today, utc_now
 from app.domains.billing.models import Payment, PaymentStatus
+from app.domains.identity.models import (
+    Flat,
+    FlatMembership,
+    FlatStatus,
+    MembershipStatus,
+    MembershipType,
+    Society,
+    SocietyStatus,
+    Tower,
+    User,
+    UserStatus,
+)
 
 # Fixed deterministic IDs & Dev User Auth Headers
 SOCIETY_PUNE_ID = "11111111-1111-1111-1111-111111111111"
@@ -47,6 +68,28 @@ FLAT_0408_ID = "33333333-3333-3333-3333-333333330408"
 RESIDENT_NEERAJ_HEADERS = {"X-Dev-User": "neeraj"}
 RESIDENT_SWATI_HEADERS = {"X-Dev-User": "swati"}
 STAFF_HELPDESK_HEADERS = {"X-Dev-User": "helpdesk"}
+
+
+def get_postgres_test_url() -> str | None:
+    candidates = [
+        os.environ.get("TEST_POSTGRES_URL"),
+        os.environ.get("DATABASE_URL"),
+        "postgresql://postgres:postgres@localhost:5432/postgres",
+    ]
+    for candidate in candidates:
+        if candidate and "sqlite" not in candidate:
+            connect_url = candidate.replace("postgresql+psycopg://", "postgresql://")
+            try:
+                conn = psycopg.connect(connect_url, connect_timeout=3)
+                conn.close()
+                return candidate
+            except Exception:
+                continue
+    return None
+
+
+def is_postgres_available() -> bool:
+    return get_postgres_test_url() is not None
 
 
 @pytest.fixture
@@ -209,48 +252,199 @@ def test_e2e_complete_resident_to_staff_booking_lifecycle(
 # =============================================================================
 
 
-def test_scenario_a_concurrency_race_condition_prevents_overbooking(
-    client: TestClient, e2e_badminton_amenity: Amenity
-) -> None:
-    """Scenario A: Two residents attempt to book the same final available slot simultaneously.
-    First resident succeeds; second resident receives 409 CAPACITY_EXCEEDED.
-    Total confirmed bookings strictly equals capacity (1).
+@pytest.mark.skipif(
+    not is_postgres_available(),
+    reason="PostgreSQL integration test requires a reachable PostgreSQL database (localhost:5432 or TEST_POSTGRES_URL/DATABASE_URL)",
+)
+def test_scenario_a_concurrency_race_condition_prevents_overbooking() -> None:
+    """Scenario A: Real PostgreSQL integration test for concurrency safety.
+
+    Validates that:
+    - Two independent database sessions execute concurrent booking transactions.
+    - A threading.Barrier(2) synchronizes both requests to overlap simultaneously.
+    - With amenity capacity strictly set to one, SELECT ... FOR UPDATE row locking
+      ensures exactly one booking succeeds and the other receives CAPACITY_EXCEEDED.
+    - PostgreSQL prevents overbooking; exactly one booking is persisted.
     """
-    target_date = str(datetime.now(UTC).date() + timedelta(days=3))
-    slot_start = "18:00"
-    slot_end = "19:00"
-
-    # Resident 1 (Neeraj) books the slot
-    res1 = client.post(
-        f"/api/v1/amenities/{e2e_badminton_amenity.id}/bookings",
-        headers=RESIDENT_NEERAJ_HEADERS,
-        json={
-            "flat_id": FLAT_1203_ID,
-            "booking_date": target_date,
-            "start_time": slot_start,
-            "end_time": slot_end,
-            "booked_units": 1,
-            "auto_pay": True,
-        },
+    pg_url = get_postgres_test_url()
+    assert pg_url is not None
+    engine_url = (
+        pg_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        if not pg_url.startswith("postgresql+psycopg://")
+        else pg_url
     )
-    assert res1.status_code == 201
-    assert res1.json()["status"] == "CONFIRMED"
 
-    # Resident 2 (Swati) attempts to book the same slot simultaneously
-    res2 = client.post(
-        f"/api/v1/amenities/{e2e_badminton_amenity.id}/bookings",
-        headers=RESIDENT_SWATI_HEADERS,
-        json={
-            "flat_id": FLAT_0408_ID,
-            "booking_date": target_date,
-            "start_time": slot_start,
-            "end_time": slot_end,
-            "booked_units": 1,
-            "auto_pay": True,
-        },
+    engine = create_engine(engine_url, poolclass=pool.NullPool)
+    Base.metadata.create_all(bind=engine)
+
+    soc_id = uuid.uuid4()
+    tow_id = uuid.uuid4()
+    flat1_id = uuid.uuid4()
+    flat2_id = uuid.uuid4()
+    user1_id = uuid.uuid4()
+    user2_id = uuid.uuid4()
+    amenity_id = uuid.uuid4()
+    target_date = facility_today() + timedelta(days=3)
+
+    # 1. Setup society, users, flats, approved memberships, and capacity 1 amenity
+    with Session(engine) as setup_session:
+        with contextlib.suppress(Exception):
+            setup_session.execute(text("RESET ROLE;"))
+
+        soc = Society(
+            id=soc_id,
+            name=f"Concurrency Society {soc_id.hex[:6]}",
+            status=SocietyStatus.ACTIVE,
+        )
+        tow = Tower(id=tow_id, society_id=soc_id, tower_number="T1", name="Tower 1")
+        flat1 = Flat(
+            id=flat1_id,
+            society_id=soc_id,
+            tower_id=tow_id,
+            flat_number="101",
+            area_sqft=1000,
+            status=FlatStatus.OCCUPIED,
+        )
+        flat2 = Flat(
+            id=flat2_id,
+            society_id=soc_id,
+            tower_id=tow_id,
+            flat_number="102",
+            area_sqft=1000,
+            status=FlatStatus.OCCUPIED,
+        )
+        user1 = User(
+            id=user1_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"neeraj-conc-{user1_id.hex[:6]}@example.com",
+            phone=f"+9198{user1_id.int % 100000000:08d}",
+            full_name="Neeraj Concurrency",
+            status=UserStatus.ACTIVE,
+        )
+        user2 = User(
+            id=user2_id,
+            supabase_uid=uuid.uuid4(),
+            email=f"swati-conc-{user2_id.hex[:6]}@example.com",
+            phone=f"+9197{user2_id.int % 100000000:08d}",
+            full_name="Swati Concurrency",
+            status=UserStatus.ACTIVE,
+        )
+        now = utc_now()
+        mem1 = FlatMembership(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            flat_id=flat1_id,
+            user_id=user1_id,
+            membership_type=MembershipType.OWNER,
+            status=MembershipStatus.APPROVED,
+            valid_from=now - timedelta(days=1),
+        )
+        mem2 = FlatMembership(
+            id=uuid.uuid4(),
+            society_id=soc_id,
+            flat_id=flat2_id,
+            user_id=user2_id,
+            membership_type=MembershipType.TENANT,
+            status=MembershipStatus.APPROVED,
+            valid_from=now - timedelta(days=1),
+        )
+        # Amenity with strict capacity 1
+        amenity = Amenity(
+            id=amenity_id,
+            society_id=soc_id,
+            name="Badminton Court 1 (Capacity 1)",
+            description="Championship court with single-player/team capacity 1",
+            amenity_type=AmenityType.BADMINTON_COURT,
+            location="Sports Complex",
+            tower_id=None,
+            capacity=1,
+            slot_duration_minutes=60,
+            opening_time="06:00",
+            closing_time="22:00",
+            booking_fee_paise=15000,
+            advance_booking_days=7,
+            min_advance_hours=0,
+            max_slots_per_day_per_resident=2,
+            cancellation_deadline_hours=2,
+            refund_percentage=80,
+            allowed_membership_types=["OWNER", "TENANT", "FAMILY_MEMBER"],
+            is_active=True,
+        )
+        setup_session.add_all([soc, tow, flat1, flat2, user1, user2, mem1, mem2, amenity])
+        setup_session.commit()
+
+    # 2. Concurrency Barrier and Execution
+    barrier = threading.Barrier(2)
+    results: dict[str, Any] = {}
+
+    def attempt_booking(worker_name: str, u_id: uuid.UUID, f_id: uuid.UUID) -> None:
+        with Session(engine) as worker_session:
+            with contextlib.suppress(Exception):
+                worker_session.execute(text("RESET ROLE;"))
+            service = AmenityService(worker_session)
+            # Both threads reach the barrier before either starts its booking transaction
+            barrier.wait(timeout=5)
+            try:
+                booking = service.create_booking(
+                    society_id=soc_id,
+                    user_id=u_id,
+                    amenity_id=amenity_id,
+                    req=CreateBookingRequest(
+                        flat_id=f_id,
+                        booking_date=target_date,
+                        start_time="18:00",
+                        end_time="19:00",
+                        booked_units=1,
+                        auto_pay=True,
+                    ),
+                )
+                worker_session.commit()
+                results[worker_name] = {"status": "SUCCESS", "booking_id": booking.id}
+            except Exception as exc:
+                worker_session.rollback()
+                results[worker_name] = {"status": "ERROR", "exception": exc}
+
+    t1 = threading.Thread(target=attempt_booking, args=("neeraj", user1_id, flat1_id))
+    t2 = threading.Thread(target=attempt_booking, args=("swati", user2_id, flat2_id))
+
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    # 3. Assertions: Exactly one succeeds, exactly one gets CAPACITY_EXCEEDED
+    statuses = [results.get("neeraj", {}).get("status"), results.get("swati", {}).get("status")]
+    assert statuses.count("SUCCESS") == 1, (
+        f"Expected exactly 1 booking to succeed in PostgreSQL, got outcomes: {results}"
     )
-    assert res2.status_code == 409
-    assert res2.json()["error"]["code"] == "CAPACITY_EXCEEDED"
+    assert statuses.count("ERROR") == 1, (
+        f"Expected exactly 1 booking to fail in PostgreSQL, got outcomes: {results}"
+    )
+
+    losing_worker = "neeraj" if results["neeraj"]["status"] == "ERROR" else "swati"
+    exc = results[losing_worker]["exception"]
+    assert isinstance(exc, ConflictError), f"Expected ConflictError, got: {type(exc)}: {exc}"
+    assert exc.code == "CAPACITY_EXCEEDED", f"Expected CAPACITY_EXCEEDED, got: {exc.code}"
+
+    # 4. Independent Database Session Verification
+    with Session(engine) as verify_session:
+        with contextlib.suppress(Exception):
+            verify_session.execute(text("RESET ROLE;"))
+        persisted_bookings = list(
+            verify_session.scalars(
+                select(AmenityBooking).where(
+                    AmenityBooking.amenity_id == amenity_id,
+                    AmenityBooking.booking_date == target_date,
+                    AmenityBooking.start_time == "18:00",
+                )
+            ).all()
+        )
+        assert len(persisted_bookings) == 1, (
+            f"Expected strictly 1 booking in PostgreSQL, found: {len(persisted_bookings)}"
+        )
+        assert persisted_bookings[0].booked_units == 1
+
+    engine.dispose()
 
 
 def test_scenario_b_resident_attempts_to_book_inactive_amenity(
