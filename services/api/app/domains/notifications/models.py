@@ -337,6 +337,16 @@ class Notice(Base):
         nullable=True,
         index=True,
     )
+    target_tower_ids: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=list,
+    )
+    target_flat_ids: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+        default=list,
+    )
     is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -359,6 +369,9 @@ class Notice(Base):
     target_flat: Mapped["Flat | None"] = relationship("Flat", foreign_keys=[target_flat_id])
     reads: Mapped[list["NoticeRead"]] = relationship(
         "NoticeRead", back_populates="notice", cascade="all, delete-orphan"
+    )
+    targets: Mapped[list["NoticeTarget"]] = relationship(
+        "NoticeTarget", back_populates="notice", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
@@ -402,4 +415,37 @@ class NoticeRead(Base):
     __table_args__ = (
         UniqueConstraint("notice_id", "user_id", name="uq_notice_reads_notice_user"),
         Index("ix_notice_reads_user_notice", "user_id", "notice_id"),
+    )
+
+
+class NoticeTarget(Base):
+    """Normalized targets for official society notices (supports multi-tower & multi-flat broadcasting)."""
+
+    __tablename__ = "notice_targets"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    notice_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("notices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_type: Mapped[NoticeTargetType] = mapped_column(
+        SAEnum(NoticeTargetType, native_enum=False),
+        nullable=False,
+    )
+    target_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    notice: Mapped["Notice"] = relationship("Notice", back_populates="targets")
+
+    __table_args__ = (
+        UniqueConstraint("notice_id", "target_type", "target_id", name="uq_notice_targets_unique"),
+        Index("ix_notice_targets_lookup", "target_type", "target_id"),
     )

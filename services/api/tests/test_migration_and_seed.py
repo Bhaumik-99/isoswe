@@ -72,6 +72,9 @@ def test_database_migration_works_from_empty_database() -> None:
             "amenities",
             "amenity_bookings",
             "amenity_blocks",
+            "notices",
+            "notice_reads",
+            "notice_targets",
         ]
         for tbl in required_tables:
             assert tbl in table_names, f"Table '{tbl}' must be created by Alembic upgrade head"
@@ -119,7 +122,7 @@ def test_seed_script_is_idempotent(monkeypatch) -> None:
         amenity_count_1 = session.scalar(select(func.count(Amenity.id)))
 
         assert society_count_1 == 1
-        assert tower_count_1 == 3
+        assert tower_count_1 == 28
         assert flat_count_1 == 3
         assert user_count_1 == 5
         assert role_count_1 == 5

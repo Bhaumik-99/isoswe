@@ -330,9 +330,17 @@ export const ResidentNoticesPage: React.FC = () => {
                         <Building className="h-3 w-3 text-slate-400" />
                         {notice.target_type === 'SOCIETY' && 'Society Wide'}
                         {notice.target_type === 'TOWER' &&
-                          `Target: ${notice.target_tower_name || 'Tower'}`}
+                          `Target: ${
+                            notice.target_tower_names && notice.target_tower_names.length > 0
+                              ? notice.target_tower_names.join(', ')
+                              : notice.target_tower_name || 'Tower'
+                          }`}
                         {notice.target_type === 'FLAT' &&
-                          `Target: Unit ${notice.target_flat_number || 'Flat'}`}
+                          `Target: ${
+                            notice.target_flat_numbers && notice.target_flat_numbers.length > 0
+                              ? `Flats ${notice.target_flat_numbers.join(', ')}`
+                              : `Unit ${notice.target_flat_number || 'Flat'}`
+                          }`}
                       </span>
                     </div>
 

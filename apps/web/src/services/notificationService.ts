@@ -1,6 +1,7 @@
 import { apiClient } from './apiClient';
 import {
   CreateNoticePayload,
+  FlatOption,
   MarkAllNoticesReadResponse,
   MarkAllReadResponse,
   MarkNoticeReadResponse,
@@ -8,11 +9,13 @@ import {
   NoticeCategory,
   NoticeItem,
   NoticeStatus,
+  NoticeTargetingOptionsResponse,
   NoticeTargetType,
   NotificationPreferences,
   PaginatedNotices,
   PaginatedNotifications,
   StaffNotificationOverview,
+  TowerOption,
   UnreadCountResponse,
   UpdateNoticePayload,
   UpdateNotificationPreferencesPayload,
@@ -233,5 +236,44 @@ export const notificationService = {
     }
     const query = params.toString() ? `?${params.toString()}` : '';
     return apiClient.post<NoticeItem>(`/api/v1/notifications/staff/notices/${noticeId}/archive${query}`);
+  },
+
+  async getStaffTowers(societyId?: string): Promise<TowerOption[]> {
+    const params = new URLSearchParams();
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.get<TowerOption[]>(`/api/v1/notifications/staff/towers${query}`);
+  },
+
+  async getStaffFlats(
+    towerId?: string,
+    search?: string,
+    societyId?: string
+  ): Promise<FlatOption[]> {
+    const params = new URLSearchParams();
+    if (towerId) {
+      params.append('tower_id', towerId);
+    }
+    if (search) {
+      params.append('search', search);
+    }
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.get<FlatOption[]>(`/api/v1/notifications/staff/flats${query}`);
+  },
+
+  async getStaffTargetingOptions(societyId?: string): Promise<NoticeTargetingOptionsResponse> {
+    const params = new URLSearchParams();
+    if (societyId) {
+      params.append('society_id', societyId);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiClient.get<NoticeTargetingOptionsResponse>(
+      `/api/v1/notifications/staff/targeting-options${query}`
+    );
   },
 };

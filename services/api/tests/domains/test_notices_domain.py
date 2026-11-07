@@ -27,6 +27,7 @@ from app.domains.notifications.models import (
     NoticeCategory,
     NoticePriority,
     NoticeStatus,
+    NoticeTarget,
     NoticeTargetType,
     Notification,
     NotificationDelivery,
@@ -1040,3 +1041,240 @@ def test_idempotent_emergency_broadcast_keys(
         )
     )
     assert total_notifs == 1
+
+
+def test_multi_tower_targeting_broadcast_and_society_validation(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies multi-tower notice broadcasting, targeting predicates, and foreign tower rejection."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    tow1_id = notice_test_setup["tow1_id"]
+    tow2_id = notice_test_setup["tow2_id"]
+    res1_id = notice_test_setup["res1_id"]
+    res2_id = notice_test_setup["res2_id"]
+
+    # 1. Create a third tower and third resident in same society
+    tow3_id = uuid.uuid4()
+    tow3 = Tower(id=tow3_id, society_id=soc_id, tower_number="T3", name="Tower 3")
+    flat3_id = uuid.uuid4()
+    flat3 = Flat(
+        id=flat3_id,
+        society_id=soc_id,
+        tower_id=tow3_id,
+        flat_number="301",
+        area_sqft=1100,
+        status=FlatStatus.OCCUPIED,
+    )
+    res3_id = uuid.uuid4()
+    res3 = User(
+        id=res3_id,
+        supabase_uid=uuid.uuid4(),
+        email="res3_unique@notices.example.com",
+        phone="+919800000077",
+        full_name="Resident Three",
+        status=UserStatus.ACTIVE,
+    )
+    mem3 = FlatMembership(
+        id=uuid.uuid4(),
+        society_id=soc_id,
+        flat_id=flat3_id,
+        user_id=res3_id,
+        membership_type=MembershipType.OWNER,
+        status=MembershipStatus.APPROVED,
+        is_primary=True,
+    )
+    db_session.add_all([tow3, flat3, res3, mem3])
+    db_session.commit()
+
+    # 2. Multi-tower targeting validation: Foreign tower must be rejected
+    foreign_soc_id = uuid.uuid4()
+    foreign_soc = Society(id=foreign_soc_id, name="Other Society", status=SocietyStatus.ACTIVE)
+    foreign_tower_id = uuid.uuid4()
+    foreign_tower = Tower(
+        id=foreign_tower_id, society_id=foreign_soc_id, tower_number="T99", name="Foreign Tower"
+    )
+    db_session.add_all([foreign_soc, foreign_tower])
+    db_session.commit()
+
+    with pytest.raises(ResourceNotFoundError) as exc_info:
+        svc.create_notice(
+            society_id=soc_id,
+            author_id=staff_id,
+            req=CreateNoticeRequest(
+                title="Invalid Multi-Tower Notice",
+                body="Testing foreign tower rejection.",
+                category=NoticeCategory.MAINTENANCE,
+                status=NoticeStatus.PUBLISHED,
+                target_type=NoticeTargetType.TOWER,
+                target_tower_ids=[tow1_id, foreign_tower_id],
+            ),
+        )
+    assert f"Tower {foreign_tower_id} not found in this society" in str(exc_info.value)
+
+    # 3. Create valid multi-tower notice targeted to Tower 1 and Tower 2
+    multi_notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="ELEVATOR OVERHAUL: TOWERS 1 & 2",
+            body="Elevators in Tower 1 and Tower 2 will be inspected.",
+            category=NoticeCategory.MAINTENANCE,
+            priority=NoticePriority.HIGH,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.TOWER,
+            target_tower_ids=[tow1_id, tow2_id],
+            deliver_emergency=True,
+        ),
+    )
+
+    assert len(multi_notice.target_tower_ids) == 2
+    assert tow1_id in multi_notice.target_tower_ids
+    assert tow2_id in multi_notice.target_tower_ids
+    assert len(multi_notice.target_tower_names) == 2
+
+    # Verify NoticeTarget normalized records
+    targets = list(
+        db_session.scalars(
+            select(NoticeTarget).where(NoticeTarget.notice_id == multi_notice.id)
+        ).all()
+    )
+    assert len(targets) == 2
+    assert {t.target_id for t in targets} == {tow1_id, tow2_id}
+
+    # 4. Verify feed and access control
+    # Resident 1 (Tower 1) can access
+    res1_feed = svc.list_resident_notices(society_id=soc_id, user_id=res1_id)
+    assert any(n.id == multi_notice.id for n in res1_feed.items)
+    res1_detail = svc.get_resident_notice(
+        society_id=soc_id, user_id=res1_id, notice_id=multi_notice.id
+    )
+    assert res1_detail.id == multi_notice.id
+
+    # Resident 2 (Tower 2) can access
+    res2_feed = svc.list_resident_notices(society_id=soc_id, user_id=res2_id)
+    assert any(n.id == multi_notice.id for n in res2_feed.items)
+    res2_detail = svc.get_resident_notice(
+        society_id=soc_id, user_id=res2_id, notice_id=multi_notice.id
+    )
+    assert res2_detail.id == multi_notice.id
+
+    # Resident 3 (Tower 3) CANNOT access
+    res3_feed = svc.list_resident_notices(society_id=soc_id, user_id=res3_id)
+    assert not any(n.id == multi_notice.id for n in res3_feed.items)
+    with pytest.raises(ResourceNotFoundError):
+        svc.get_resident_notice(society_id=soc_id, user_id=res3_id, notice_id=multi_notice.id)
+
+    # 5. Verify emergency broadcast notifications sent to Tower 1 & 2, not Tower 3
+    notif_res1 = db_session.scalars(
+        select(Notification).where(
+            Notification.recipient_user_id == res1_id,
+            Notification.aggregate_id == str(multi_notice.id),
+        )
+    ).first()
+    assert notif_res1 is not None
+
+    notif_res2 = db_session.scalars(
+        select(Notification).where(
+            Notification.recipient_user_id == res2_id,
+            Notification.aggregate_id == str(multi_notice.id),
+        )
+    ).first()
+    assert notif_res2 is not None
+
+    notif_res3 = db_session.scalars(
+        select(Notification).where(
+            Notification.recipient_user_id == res3_id,
+            Notification.aggregate_id == str(multi_notice.id),
+        )
+    ).first()
+    assert notif_res3 is None
+
+
+def test_multi_flat_targeting_and_society_validation(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies multi-flat notice targeting and foreign flat validation."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+    staff_id = notice_test_setup["staff_id"]
+    flat1_id = notice_test_setup["flat1_id"]
+    flat2_id = notice_test_setup["flat2_id"]
+    res1_id = notice_test_setup["res1_id"]
+    res2_id = notice_test_setup["res2_id"]
+
+    # Foreign flat rejection
+    foreign_soc_id = uuid.uuid4()
+    foreign_soc = Society(id=foreign_soc_id, name="Other Society 2", status=SocietyStatus.ACTIVE)
+    foreign_flat_id = uuid.uuid4()
+    foreign_flat = Flat(
+        id=foreign_flat_id,
+        society_id=foreign_soc_id,
+        tower_id=notice_test_setup["tow1_id"],
+        flat_number="999",
+        area_sqft=1000,
+        status=FlatStatus.OCCUPIED,
+    )
+    db_session.add_all([foreign_soc, foreign_flat])
+    db_session.commit()
+
+    with pytest.raises(ResourceNotFoundError) as exc_info:
+        svc.create_notice(
+            society_id=soc_id,
+            author_id=staff_id,
+            req=CreateNoticeRequest(
+                title="Invalid Multi-Flat Notice",
+                body="Testing foreign flat rejection.",
+                category=NoticeCategory.GENERAL,
+                status=NoticeStatus.PUBLISHED,
+                target_type=NoticeTargetType.FLAT,
+                target_flat_ids=[flat1_id, foreign_flat_id],
+            ),
+        )
+    assert f"Flat {foreign_flat_id} not found in this society" in str(exc_info.value)
+
+    # Valid multi-flat notice
+    multi_flat_notice = svc.create_notice(
+        society_id=soc_id,
+        author_id=staff_id,
+        req=CreateNoticeRequest(
+            title="PLUMBING PIPE INSPECTION FOR FLATS 101 & 201",
+            body="Vertical riser inspection affecting flats 101 and 201.",
+            category=NoticeCategory.MAINTENANCE,
+            priority=NoticePriority.NORMAL,
+            status=NoticeStatus.PUBLISHED,
+            target_type=NoticeTargetType.FLAT,
+            target_flat_ids=[flat1_id, flat2_id],
+        ),
+    )
+
+    assert len(multi_flat_notice.target_flat_ids) == 2
+    assert flat1_id in multi_flat_notice.target_flat_ids
+    assert flat2_id in multi_flat_notice.target_flat_ids
+    assert len(multi_flat_notice.target_flat_numbers) == 2
+
+    # Both residents can see it
+    feed1 = svc.list_resident_notices(society_id=soc_id, user_id=res1_id)
+    assert any(n.id == multi_flat_notice.id for n in feed1.items)
+    feed2 = svc.list_resident_notices(society_id=soc_id, user_id=res2_id)
+    assert any(n.id == multi_flat_notice.id for n in feed2.items)
+
+
+def test_dynamic_targeting_options_loaders(
+    db_session: Session, notice_test_setup: dict[str, Any]
+) -> None:
+    """Verifies that society towers and flats are loaded dynamically."""
+    svc = NoticeService(db_session)
+    soc_id = notice_test_setup["society_id"]
+
+    options = svc.get_targeting_options(soc_id)
+    assert len(options.towers) >= 2
+    tower_numbers = [t.tower_number for t in options.towers]
+    assert "T1" in tower_numbers
+    assert "T2" in tower_numbers
+
+    assert len(options.flats) >= 2
+    flat_numbers = [f.flat_number for f in options.flats]
+    assert "101" in flat_numbers
+    assert "201" in flat_numbers

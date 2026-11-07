@@ -13,6 +13,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from scripts.seed import (
+    FLAT_0408_ID,
+    FLAT_1203_ID,
+    TOWER_T07_ID,
+    TOWER_T12_ID,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -648,3 +654,114 @@ def test_repeated_publish_requests_api_idempotency(client: TestClient, db_sessio
     )
     assert pub_arch.status_code == 400
     assert pub_arch.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
+
+
+def test_dynamic_targeting_options_endpoints(client: TestClient, db_session: Session) -> None:
+    """Verifies that staff can dynamically query society towers and flats for notice targeting."""
+    # 1. Combined targeting options
+    res_opts = client.get(
+        f"/api/v1/notifications/staff/targeting-options?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_opts.status_code == 200
+    data = res_opts.json()
+    assert "towers" in data and "flats" in data
+    assert len(data["towers"]) >= 3
+    assert any(t["id"] == str(TOWER_T07_ID) for t in data["towers"])
+    assert any(t["id"] == str(TOWER_T12_ID) for t in data["towers"])
+
+    # 2. Towers list endpoint
+    res_towers = client.get(
+        f"/api/v1/notifications/staff/towers?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_towers.status_code == 200
+    towers = res_towers.json()
+    assert isinstance(towers, list)
+    tower_nums = [t["tower_number"] for t in towers]
+    assert "T07" in tower_nums
+
+    # 3. Flats list endpoint
+    res_flats = client.get(
+        f"/api/v1/notifications/staff/flats?society_id={SOCIETY_PUNE_ID}",
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_flats.status_code == 200
+    flats = res_flats.json()
+    assert isinstance(flats, list)
+    assert any(f["id"] == str(FLAT_1203_ID) for f in flats)
+
+
+def test_multi_tower_and_multi_flat_targeting_api_and_society_validation(
+    client: TestClient, db_session: Session
+) -> None:
+    """Verifies multi-tower / multi-flat creation via REST API and validates society membership of targets."""
+    # 1. Foreign tower validation
+    foreign_tower_uuid = str(uuid.uuid4())
+    res_bad_tower = client.post(
+        f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+        json={
+            "title": "Invalid Tower Notice",
+            "body": "Should fail because tower does not belong to society.",
+            "category": "MAINTENANCE",
+            "priority": "NORMAL",
+            "status": "PUBLISHED",
+            "target_type": "TOWER",
+            "target_tower_ids": [str(TOWER_T07_ID), foreign_tower_uuid],
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_bad_tower.status_code == 404
+    assert "not found in this society" in res_bad_tower.json()["error"]["message"]
+
+    # 2. Valid multi-tower notice (T07 and T12)
+    res_multi_tower = client.post(
+        f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+        json={
+            "title": "Water Tank Cleaning: Towers 7 and 12",
+            "body": "Water supply suspended from 10 AM to 2 PM.",
+            "category": "MAINTENANCE",
+            "priority": "HIGH",
+            "status": "PUBLISHED",
+            "target_type": "TOWER",
+            "target_tower_ids": [str(TOWER_T07_ID), str(TOWER_T12_ID)],
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_multi_tower.status_code == 201
+    notice_data = res_multi_tower.json()
+    assert len(notice_data["target_tower_ids"]) == 2
+    assert str(TOWER_T07_ID) in notice_data["target_tower_ids"]
+    assert str(TOWER_T12_ID) in notice_data["target_tower_ids"]
+    assert len(notice_data["target_tower_names"]) == 2
+
+    # Resident Neeraj in Tower 7 (Flat 1203) can see this notice
+    res_feed = client.get(
+        f"/api/v1/notifications/resident/notices?society_id={SOCIETY_PUNE_ID}",
+        headers=RESIDENT_NEERAJ_HEADERS,
+    )
+    assert res_feed.status_code == 200
+    feed_items = res_feed.json()["items"]
+    assert any(n["id"] == notice_data["id"] for n in feed_items)
+
+    # 3. Valid multi-flat notice (Flat 1203 and Flat 0408)
+    res_multi_flat = client.post(
+        f"/api/v1/notifications/staff/notices?society_id={SOCIETY_PUNE_ID}",
+        json={
+            "title": "Balcony Grouting Advisory for Selected Flats",
+            "body": "Technicians will visit Flats 1203 and 0408 tomorrow.",
+            "category": "MAINTENANCE",
+            "priority": "NORMAL",
+            "status": "PUBLISHED",
+            "target_type": "FLAT",
+            "target_flat_ids": [str(FLAT_1203_ID), str(FLAT_0408_ID)],
+        },
+        headers=STAFF_HELPDESK_HEADERS,
+    )
+    assert res_multi_flat.status_code == 201
+    flat_notice_data = res_multi_flat.json()
+    assert len(flat_notice_data["target_flat_ids"]) == 2
+    assert str(FLAT_1203_ID) in flat_notice_data["target_flat_ids"]
+    assert str(FLAT_0408_ID) in flat_notice_data["target_flat_ids"]
+    assert "1203" in flat_notice_data["target_flat_numbers"]
+    assert "0408" in flat_notice_data["target_flat_numbers"]

@@ -27,15 +27,18 @@ from app.domains.notifications.models import (
 from app.domains.notifications.notice_service import NoticeService
 from app.domains.notifications.schemas import (
     CreateNoticeRequest,
+    FlatOptionSchema,
     MarkAllNoticesReadResponse,
     MarkAllReadResponse,
     MarkNoticeReadResponse,
     MarkReadResponse,
     NoticeResponseSchema,
+    NoticeTargetingOptionsResponse,
     NotificationPreferenceSchema,
     PaginatedNoticesResponse,
     PaginatedNotificationsResponse,
     StaffNotificationOverviewResponse,
+    TowerOptionSchema,
     UnreadCountResponse,
     UpdateNoticeRequest,
     UpdateNotificationPreferenceRequest,
@@ -310,6 +313,59 @@ def mark_all_resident_notices_read(
 # =============================================================================
 # Staff Official Notice Management Endpoints
 # =============================================================================
+
+
+@router.get(
+    "/staff/targeting-options",
+    response_model=NoticeTargetingOptionsResponse,
+    summary="Load towers and flats dynamically for notice composer",
+)
+def get_notice_targeting_options(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> NoticeTargetingOptionsResponse:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.get_targeting_options(target_society)
+
+
+@router.get(
+    "/staff/towers",
+    response_model=list[TowerOptionSchema],
+    summary="List all towers in society dynamically for notice targeting",
+)
+def list_society_towers(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    db: Session = Depends(get_db),
+) -> list[TowerOptionSchema]:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.list_society_towers(target_society)
+
+
+@router.get(
+    "/staff/flats",
+    response_model=list[FlatOptionSchema],
+    summary="List flats in society dynamically for notice targeting",
+)
+def list_society_flats(
+    claims: Annotated[CurrentUserClaims, Depends(require_roles(RoleType.HELPDESK))],
+    society_id: UUID | None = Query(None, description="Optional society filter"),
+    tower_id: UUID | None = Query(None, description="Optional tower filter"),
+    search: str | None = Query(None, description="Optional flat number search"),
+    limit: int = Query(200, ge=1, le=500, description="Max flats to return"),
+    db: Session = Depends(get_db),
+) -> list[FlatOptionSchema]:
+    target_society = _resolve_society_id(claims, society_id)
+    service = NoticeService(db)
+    return service.list_society_flats(
+        society_id=target_society,
+        tower_id=tower_id,
+        search=search,
+        limit=limit,
+    )
 
 
 @router.get(

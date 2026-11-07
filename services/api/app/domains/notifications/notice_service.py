@@ -33,6 +33,7 @@ from app.domains.notifications.models import (
     NoticePriority,
     NoticeRead,
     NoticeStatus,
+    NoticeTarget,
     NoticeTargetType,
     Notification,
     NotificationChannel,
@@ -41,10 +42,13 @@ from app.domains.notifications.models import (
 )
 from app.domains.notifications.schemas import (
     CreateNoticeRequest,
+    FlatOptionSchema,
     MarkAllNoticesReadResponse,
     MarkNoticeReadResponse,
     NoticeResponseSchema,
+    NoticeTargetingOptionsResponse,
     PaginatedNoticesResponse,
+    TowerOptionSchema,
     UpdateNoticeRequest,
 )
 from app.domains.notifications.service import NotificationService
@@ -137,32 +141,64 @@ class NoticeService:
         self,
         society_id: uuid.UUID,
         target_type: NoticeTargetType,
-        target_tower_id: uuid.UUID | None,
-        target_flat_id: uuid.UUID | None,
-    ) -> None:
+        target_tower_ids: list[uuid.UUID] | None = None,
+        target_flat_ids: list[uuid.UUID] | None = None,
+        target_tower_id: uuid.UUID | None = None,
+        target_flat_id: uuid.UUID | None = None,
+    ) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+        """Validates targeting parameters and guarantees that every target belongs to the society.
+
+        Returns (validated_tower_ids, validated_flat_ids).
+        """
         if target_type == NoticeTargetType.TOWER:
-            if not target_tower_id:
+            t_ids: list[uuid.UUID] = []
+            if target_tower_ids:
+                t_ids.extend([tid for tid in target_tower_ids if tid is not None])
+            if target_tower_id and target_tower_id not in t_ids:
+                t_ids.append(target_tower_id)
+
+            if not t_ids:
                 raise ValidationError(
                     code="TARGET_TOWER_REQUIRED",
-                    message="Target tower must be specified for TOWER targeted notice.",
+                    message="At least one target tower must be specified for TOWER targeted notice.",
                 )
-            tower = self.db.scalars(
-                select(Tower).where(Tower.id == target_tower_id, Tower.society_id == society_id)
-            ).first()
-            if not tower:
-                raise ResourceNotFoundError(f"Tower {target_tower_id} not found in this society.")
+
+            found_towers = list(
+                self.db.scalars(
+                    select(Tower).where(Tower.id.in_(t_ids), Tower.society_id == society_id)
+                ).all()
+            )
+            found_ids = {t.id for t in found_towers}
+            for tid in t_ids:
+                if tid not in found_ids:
+                    raise ResourceNotFoundError(f"Tower {tid} not found in this society.")
+            return t_ids, []
 
         elif target_type == NoticeTargetType.FLAT:
-            if not target_flat_id:
+            f_ids: list[uuid.UUID] = []
+            if target_flat_ids:
+                f_ids.extend([fid for fid in target_flat_ids if fid is not None])
+            if target_flat_id and target_flat_id not in f_ids:
+                f_ids.append(target_flat_id)
+
+            if not f_ids:
                 raise ValidationError(
                     code="TARGET_FLAT_REQUIRED",
-                    message="Target flat must be specified for FLAT targeted notice.",
+                    message="At least one target flat must be specified for FLAT targeted notice.",
                 )
-            flat = self.db.scalars(
-                select(Flat).where(Flat.id == target_flat_id, Flat.society_id == society_id)
-            ).first()
-            if not flat:
-                raise ResourceNotFoundError(f"Flat {target_flat_id} not found in this society.")
+
+            found_flats = list(
+                self.db.scalars(
+                    select(Flat).where(Flat.id.in_(f_ids), Flat.society_id == society_id)
+                ).all()
+            )
+            found_ids = {f.id for f in found_flats}
+            for fid in f_ids:
+                if fid not in found_ids:
+                    raise ResourceNotFoundError(f"Flat {fid} not found in this society.")
+            return [], f_ids
+
+        return [], []
 
     # -------------------------------------------------------------------------
     # Helper: Resolve Recipients for Emergency Notice
@@ -183,15 +219,39 @@ class NoticeService:
         )
 
         if notice.target_type == NoticeTargetType.TOWER:
-            if not notice.target_tower_id:
+            tower_uuids: list[uuid.UUID] = []
+            for t in notice.target_tower_ids or []:
+                try:
+                    tower_uuids.append(uuid.UUID(str(t)))
+                except (ValueError, TypeError):
+                    continue
+            if not tower_uuids and notice.target_tower_id:
+                tower_uuids.append(notice.target_tower_id)
+            if not tower_uuids:
+                tower_uuids = [
+                    t.target_id for t in notice.targets if t.target_type == NoticeTargetType.TOWER
+                ]
+            if not tower_uuids:
                 return []
             base_query = base_query.join(Flat, Flat.id == FlatMembership.flat_id).where(
-                Flat.tower_id == notice.target_tower_id
+                Flat.tower_id.in_(tower_uuids)
             )
         elif notice.target_type == NoticeTargetType.FLAT:
-            if not notice.target_flat_id:
+            flat_uuids: list[uuid.UUID] = []
+            for f in notice.target_flat_ids or []:
+                try:
+                    flat_uuids.append(uuid.UUID(str(f)))
+                except (ValueError, TypeError):
+                    continue
+            if not flat_uuids and notice.target_flat_id:
+                flat_uuids.append(notice.target_flat_id)
+            if not flat_uuids:
+                flat_uuids = [
+                    t.target_id for t in notice.targets if t.target_type == NoticeTargetType.FLAT
+                ]
+            if not flat_uuids:
                 return []
-            base_query = base_query.where(FlatMembership.flat_id == notice.target_flat_id)
+            base_query = base_query.where(FlatMembership.flat_id.in_(flat_uuids))
 
         residents = list(self.db.scalars(base_query.distinct()).all())
         return residents
@@ -322,9 +382,11 @@ class NoticeService:
         req: CreateNoticeRequest,
     ) -> NoticeResponseSchema:
         now = utc_now()
-        self._validate_targeting(
+        val_tower_ids, val_flat_ids = self._validate_targeting(
             society_id=society_id,
             target_type=req.target_type,
+            target_tower_ids=req.target_tower_ids,
+            target_flat_ids=req.target_flat_ids,
             target_tower_id=req.target_tower_id,
             target_flat_id=req.target_flat_id,
         )
@@ -339,6 +401,9 @@ class NoticeService:
                 message="Notice expiry date must be strictly after the publication date.",
             )
 
+        target_tower_id = val_tower_ids[0] if val_tower_ids else None
+        target_flat_id = val_flat_ids[0] if val_flat_ids else None
+
         notice = Notice(
             id=uuid.uuid4(),
             society_id=society_id,
@@ -348,8 +413,10 @@ class NoticeService:
             priority=req.priority,
             status=req.status,
             target_type=req.target_type,
-            target_tower_id=req.target_tower_id,
-            target_flat_id=req.target_flat_id,
+            target_tower_id=target_tower_id,
+            target_flat_id=target_flat_id,
+            target_tower_ids=[str(tid) for tid in val_tower_ids],
+            target_flat_ids=[str(fid) for fid in val_flat_ids],
             is_pinned=req.is_pinned,
             published_at=published_at,
             expires_at=req.expires_at,
@@ -358,6 +425,28 @@ class NoticeService:
             updated_at=now,
         )
         self.db.add(notice)
+        self.db.flush()
+
+        for tid in val_tower_ids:
+            self.db.add(
+                NoticeTarget(
+                    id=uuid.uuid4(),
+                    notice_id=notice.id,
+                    target_type=NoticeTargetType.TOWER,
+                    target_id=tid,
+                    created_at=now,
+                )
+            )
+        for fid in val_flat_ids:
+            self.db.add(
+                NoticeTarget(
+                    id=uuid.uuid4(),
+                    notice_id=notice.id,
+                    target_type=NoticeTargetType.FLAT,
+                    target_id=fid,
+                    created_at=now,
+                )
+            )
         self.db.flush()
 
         self._record_audit(
@@ -422,6 +511,20 @@ class NoticeService:
 
         now = utc_now()
         target_type = req.target_type if req.target_type is not None else notice.target_type
+
+        # Determine target IDs to validate
+        target_tower_ids = req.target_tower_ids
+        if target_tower_ids is None and req.target_type is None:
+            target_tower_ids = [uuid.UUID(str(t)) for t in (notice.target_tower_ids or [])]
+            if not target_tower_ids and notice.target_tower_id:
+                target_tower_ids = [notice.target_tower_id]
+
+        target_flat_ids = req.target_flat_ids
+        if target_flat_ids is None and req.target_type is None:
+            target_flat_ids = [uuid.UUID(str(f)) for f in (notice.target_flat_ids or [])]
+            if not target_flat_ids and notice.target_flat_id:
+                target_flat_ids = [notice.target_flat_id]
+
         target_tower_id = (
             req.target_tower_id if req.target_tower_id is not None else notice.target_tower_id
         )
@@ -429,9 +532,11 @@ class NoticeService:
             req.target_flat_id if req.target_flat_id is not None else notice.target_flat_id
         )
 
-        self._validate_targeting(
+        val_tower_ids, val_flat_ids = self._validate_targeting(
             society_id=society_id,
             target_type=target_type,
+            target_tower_ids=target_tower_ids,
+            target_flat_ids=target_flat_ids,
             target_tower_id=target_tower_id,
             target_flat_id=target_flat_id,
         )
@@ -448,10 +553,51 @@ class NoticeService:
             notice.priority = req.priority
         if req.status is not None:
             notice.status = req.status
-        if req.target_type is not None:
-            notice.target_type = req.target_type
-            notice.target_tower_id = req.target_tower_id
-            notice.target_flat_id = req.target_flat_id
+        if (
+            req.target_type is not None
+            or req.target_tower_ids is not None
+            or req.target_flat_ids is not None
+            or req.target_tower_id is not None
+            or req.target_flat_id is not None
+        ):
+            notice.target_type = target_type
+            notice.target_tower_id = val_tower_ids[0] if val_tower_ids else None
+            notice.target_flat_id = val_flat_ids[0] if val_flat_ids else None
+            notice.target_tower_ids = [str(tid) for tid in val_tower_ids]
+            notice.target_flat_ids = [str(fid) for fid in val_flat_ids]
+
+            # Clear existing NoticeTarget mappings and re-insert
+            existing_targets = list(
+                self.db.scalars(
+                    select(NoticeTarget).where(NoticeTarget.notice_id == notice.id)
+                ).all()
+            )
+            for t in existing_targets:
+                self.db.delete(t)
+            self.db.flush()
+
+            for tid in val_tower_ids:
+                self.db.add(
+                    NoticeTarget(
+                        id=uuid.uuid4(),
+                        notice_id=notice.id,
+                        target_type=NoticeTargetType.TOWER,
+                        target_id=tid,
+                        created_at=now,
+                    )
+                )
+            for fid in val_flat_ids:
+                self.db.add(
+                    NoticeTarget(
+                        id=uuid.uuid4(),
+                        notice_id=notice.id,
+                        target_type=NoticeTargetType.FLAT,
+                        target_id=fid,
+                        created_at=now,
+                    )
+                )
+            self.db.flush()
+
         if req.is_pinned is not None:
             notice.is_pinned = req.is_pinned
         if req.published_at is not None:
@@ -796,11 +942,18 @@ class NoticeService:
         tower_ids = [f.tower_id for _, f in rows if f.tower_id is not None]
 
         target_conditions = [Notice.target_type == NoticeTargetType.SOCIETY]
+        subqueries = []
         if tower_ids:
             target_conditions.append(
                 and_(
                     Notice.target_type == NoticeTargetType.TOWER,
                     Notice.target_tower_id.in_(tower_ids),
+                )
+            )
+            subqueries.append(
+                and_(
+                    NoticeTarget.target_type == NoticeTargetType.TOWER,
+                    NoticeTarget.target_id.in_(tower_ids),
                 )
             )
         if flat_ids:
@@ -810,6 +963,16 @@ class NoticeService:
                     Notice.target_flat_id.in_(flat_ids),
                 )
             )
+            subqueries.append(
+                and_(
+                    NoticeTarget.target_type == NoticeTargetType.FLAT,
+                    NoticeTarget.target_id.in_(flat_ids),
+                )
+            )
+
+        if subqueries:
+            matching_subq = select(NoticeTarget.notice_id).where(or_(*subqueries)).scalar_subquery()
+            target_conditions.append(Notice.id.in_(matching_subq))
 
         predicate = and_(
             Notice.society_id == society_id,
@@ -994,7 +1157,7 @@ class NoticeService:
         return MarkAllNoticesReadResponse(marked_count=len(unread_ids), status="success")
 
     # -------------------------------------------------------------------------
-    # Helper: Serialization
+    # Helper: Serialization & Dynamic Targeting Options
     # -------------------------------------------------------------------------
 
     def _to_schema(
@@ -1007,13 +1170,50 @@ class NoticeService:
         if notice.author:
             author_name = notice.author.full_name
 
+        tower_uuids: list[uuid.UUID] = []
+        for tid in notice.target_tower_ids or []:
+            try:
+                tower_uuids.append(uuid.UUID(str(tid)))
+            except (ValueError, TypeError):
+                continue
+        if not tower_uuids and notice.target_tower_id:
+            tower_uuids.append(notice.target_tower_id)
+
+        flat_uuids: list[uuid.UUID] = []
+        for fid in notice.target_flat_ids or []:
+            try:
+                flat_uuids.append(uuid.UUID(str(fid)))
+            except (ValueError, TypeError):
+                continue
+        if not flat_uuids and notice.target_flat_id:
+            flat_uuids.append(notice.target_flat_id)
+
+        tower_names: list[str] = []
+        if tower_uuids:
+            towers = list(self.db.scalars(select(Tower).where(Tower.id.in_(tower_uuids))).all())
+            t_map = {t.id: (t.name or t.tower_number) for t in towers}
+            tower_names = [t_map.get(tid, str(tid)) for tid in tower_uuids]
+
+        flat_numbers: list[str] = []
+        if flat_uuids:
+            flats = list(self.db.scalars(select(Flat).where(Flat.id.in_(flat_uuids))).all())
+            f_map = {f.id: f.flat_number for f in flats}
+            flat_numbers = [f_map.get(fid, str(fid)) for fid in flat_uuids]
+
         tower_name = None
         if notice.target_tower:
             tower_name = notice.target_tower.name or notice.target_tower.tower_number
+        elif tower_names:
+            tower_name = tower_names[0]
 
         flat_number = None
         if notice.target_flat:
             flat_number = notice.target_flat.flat_number
+        elif flat_numbers:
+            flat_number = flat_numbers[0]
+
+        target_tower_id = notice.target_tower_id or (tower_uuids[0] if tower_uuids else None)
+        target_flat_id = notice.target_flat_id or (flat_uuids[0] if flat_uuids else None)
 
         return NoticeResponseSchema(
             id=notice.id,
@@ -1024,10 +1224,14 @@ class NoticeService:
             priority=notice.priority,
             status=notice.status,
             target_type=notice.target_type,
-            target_tower_id=notice.target_tower_id,
+            target_tower_id=target_tower_id,
             target_tower_name=tower_name,
-            target_flat_id=notice.target_flat_id,
+            target_tower_ids=tower_uuids,
+            target_tower_names=tower_names,
+            target_flat_id=target_flat_id,
             target_flat_number=flat_number,
+            target_flat_ids=flat_uuids,
+            target_flat_numbers=flat_numbers,
             is_pinned=notice.is_pinned,
             published_at=notice.published_at,
             expires_at=notice.expires_at,
@@ -1038,3 +1242,56 @@ class NoticeService:
             created_at=notice.created_at,
             updated_at=notice.updated_at,
         )
+
+    def list_society_towers(self, society_id: uuid.UUID) -> list[TowerOptionSchema]:
+        """Lists all towers for a society dynamically, sorted by tower number."""
+        towers = list(
+            self.db.scalars(
+                select(Tower)
+                .where(Tower.society_id == society_id)
+                .order_by(Tower.tower_number.asc())
+            ).all()
+        )
+        return [
+            TowerOptionSchema(
+                id=t.id,
+                tower_number=t.tower_number,
+                name=t.name,
+            )
+            for t in towers
+        ]
+
+    def list_society_flats(
+        self,
+        society_id: uuid.UUID,
+        tower_id: uuid.UUID | None = None,
+        search: str | None = None,
+        limit: int = 200,
+    ) -> list[FlatOptionSchema]:
+        """Lists flats for a society dynamically with optional tower filtering and search."""
+        stmt = (
+            select(Flat).join(Tower, Tower.id == Flat.tower_id).where(Flat.society_id == society_id)
+        )
+        if tower_id is not None:
+            stmt = stmt.where(Flat.tower_id == tower_id)
+        if search and search.strip():
+            stmt = stmt.where(Flat.flat_number.ilike(f"%{search.strip()}%"))
+
+        stmt = stmt.order_by(Tower.tower_number.asc(), Flat.flat_number.asc()).limit(limit)
+        flats = list(self.db.scalars(stmt).all())
+        return [
+            FlatOptionSchema(
+                id=f.id,
+                flat_number=f.flat_number,
+                tower_id=f.tower_id,
+                tower_number=f.tower.tower_number if f.tower else "",
+                tower_name=f.tower.name if f.tower else "",
+            )
+            for f in flats
+        ]
+
+    def get_targeting_options(self, society_id: uuid.UUID) -> NoticeTargetingOptionsResponse:
+        """Returns both towers and flats dynamically for the notice composer."""
+        towers = self.list_society_towers(society_id)
+        flats = self.list_society_flats(society_id=society_id, limit=300)
+        return NoticeTargetingOptionsResponse(towers=towers, flats=flats)

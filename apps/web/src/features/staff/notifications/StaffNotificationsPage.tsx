@@ -24,23 +24,19 @@ import {
 import { notificationService } from '../../../services/notificationService';
 import {
   CreateNoticePayload,
+  FlatOption,
   NoticeCategory,
   NoticeItem,
   NoticePriority,
   NoticeStatus,
   NoticeTargetType,
   StaffNotificationOverview,
+  TowerOption,
   UpdateNoticePayload,
 } from '../../../types';
 import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Alert } from '../../../components/ui/Alert';
-
-const KNOWN_TOWERS = [
-  { id: '22222222-2222-2222-2222-222222222207', name: 'Tower 7 (T07)' },
-  { id: '22222222-2222-2222-2222-222222222212', name: 'Tower 12 (T12)' },
-  { id: '22222222-2222-2222-2222-222222222221', name: 'Tower 21 (T21)' },
-];
 
 export const StaffNotificationsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'NOTICES' | 'DELIVERIES'>('NOTICES');
@@ -62,6 +58,14 @@ export const StaffNotificationsPage: React.FC = () => {
   const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
   const [composerError, setComposerError] = useState<string | null>(null);
 
+  // Dynamic Targeting Options State
+  const [availableTowers, setAvailableTowers] = useState<TowerOption[]>([]);
+  const [availableFlats, setAvailableFlats] = useState<FlatOption[]>([]);
+  const [loadingTargets, setLoadingTargets] = useState<boolean>(false);
+  const [flatFilterTower, setFlatFilterTower] = useState<string>('ALL');
+  const [flatSearchQuery, setFlatSearchQuery] = useState<string>('');
+  const [manualFlatIdInput, setManualFlatIdInput] = useState<string>('');
+
   // Form Fields
   const [formData, setFormData] = useState<{
     title: string;
@@ -70,7 +74,9 @@ export const StaffNotificationsPage: React.FC = () => {
     priority: NoticePriority;
     target_type: NoticeTargetType;
     target_tower_id: string;
+    target_tower_ids: string[];
     target_flat_id: string;
+    target_flat_ids: string[];
     is_pinned: boolean;
     publish_now: boolean;
     published_at: string;
@@ -83,7 +89,9 @@ export const StaffNotificationsPage: React.FC = () => {
     priority: 'NORMAL',
     target_type: 'SOCIETY',
     target_tower_id: '',
+    target_tower_ids: [],
     target_flat_id: '',
+    target_flat_ids: [],
     is_pinned: false,
     publish_now: true,
     published_at: '',
@@ -151,18 +159,59 @@ export const StaffNotificationsPage: React.FC = () => {
     }
   }, [activeTab, loadNotices, loadDeliveries]);
 
+  // --- Fetch Dynamic Targeting Options ---
+  const loadTargetingOptions = useCallback(async () => {
+    setLoadingTargets(true);
+    try {
+      const res = await notificationService.getStaffTargetingOptions();
+      setAvailableTowers(res.towers || []);
+      setAvailableFlats(res.flats || []);
+    } catch {
+      try {
+        const towers = await notificationService.getStaffTowers();
+        setAvailableTowers(towers || []);
+      } catch {
+        // Ignore
+      }
+    } finally {
+      setLoadingTargets(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadTargetingOptions();
+  }, [loadTargetingOptions]);
+
   // --- Open Composer for Create or Edit ---
   const handleOpenComposer = (noticeToEdit?: NoticeItem) => {
+    if (availableTowers.length === 0) {
+      loadTargetingOptions();
+    }
     if (noticeToEdit) {
       setEditingNotice(noticeToEdit);
+      const tIds =
+        noticeToEdit.target_tower_ids && noticeToEdit.target_tower_ids.length > 0
+          ? noticeToEdit.target_tower_ids
+          : noticeToEdit.target_tower_id
+          ? [noticeToEdit.target_tower_id]
+          : [];
+      const fIds =
+        noticeToEdit.target_flat_ids && noticeToEdit.target_flat_ids.length > 0
+          ? noticeToEdit.target_flat_ids
+          : noticeToEdit.target_flat_id
+          ? [noticeToEdit.target_flat_id]
+          : [];
+
       setFormData({
         title: noticeToEdit.title,
         body: noticeToEdit.body,
         category: noticeToEdit.category,
         priority: noticeToEdit.priority,
         target_type: noticeToEdit.target_type,
-        target_tower_id: noticeToEdit.target_tower_id || '',
-        target_flat_id: noticeToEdit.target_flat_id || '',
+        target_tower_id: tIds[0] || '',
+        target_tower_ids: tIds,
+        target_flat_id: fIds[0] || '',
+        target_flat_ids: fIds,
         is_pinned: noticeToEdit.is_pinned,
         publish_now: noticeToEdit.status === 'PUBLISHED',
         published_at: noticeToEdit.published_at ? noticeToEdit.published_at.slice(0, 16) : '',
@@ -178,7 +227,9 @@ export const StaffNotificationsPage: React.FC = () => {
         priority: 'NORMAL',
         target_type: 'SOCIETY',
         target_tower_id: '',
+        target_tower_ids: [],
         target_flat_id: '',
+        target_flat_ids: [],
         is_pinned: false,
         publish_now: true,
         published_at: '',
@@ -200,13 +251,33 @@ export const StaffNotificationsPage: React.FC = () => {
       setComposerError('Notice body content is required.');
       return;
     }
-    if (formData.target_type === 'TOWER' && !formData.target_tower_id) {
-      setComposerError('Please select a target tower.');
-      return;
+    if (formData.target_type === 'TOWER') {
+      if (formData.target_tower_ids.length === 0) {
+        setComposerError('Please select at least one target tower.');
+        return;
+      }
+      if (availableTowers.length > 0) {
+        const validTowerIds = new Set(availableTowers.map((t) => t.id));
+        const invalid = formData.target_tower_ids.filter((id) => !validTowerIds.has(id));
+        if (invalid.length > 0) {
+          setComposerError('One or more selected towers do not belong to this society.');
+          return;
+        }
+      }
     }
-    if (formData.target_type === 'FLAT' && !formData.target_flat_id) {
-      setComposerError('Please enter a target flat ID.');
-      return;
+    if (formData.target_type === 'FLAT') {
+      if (formData.target_flat_ids.length === 0) {
+        setComposerError('Please select or specify at least one target flat.');
+        return;
+      }
+      if (availableFlats.length > 0) {
+        const validFlatIds = new Set(availableFlats.map((f) => f.id));
+        const invalid = formData.target_flat_ids.filter((id) => !validFlatIds.has(id));
+        if (invalid.length > 0) {
+          setComposerError('One or more selected flats do not belong to this society.');
+          return;
+        }
+      }
     }
 
     setComposerSubmitting(true);
@@ -219,8 +290,16 @@ export const StaffNotificationsPage: React.FC = () => {
       priority: formData.priority,
       status,
       target_type: formData.target_type,
-      target_tower_id: formData.target_type === 'TOWER' ? formData.target_tower_id : null,
-      target_flat_id: formData.target_type === 'FLAT' ? formData.target_flat_id : null,
+      target_tower_ids: formData.target_type === 'TOWER' ? formData.target_tower_ids : [],
+      target_tower_id:
+        formData.target_type === 'TOWER' && formData.target_tower_ids.length > 0
+          ? formData.target_tower_ids[0]
+          : null,
+      target_flat_ids: formData.target_type === 'FLAT' ? formData.target_flat_ids : [],
+      target_flat_id:
+        formData.target_type === 'FLAT' && formData.target_flat_ids.length > 0
+          ? formData.target_flat_ids[0]
+          : null,
       is_pinned: formData.is_pinned,
       published_at: formData.published_at ? new Date(formData.published_at).toISOString() : null,
       expires_at: formData.expires_at ? new Date(formData.expires_at).toISOString() : null,
@@ -515,10 +594,20 @@ export const StaffNotificationsPage: React.FC = () => {
                           <div className="flex items-center gap-1 text-[10px] text-slate-400 mt-1">
                             <Building className="h-2.5 w-2.5" />
                             {n.target_type === 'SOCIETY' && 'Society Wide'}
-                            {n.target_type === 'TOWER' &&
-                              `Tower: ${n.target_tower_name || 'Specific Tower'}`}
-                            {n.target_type === 'FLAT' &&
-                              `Flat: ${n.target_flat_number || 'Specific Unit'}`}
+                            {n.target_type === 'TOWER' && (
+                              <span>
+                                {n.target_tower_names && n.target_tower_names.length > 0
+                                  ? `${n.target_tower_names.length} Tower(s): ${n.target_tower_names.join(', ')}`
+                                  : `Tower: ${n.target_tower_name || 'Specific Tower'}`}
+                              </span>
+                            )}
+                            {n.target_type === 'FLAT' && (
+                              <span>
+                                {n.target_flat_numbers && n.target_flat_numbers.length > 0
+                                  ? `${n.target_flat_numbers.length} Flat(s): ${n.target_flat_numbers.join(', ')}`
+                                  : `Flat: ${n.target_flat_number || 'Specific Unit'}`}
+                              </span>
+                            )}
                           </div>
                         </td>
 
@@ -933,37 +1022,244 @@ export const StaffNotificationsPage: React.FC = () => {
                 </div>
 
                 {formData.target_type === 'TOWER' && (
-                  <div className="pt-2">
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Select Tower *
-                    </label>
-                    <select
-                      value={formData.target_tower_id}
-                      onChange={(e) => setFormData({ ...formData, target_tower_id: e.target.value })}
-                      className="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                      <option value="">-- Choose Tower --</option>
-                      {KNOWN_TOWERS.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="pt-2 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Target Towers *{' '}
+                        <span className="font-normal text-slate-500">
+                          ({formData.target_tower_ids.length} of {availableTowers.length} selected)
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const allIds = availableTowers.map((t) => t.id);
+                            setFormData({
+                              ...formData,
+                              target_tower_ids: allIds,
+                              target_tower_id: allIds[0] || '',
+                            });
+                          }}
+                          className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800"
+                        >
+                          Select All ({availableTowers.length})
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFormData({
+                              ...formData,
+                              target_tower_ids: [],
+                              target_tower_id: '',
+                            })
+                          }
+                          className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+
+                    {loadingTargets && availableTowers.length === 0 ? (
+                      <div className="text-center py-4 text-xs text-slate-400 flex items-center justify-center gap-2">
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Loading towers...</span>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5 max-h-48 overflow-y-auto p-2 bg-white rounded-lg border border-slate-200">
+                        {availableTowers.map((t) => {
+                          const isSelected = formData.target_tower_ids.includes(t.id);
+                          return (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => {
+                                const newIds = isSelected
+                                  ? formData.target_tower_ids.filter((id) => id !== t.id)
+                                  : [...formData.target_tower_ids, t.id];
+                                setFormData({
+                                  ...formData,
+                                  target_tower_ids: newIds,
+                                  target_tower_id: newIds[0] || '',
+                                });
+                              }}
+                              className={`py-1.5 px-2 text-xs font-semibold rounded-md border text-center transition-all ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300'
+                              }`}
+                              title={t.name}
+                            >
+                              {t.tower_number}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <span className="text-[10px] text-slate-400 block">
+                      Click towers to toggle selection. Selected towers will receive this announcement.
+                    </span>
                   </div>
                 )}
 
                 {formData.target_type === 'FLAT' && (
-                  <div className="pt-2">
-                    <label className="block text-xs font-medium text-slate-700 mb-1">
-                      Target Flat ID (UUID) *
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 33333333-3333-3333-3333-333333331203"
-                      value={formData.target_flat_id}
-                      onChange={(e) => setFormData({ ...formData, target_flat_id: e.target.value })}
-                      className="w-full text-xs font-mono px-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
+                  <div className="pt-2 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Target Flats *{' '}
+                        <span className="font-normal text-slate-500">
+                          ({formData.target_flat_ids.length} selected)
+                        </span>
+                      </label>
+                      {formData.target_flat_ids.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFormData({
+                              ...formData,
+                              target_flat_ids: [],
+                              target_flat_id: '',
+                            })
+                          }
+                          className="text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+                        >
+                          Clear Selection
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Selected Flat Chips */}
+                    {formData.target_flat_ids.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 p-2 bg-indigo-50/60 border border-indigo-100 rounded-lg max-h-24 overflow-y-auto">
+                        {formData.target_flat_ids.map((fid) => {
+                          const flatObj = availableFlats.find((f) => f.id === fid);
+                          const label = flatObj
+                            ? `${flatObj.tower_number}-${flatObj.flat_number}`
+                            : fid.slice(0, 8);
+                          return (
+                            <span
+                              key={fid}
+                              className="inline-flex items-center gap-1 bg-white border border-indigo-200 text-indigo-700 text-[11px] font-medium px-2 py-0.5 rounded-md shadow-2xs"
+                            >
+                              <span>{label}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const newIds = formData.target_flat_ids.filter((id) => id !== fid);
+                                  setFormData({
+                                    ...formData,
+                                    target_flat_ids: newIds,
+                                    target_flat_id: newIds[0] || '',
+                                  });
+                                }}
+                                className="text-slate-400 hover:text-rose-600"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Flat Search & Tower Filter */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                      <select
+                        value={flatFilterTower}
+                        onChange={(e) => setFlatFilterTower(e.target.value)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      >
+                        <option value="ALL">All Towers</option>
+                        {availableTowers.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.tower_number} ({t.name})
+                          </option>
+                        ))}
+                      </select>
+
+                      <input
+                        type="text"
+                        placeholder="Search flat number (e.g. 1203)..."
+                        value={flatSearchQuery}
+                        onChange={(e) => setFlatSearchQuery(e.target.value)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    {/* Flat Options Quick Selector */}
+                    {availableFlats.length > 0 && (
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto p-2 bg-white rounded-lg border border-slate-200">
+                        {availableFlats
+                          .filter((f) => {
+                            const matchTower =
+                              flatFilterTower === 'ALL' || f.tower_id === flatFilterTower;
+                            const matchSearch =
+                              !flatSearchQuery.trim() ||
+                              f.flat_number.toLowerCase().includes(flatSearchQuery.trim().toLowerCase());
+                            return matchTower && matchSearch;
+                          })
+                          .slice(0, 60)
+                          .map((f) => {
+                            const isSelected = formData.target_flat_ids.includes(f.id);
+                            return (
+                              <button
+                                key={f.id}
+                                type="button"
+                                onClick={() => {
+                                  const newIds = isSelected
+                                    ? formData.target_flat_ids.filter((id) => id !== f.id)
+                                    : [...formData.target_flat_ids, f.id];
+                                  setFormData({
+                                    ...formData,
+                                    target_flat_ids: newIds,
+                                    target_flat_id: newIds[0] || '',
+                                  });
+                                }}
+                                className={`py-1 px-2 text-[11px] font-medium rounded border truncate text-center transition-colors ${
+                                  isSelected
+                                    ? 'bg-indigo-600 text-white border-indigo-600 font-bold'
+                                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50'
+                                }`}
+                              >
+                                {f.tower_number}-{f.flat_number}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    )}
+
+                    {/* Manual Flat ID input for fallback */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="text"
+                        placeholder="Or enter flat UUID..."
+                        value={manualFlatIdInput}
+                        onChange={(e) => setManualFlatIdInput(e.target.value)}
+                        className="flex-1 text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const val = manualFlatIdInput.trim();
+                          if (val && !formData.target_flat_ids.includes(val)) {
+                            const newIds = [...formData.target_flat_ids, val];
+                            setFormData({
+                              ...formData,
+                              target_flat_ids: newIds,
+                              target_flat_id: newIds[0] || '',
+                            });
+                            setManualFlatIdInput('');
+                          }
+                        }}
+                        className="text-xs"
+                      >
+                        Add Flat
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>

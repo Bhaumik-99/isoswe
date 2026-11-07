@@ -131,7 +131,9 @@ class CreateNoticeRequest(BaseModel):
     status: NoticeStatus = NoticeStatus.DRAFT
     target_type: NoticeTargetType = NoticeTargetType.SOCIETY
     target_tower_id: UUID | None = None
+    target_tower_ids: list[UUID] = Field(default_factory=list)
     target_flat_id: UUID | None = None
+    target_flat_ids: list[UUID] = Field(default_factory=list)
     is_pinned: bool = False
     published_at: datetime | None = None
     expires_at: datetime | None = None
@@ -146,7 +148,9 @@ class UpdateNoticeRequest(BaseModel):
     status: NoticeStatus | None = None
     target_type: NoticeTargetType | None = None
     target_tower_id: UUID | None = None
+    target_tower_ids: list[UUID] | None = None
     target_flat_id: UUID | None = None
+    target_flat_ids: list[UUID] | None = None
     is_pinned: bool | None = None
     published_at: datetime | None = None
     expires_at: datetime | None = None
@@ -164,8 +168,12 @@ class NoticeResponseSchema(BaseSchema):
     target_type: NoticeTargetType
     target_tower_id: UUID | None = None
     target_tower_name: str | None = None
+    target_tower_ids: list[UUID] = Field(default_factory=list)
+    target_tower_names: list[str] = Field(default_factory=list)
     target_flat_id: UUID | None = None
     target_flat_number: str | None = None
+    target_flat_ids: list[UUID] = Field(default_factory=list)
+    target_flat_numbers: list[str] = Field(default_factory=list)
     is_pinned: bool = False
     published_at: datetime | None = None
     expires_at: datetime | None = None
@@ -195,3 +203,22 @@ class MarkNoticeReadResponse(BaseModel):
 class MarkAllNoticesReadResponse(BaseModel):
     marked_count: int
     status: str = "success"
+
+
+class TowerOptionSchema(BaseModel):
+    id: UUID
+    tower_number: str
+    name: str
+
+
+class FlatOptionSchema(BaseModel):
+    id: UUID
+    flat_number: str
+    tower_id: UUID
+    tower_number: str
+    tower_name: str
+
+
+class NoticeTargetingOptionsResponse(BaseModel):
+    towers: list[TowerOptionSchema]
+    flats: list[FlatOptionSchema]

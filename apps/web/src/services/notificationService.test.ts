@@ -259,4 +259,75 @@ describe('Notification Service API Client Integration', () => {
       '/api/v1/notifications/staff/notices/n-new/archive?society_id=soc-1'
     );
   });
+
+  it('fetches dynamic targeting options (towers and flats) for staff notice composer', async () => {
+    const mockTowers = [
+      { id: 't-1', tower_number: 'T01', name: 'Tower 1' },
+      { id: 't-2', tower_number: 'T02', name: 'Tower 2' },
+    ];
+    const mockFlats = [
+      { id: 'f-1', flat_number: '101', tower_id: 't-1', tower_number: 'T01', tower_name: 'Tower 1' },
+      { id: 'f-2', flat_number: '201', tower_id: 't-2', tower_number: 'T02', tower_name: 'Tower 2' },
+    ];
+
+    const getSpy = vi.spyOn(apiClient, 'get').mockImplementation((url: string) => {
+      if (url.includes('/targeting-options')) {
+        return Promise.resolve({ towers: mockTowers, flats: mockFlats });
+      }
+      if (url.includes('/towers')) {
+        return Promise.resolve(mockTowers);
+      }
+      if (url.includes('/flats')) {
+        return Promise.resolve(mockFlats);
+      }
+      return Promise.resolve({});
+    });
+
+    const options = await notificationService.getStaffTargetingOptions('soc-1');
+    expect(options.towers).toHaveLength(2);
+    expect(options.flats).toHaveLength(2);
+    expect(getSpy).toHaveBeenCalledWith(
+      '/api/v1/notifications/staff/targeting-options?society_id=soc-1'
+    );
+
+    const towers = await notificationService.getStaffTowers('soc-1');
+    expect(towers).toHaveLength(2);
+    expect(towers[0].tower_number).toBe('T01');
+
+    const flats = await notificationService.getStaffFlats('t-1', '101', 'soc-1');
+    expect(flats).toHaveLength(2);
+  });
+
+  it('creates multi-tower notice payload correctly', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+      id: 'n-multi',
+      title: 'Water Advisory',
+      status: 'PUBLISHED',
+      target_type: 'TOWER',
+      target_tower_ids: ['t-1', 't-2'],
+    });
+
+    const res = await notificationService.createStaffNotice(
+      {
+        title: 'Water Advisory',
+        body: 'Multi-tower maintenance across Tower 1 and 2.',
+        category: 'MAINTENANCE',
+        priority: 'HIGH',
+        status: 'PUBLISHED',
+        target_type: 'TOWER',
+        target_tower_ids: ['t-1', 't-2'],
+        target_tower_id: 't-1',
+      },
+      'soc-1'
+    );
+
+    expect(postSpy).toHaveBeenCalledWith(
+      '/api/v1/notifications/staff/notices?society_id=soc-1',
+      expect.objectContaining({
+        target_type: 'TOWER',
+        target_tower_ids: ['t-1', 't-2'],
+      })
+    );
+    expect(res.id).toBe('n-multi');
+  });
 });

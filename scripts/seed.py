@@ -117,12 +117,19 @@ def seed_database() -> None:
             db.flush()
             logger.info("Created Society: Marvel Greenfield Residences")
 
-        # 2. Towers
-        towers_data = [
-            (TOWER_T07_ID, "T07", "Tower 7"),
-            (TOWER_T12_ID, "T12", "Tower 12"),
-            (TOWER_T21_ID, "T21", "Tower 21"),
-        ]
+        # 2. Towers (28 towers for the Marvel Greenfield Residences township)
+        known_tower_ids = {
+            7: (TOWER_T07_ID, "T07", "Tower 7"),
+            12: (TOWER_T12_ID, "T12", "Tower 12"),
+            21: (TOWER_T21_ID, "T21", "Tower 21"),
+        }
+        towers_data = []
+        for i in range(1, 29):
+            if i in known_tower_ids:
+                towers_data.append(known_tower_ids[i])
+            else:
+                t_id = uuid.UUID(f"22222222-2222-2222-2222-2222222222{i:02d}")
+                towers_data.append((t_id, f"T{i:02d}", f"Tower {i}"))
         for t_id, t_num, t_name in towers_data:
             tower = db.get(Tower, t_id)
             if not tower:

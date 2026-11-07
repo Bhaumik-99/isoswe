@@ -121,8 +121,12 @@ export interface NoticeItem {
   target_type: NoticeTargetType;
   target_tower_id?: string | null;
   target_tower_name?: string | null;
+  target_tower_ids?: string[];
+  target_tower_names?: string[];
   target_flat_id?: string | null;
   target_flat_number?: string | null;
+  target_flat_ids?: string[];
+  target_flat_numbers?: string[];
   is_pinned: boolean;
   published_at?: string | null;
   expires_at?: string | null;
@@ -151,7 +155,9 @@ export interface CreateNoticePayload {
   status: NoticeStatus;
   target_type: NoticeTargetType;
   target_tower_id?: string | null;
+  target_tower_ids?: string[];
   target_flat_id?: string | null;
+  target_flat_ids?: string[];
   is_pinned?: boolean;
   published_at?: string | null;
   expires_at?: string | null;
@@ -166,12 +172,34 @@ export interface UpdateNoticePayload {
   status?: NoticeStatus;
   target_type?: NoticeTargetType;
   target_tower_id?: string | null;
+  target_tower_ids?: string[];
   target_flat_id?: string | null;
+  target_flat_ids?: string[];
   is_pinned?: boolean;
   published_at?: string | null;
   expires_at?: string | null;
   deliver_emergency?: boolean;
 }
+
+export interface TowerOption {
+  id: string;
+  tower_number: string;
+  name: string;
+}
+
+export interface FlatOption {
+  id: string;
+  flat_number: string;
+  tower_id: string;
+  tower_number: string;
+  tower_name: string;
+}
+
+export interface NoticeTargetingOptionsResponse {
+  towers: TowerOption[];
+  flats: FlatOption[];
+}
+
 
 export interface MarkNoticeReadResponse {
   notice_id: string;
