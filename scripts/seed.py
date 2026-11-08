@@ -222,6 +222,9 @@ def seed_database() -> None:
                 db.add(user)
                 db.flush()
                 logger.info(f"Created User: {name} ({email})")
+            else:
+                user.supabase_uid = s_uid
+                db.flush()
 
             # Assign Role
             role_stmt = select(UserRole).where(
@@ -247,6 +250,7 @@ def seed_database() -> None:
             (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.RECONCILIATION_REVIEW),
             (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.BILLING_MANAGE),
             (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.GATE_OPERATIONS),
+            (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.COMMUNICATIONS_MANAGE),
             (USER_HELPDESK_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
             (USER_COMMITTEE_ID, SOCIETY_PUNE_ID, Permission.COMMITTEE_REPORT_READ),
         ]
