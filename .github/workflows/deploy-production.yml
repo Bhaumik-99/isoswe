@@ -68,11 +68,12 @@ jobs:
       - name: Bootstrap CDK environment
         run: |
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-          echo "CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID" >> "$GITHUB_ENV"
-          cdk bootstrap "aws://$ACCOUNT_ID/$AWS_REGION" --app "python infra/cdk/app.py"
+          export CDK_DEFAULT_ACCOUNT="$ACCOUNT_ID"
+          cdk bootstrap "aws://$ACCOUNT_ID/$AWS_REGION" --app "python infra/cdk/app.py" -c env=prod
 
       - name: Deploy production infrastructure and backend
         run: |
+          export CDK_DEFAULT_ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
           cdk deploy TownshipOps-Prod \
             --app "python infra/cdk/app.py" \
             -c env=prod \
