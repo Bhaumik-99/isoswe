@@ -6,11 +6,13 @@ import { LanguageProvider } from '../i18n/LanguageContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { AppRoutes } from '../routes';
 
-const queryClient = new QueryClient({
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
+      refetchOnMount: 'always',
+      staleTime: 0,
     },
   },
 });

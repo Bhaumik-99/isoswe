@@ -498,7 +498,10 @@ class ComplaintService:
                 "complaint_id": str(complaint.id),
                 "society_id": str(society_id),
                 "flat_id": str(request.flat_id),
+                "resident_user_id": str(claims.user_id),
+                "created_by": str(claims.user_id),
                 "complaint_number": complaint_num,
+                "title": complaint.title,
                 "priority": final_priority.value,
                 "safety_escalated": is_safety,
             },
@@ -525,6 +528,9 @@ class ComplaintService:
                 payload={
                     "complaint_id": str(complaint.id),
                     "society_id": str(society_id),
+                    "resident_user_id": str(claims.user_id),
+                    "complaint_number": complaint_num,
+                    "escalation_reason": safety_reason,
                     "reason": safety_reason,
                     "priority": final_priority.value,
                 },
@@ -701,6 +707,9 @@ class ComplaintService:
             payload={
                 "complaint_id": str(complaint.id),
                 "society_id": str(complaint.society_id),
+                "resident_user_id": str(complaint.created_by),
+                "complaint_number": complaint.complaint_number,
+                "title": complaint.title,
                 "old_status": current_status.value,
                 "new_status": target_status.value,
             },
@@ -713,6 +722,10 @@ class ComplaintService:
                 payload={
                     "complaint_id": str(complaint.id),
                     "society_id": str(complaint.society_id),
+                    "resident_user_id": str(complaint.created_by),
+                    "complaint_number": complaint.complaint_number,
+                    "title": complaint.title,
+                    "new_status": ComplaintStatus.RESOLVED.value,
                     "resolved_at": now.isoformat(),
                 },
             )
@@ -779,7 +792,10 @@ class ComplaintService:
             payload={
                 "complaint_id": str(complaint.id),
                 "society_id": str(complaint.society_id),
+                "complaint_number": complaint.complaint_number,
+                "title": complaint.title,
                 "assigned_to": str(request.assigned_to),
+                "assigned_to_user_id": str(request.assigned_to),
             },
         )
 
@@ -883,6 +899,10 @@ class ComplaintService:
             payload={
                 "complaint_id": str(complaint.id),
                 "society_id": str(complaint.society_id),
+                "resident_user_id": str(complaint.created_by),
+                "complaint_number": complaint.complaint_number,
+                "title": complaint.title,
+                "new_status": ComplaintStatus.REOPENED.value,
                 "reason": request.reason,
             },
         )

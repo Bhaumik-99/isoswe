@@ -330,6 +330,7 @@ export const ResidentAmenitiesPage: React.FC = () => {
           onClose={() => setSelectedAmenityForBooking(null)}
           onBookingSuccess={(booking) => {
             void queryClient.invalidateQueries({ queryKey: ['my-amenity-bookings'] });
+            void queryClient.invalidateQueries({ queryKey: ['staff-bookings-list'] });
             setBookingSuccessNotice(
               `Successfully booked ${selectedAmenityForBooking.name} for ${booking.booking_date} (${booking.start_time} - ${booking.end_time}).`
             );

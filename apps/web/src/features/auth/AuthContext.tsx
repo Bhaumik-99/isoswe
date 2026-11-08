@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { QueryClientContext } from '@tanstack/react-query';
 import { apiClient } from '../../services/apiClient';
 import { sessionManager } from '../../services/sessionManager';
 import { supabaseAuth } from '../../services/supabaseAuth';
@@ -23,13 +24,19 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const queryClient = useContext(QueryClientContext);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [roles, setRoles] = useState<RoleType[]>([]);
   const [permissions, setPermissions] = useState<PermissionType[]>([]);
   const [memberships, setMemberships] = useState<FlatMembership[]>([]);
-  const [selectedFlat, setSelectedFlat] = useState<FlatMembership | null>(null);
+  const [selectedFlat, setSelectedFlatState] = useState<FlatMembership | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSessionExpired, setIsSessionExpired] = useState<boolean>(false);
+
+  const setSelectedFlat = (flat: FlatMembership | null) => {
+    setSelectedFlatState(flat);
+    queryClient?.invalidateQueries();
+  };
 
   const fetchProfile = async (): Promise<RoleType[]> => {
     try {
@@ -43,7 +50,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Auto-select primary or first flat
       if (data.memberships.length > 0) {
         const primary = data.memberships.find((m) => m.is_primary) || data.memberships[0];
-        setSelectedFlat(primary);
+        setSelectedFlatState(primary);
+      } else {
+        setSelectedFlatState(null);
       }
       setIsSessionExpired(false);
       return userRoles;
@@ -54,7 +63,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRoles([]);
       setPermissions([]);
       setMemberships([]);
-      setSelectedFlat(null);
+      setSelectedFlatState(null);
       return [];
     } finally {
       setIsLoading(false);
@@ -68,7 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setRoles([]);
       setPermissions([]);
       setMemberships([]);
-      setSelectedFlat(null);
+      setSelectedFlatState(null);
       setIsSessionExpired(true);
     });
 
@@ -82,7 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setRoles([]);
         setPermissions([]);
         setMemberships([]);
-        setSelectedFlat(null);
+        setSelectedFlatState(null);
       }
     });
 
@@ -120,6 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (token: string, expiresInSeconds?: number): Promise<RoleType[]> => {
     setIsLoading(true);
     setIsSessionExpired(false);
+    queryClient?.clear();
     apiClient.setToken(token, expiresInSeconds);
     return await fetchProfile();
   };
@@ -130,12 +140,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // Ignore network errors on logout
     }
+    queryClient?.clear();
     apiClient.setToken(null);
     setUser(null);
     setRoles([]);
     setPermissions([]);
     setMemberships([]);
-    setSelectedFlat(null);
+    setSelectedFlatState(null);
     setIsSessionExpired(false);
   };
 

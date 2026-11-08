@@ -66,6 +66,14 @@ export const ResidentVisitorsPage: React.FC = () => {
     void loadAllVisitorData();
   }, [loadAllVisitorData]);
 
+  useEffect(() => {
+    const onFocus = () => {
+      void loadAllVisitorData();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [loadAllVisitorData]);
+
   if (!selectedFlat) {
     return (
       <Alert variant="warning" title="No Approved Flat Membership">

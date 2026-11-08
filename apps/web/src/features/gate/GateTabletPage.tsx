@@ -101,6 +101,15 @@ export const GateTabletPage: React.FC = () => {
     void refreshOfflineQueue(activeGate?.gate_id);
   }, [fetchGateData, refreshOfflineQueue, activeGate?.gate_id, historySearch]);
 
+  useEffect(() => {
+    const onFocus = () => {
+      void fetchGateData(activeGate?.gate_id, historySearch);
+      void refreshOfflineQueue(activeGate?.gate_id);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [fetchGateData, refreshOfflineQueue, activeGate?.gate_id, historySearch]);
+
   // Listen for browser online / offline transitions and auto-sync queued events on reconnect
   useEffect(() => {
     const handleOnline = async () => {

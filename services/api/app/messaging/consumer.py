@@ -108,6 +108,12 @@ class EventDispatcher:
                 if success:
                     pub.delete_message(queue_name, msg["receipt_handle"])
                     processed_count += 1
+                elif int(msg.get("receive_count", 0)) >= 5 and hasattr(pub, "send_to_dlq"):
+                    pub.send_to_dlq(
+                        queue_name,
+                        msg,
+                        reason=f"Exceeded max receive_count (5) for event_type '{envelope.event_type}'",
+                    )
             except Exception as exc:
                 logger.error(
                     f"[EventDispatcher] Failed to deserialize or process queue message: {exc}"

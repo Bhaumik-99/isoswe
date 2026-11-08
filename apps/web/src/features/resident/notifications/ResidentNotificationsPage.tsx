@@ -65,6 +65,14 @@ export const ResidentNotificationsPage: React.FC = () => {
     loadNotifications();
   }, [loadNotifications]);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      void loadNotifications();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [loadNotifications]);
+
   const handleMarkAllRead = async () => {
     try {
       await notificationService.markAllAsRead();

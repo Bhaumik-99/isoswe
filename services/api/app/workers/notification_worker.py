@@ -68,12 +68,14 @@ class NotificationHandler(MessageHandler):
             "visitor.checked_in",
             "pass.revoked",
             # Amenities & Clubhouses
+            "amenity.booking_created",
             "amenity.booking_confirmed",
             "amenity.booking_payment_failed",
             "amenity.booking_cancelled",
             # Official Notices & Circulars
             "notice.published",
             "notice.emergency_broadcast",
+            "notice.archived",
             # Direct dispatches
             "notification.dispatch_sms",
             "notification.dispatch_email",

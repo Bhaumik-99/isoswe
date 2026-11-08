@@ -144,6 +144,10 @@ export const ResidentComplaints: React.FC = () => {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-complaints-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-dashboard-metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['helpdesk-safety-alerts'] });
       setIsRaiseModalOpen(false);
       setTitle('');
       setDescription('');
@@ -171,6 +175,7 @@ export const ResidentComplaints: React.FC = () => {
         const updated = await complaintsService.getResidentComplaint(selectedComplaint.id);
         if (updated) setSelectedComplaint(updated);
         queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
       }
     },
   });
@@ -187,6 +192,9 @@ export const ResidentComplaints: React.FC = () => {
         setReopenReason('');
         setSelectedComplaint(updated);
         queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['resident-complaints-summary'] });
+        queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['helpdesk-dashboard-metrics'] });
         setActionSuccess(`Ticket ${updated.complaint_number} reopened successfully.`);
       }
     },
@@ -205,6 +213,7 @@ export const ResidentComplaints: React.FC = () => {
       if (updated) {
         setSelectedComplaint(updated);
         queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
         setActionSuccess('Thank you for submitting your rating and feedback.');
       }
     },

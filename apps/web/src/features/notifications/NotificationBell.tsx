@@ -45,8 +45,15 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
 
   useEffect(() => {
     fetchUnreadCount();
-    const interval = setInterval(fetchUnreadCount, 30000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchUnreadCount, 10000);
+    const handleFocus = () => {
+      void fetchUnreadCount();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, []);
 
   useEffect(() => {

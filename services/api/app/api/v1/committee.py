@@ -136,7 +136,7 @@ def get_committee_overview(
     billed_stmt = select(func.coalesce(func.sum(Invoice.total_paise), 0)).where(
         Invoice.society_id == target_soc
     )
-    total_billed_paise = db.scalar(billed_stmt) or 0
+    total_billed_paise = int(db.scalar(billed_stmt) or 0)
 
     # 2. Total Collected Paise from successful payments
     collected_stmt = (
@@ -144,7 +144,7 @@ def get_committee_overview(
         .join(Payment, Payment.id == PaymentAllocation.payment_id)
         .where(Payment.society_id == target_soc, Payment.status == PaymentStatus.SUCCESS)
     )
-    total_collected_paise = db.scalar(collected_stmt) or 0
+    total_collected_paise = int(db.scalar(collected_stmt) or 0)
     total_outstanding_paise = max(0, total_billed_paise - total_collected_paise)
 
     # 3. Ageing Buckets calculation (0-30, 31-60, 61-90, 90+ days overdue)
@@ -182,8 +182,8 @@ def get_committee_overview(
     total_overdue = 0
 
     for row in unpaid_rows:
-        inv_total = row.total_paise
-        inv_alloc = row.allocated
+        inv_total = int(row.total_paise or 0)
+        inv_alloc = int(row.allocated or 0)
         remaining = max(0, inv_total - inv_alloc)
         if remaining <= 0:
             continue
@@ -291,7 +291,7 @@ def get_committee_overview(
         or 0
     )
 
-    reopened_count = (
+    reopened_count = int(
         db.scalar(
             select(func.coalesce(func.sum(Complaint.reopened_count), 0)).where(
                 Complaint.society_id == target_soc
@@ -383,7 +383,7 @@ def get_committee_overview(
         )
 
         # Tower billed
-        tw_billed = (
+        tw_billed = int(
             db.scalar(
                 select(func.coalesce(func.sum(Invoice.total_paise), 0))
                 .join(Flat, Flat.id == Invoice.flat_id)
@@ -393,7 +393,7 @@ def get_committee_overview(
         )
 
         # Tower collected
-        tw_collected = (
+        tw_collected = int(
             db.scalar(
                 select(func.coalesce(func.sum(PaymentAllocation.allocated_paise), 0))
                 .join(Invoice, Invoice.id == PaymentAllocation.invoice_id)
@@ -481,8 +481,8 @@ def get_monthly_reports(
     items: list[MonthlyReportItem] = []
     for r in period_rows:
         period = r.billing_period
-        inv_count = r.inv_count
-        billed_paise = r.billed
+        inv_count = int(r.inv_count or 0)
+        billed_paise = int(r.billed or 0)
 
         # Collected for this period's invoices
         col_stmt = (
@@ -495,7 +495,7 @@ def get_monthly_reports(
                 Payment.status == PaymentStatus.SUCCESS,
             )
         )
-        col_paise = db.scalar(col_stmt) or 0
+        col_paise = int(db.scalar(col_stmt) or 0)
         pct = round((col_paise / billed_paise) * 100.0, 2) if billed_paise > 0 else 100.0
 
         items.append(

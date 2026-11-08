@@ -16,13 +16,17 @@ import {
   XCircle,
   KeyRound,
   Sparkles,
+  Megaphone,
+  Pin,
+  AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient, ApiClientError } from '../../services/apiClient';
 import { billingService, formatINR, formatDateIST } from '../../services/billingService';
 import { complaintsService } from '../../services/complaintsService';
 import { residentVisitorService } from '../../services/residentVisitorService';
-import { FlatDetail, Complaint, VisitorRecord } from '../../types';
+import { notificationService } from '../../services/notificationService';
+import { FlatDetail, Complaint, VisitorRecord, PaginatedNotices } from '../../types';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
@@ -37,7 +41,7 @@ interface BeforeInstallPromptEvent extends Event {
 
 export const ResidentOverview: React.FC = () => {
   const navigate = useNavigate();
-  const { selectedFlat } = useAuth();
+  const { user, selectedFlat } = useAuth();
   const { t } = useLanguage();
   const [flatDetail, setFlatDetail] = useState<FlatDetail | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -47,20 +51,28 @@ export const ResidentOverview: React.FC = () => {
   const [actingVisitorId, setActingVisitorId] = useState<string | null>(null);
 
   const { data: billingSummary, isLoading: isBillingLoading } = useQuery({
-    queryKey: ['billing-summary'],
+    queryKey: ['billing-summary', user?.id, selectedFlat?.flat_id],
     queryFn: billingService.getResidentSummary,
+    enabled: Boolean(selectedFlat?.flat_id),
   });
 
   const { data: residentComplaints = [], isLoading: isComplaintsLoading } = useQuery<Complaint[]>({
-    queryKey: ['resident-complaints-summary'],
+    queryKey: ['resident-complaints-summary', user?.id, selectedFlat?.flat_id],
     queryFn: () => complaintsService.listResidentComplaints(),
+    enabled: Boolean(selectedFlat?.flat_id),
+  });
+
+  const { data: noticesFeed, isLoading: isNoticesLoading } = useQuery<PaginatedNotices>({
+    queryKey: ['resident-notices-overview', user?.id, selectedFlat?.flat_id],
+    queryFn: () => notificationService.getResidentNotices(1, 3),
+    enabled: Boolean(selectedFlat?.flat_id),
   });
 
   const {
     data: pendingVisitors = [],
     refetch: refetchPendingVisitors,
   } = useQuery<VisitorRecord[]>({
-    queryKey: ['resident-pending-visitors', selectedFlat?.flat_id],
+    queryKey: ['resident-pending-visitors', user?.id, selectedFlat?.flat_id],
     queryFn: () => residentVisitorService.listPendingVisitors(),
     enabled: Boolean(selectedFlat?.flat_id),
   });
@@ -263,6 +275,102 @@ export const ResidentOverview: React.FC = () => {
               </div>
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Official Township Notices & Circulars Card */}
+      <Card className="border-l-4 border-l-indigo-600">
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Megaphone className="h-4 w-4 text-indigo-600" />
+              <span>Official Township Notices & Circulars</span>
+            </span>
+            <Badge variant={(noticesFeed?.unread_count || 0) > 0 ? 'warning' : 'info'}>
+              {(noticesFeed?.unread_count || 0) > 0
+                ? `${noticesFeed?.unread_count} Unread`
+                : 'Up to Date'}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-xs text-slate-600">
+          {isNoticesLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : noticesFeed && noticesFeed.items.length > 0 ? (
+            <div className="space-y-2">
+              {noticesFeed.items.map((notice) => {
+                const isEmergency =
+                  notice.deliver_emergency ||
+                  notice.category === 'EMERGENCY' ||
+                  notice.priority === 'URGENT';
+                return (
+                  <div
+                    key={notice.id}
+                    onClick={() => navigate('/resident/notices')}
+                    className={`p-3 rounded-lg border cursor-pointer transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                      isEmergency
+                        ? 'bg-rose-50/70 border-rose-200 hover:bg-rose-100/70'
+                        : !notice.is_read
+                        ? 'bg-indigo-50/60 border-indigo-200 hover:bg-indigo-100/60'
+                        : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {notice.is_pinned && (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">
+                            <Pin className="h-2.5 w-2.5" /> Pinned
+                          </span>
+                        )}
+                        {isEmergency && (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">
+                            <AlertTriangle className="h-2.5 w-2.5" /> Urgent
+                          </span>
+                        )}
+                        <span className="font-bold text-slate-900 text-xs truncate">
+                          {notice.title}
+                        </span>
+                        {!notice.is_read && (
+                          <span className="h-2 w-2 rounded-full bg-indigo-600 inline-block" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-600 line-clamp-1">{notice.body}</p>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0 text-[10px] text-slate-500">
+                      <Badge variant="neutral" className="text-[10px] py-0">
+                        {notice.category}
+                      </Badge>
+                      <span>
+                        {notice.published_at
+                          ? new Date(notice.published_at).toLocaleDateString()
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-between">
+              <span>No active township notices for your unit at this time.</span>
+              <Megaphone className="h-4 w-4 text-slate-400" />
+            </div>
+          )}
+
+          <div className="pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => navigate('/resident/notices')}
+              className="w-full text-xs font-semibold flex items-center justify-center gap-1.5"
+            >
+              <span>Open Official Notices & Circulars Board</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

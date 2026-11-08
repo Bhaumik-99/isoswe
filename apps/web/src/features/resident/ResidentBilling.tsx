@@ -74,6 +74,9 @@ export const ResidentBilling: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['billing-summary'] });
       queryClient.invalidateQueries({ queryKey: ['resident-invoices'] });
       queryClient.invalidateQueries({ queryKey: ['resident-payments'] });
+      queryClient.invalidateQueries({ queryKey: ['staff-billing-overview'] });
+      queryClient.invalidateQueries({ queryKey: ['staff-invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['committee-overview'] });
 
       if (payment.status === 'SUCCESS') {
         setPaymentSuccessNotice(

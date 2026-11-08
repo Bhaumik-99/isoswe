@@ -883,9 +883,13 @@ class BillingService:
                 payload={
                     "payment_id": str(payment.id),
                     "society_id": str(society_id),
+                    "user_id": str(user_id),
+                    "flat_id": str(invoice.flat_id),
                     "invoice_id": str(invoice_id),
+                    "invoice_number": invoice.invoice_number,
                     "amount_paise": amount_paise,
                     "provider_reference": payment.provider_reference,
+                    "payment_reference": payment.provider_reference,
                 },
                 status=OutboxStatus.PENDING,
             )
@@ -898,6 +902,8 @@ class BillingService:
                 aggregate_id=str(allocation.id),
                 payload={
                     "allocation_id": str(allocation.id),
+                    "society_id": str(society_id),
+                    "flat_id": str(invoice.flat_id),
                     "payment_id": str(payment.id),
                     "invoice_id": str(invoice_id),
                     "allocated_paise": amount_paise,
@@ -913,6 +919,8 @@ class BillingService:
                     aggregate_type="invoice",
                     aggregate_id=str(invoice.id),
                     payload={
+                        "society_id": str(society_id),
+                        "flat_id": str(invoice.flat_id),
                         "invoice_id": str(invoice.id),
                         "invoice_number": invoice.invoice_number,
                         "total_paise": invoice.total_paise,

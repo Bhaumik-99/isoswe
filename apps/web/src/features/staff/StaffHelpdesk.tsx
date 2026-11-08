@@ -232,6 +232,8 @@ export const StaffHelpdesk: React.FC = () => {
       setTransitionNotes('');
       queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
       queryClient.invalidateQueries({ queryKey: ['helpdesk-dashboard-metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-complaints-summary'] });
       setFeedbackNotice(`Ticket status updated to ${updated?.status}`);
     },
   });
@@ -246,6 +248,8 @@ export const StaffHelpdesk: React.FC = () => {
       if (updated) setActiveTicket(updated);
       queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
       queryClient.invalidateQueries({ queryKey: ['helpdesk-dashboard-metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-complaints-summary'] });
       setFeedbackNotice(`Priority updated to ${updated?.priority}`);
     },
   });
@@ -262,6 +266,7 @@ export const StaffHelpdesk: React.FC = () => {
         const refreshed = await complaintsService.getHelpdeskComplaint(activeTicket.id);
         if (refreshed) setActiveTicket(refreshed);
         queryClient.invalidateQueries({ queryKey: ['helpdesk-complaints'] });
+        queryClient.invalidateQueries({ queryKey: ['resident-complaints'] });
       }
     },
   });

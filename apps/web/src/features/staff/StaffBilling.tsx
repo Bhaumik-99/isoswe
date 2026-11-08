@@ -37,7 +37,7 @@ export const StaffBilling: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'INVOICES' | 'LATE_FEES'>('INVOICES');
 
   // Filters
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('2026-11');
+  const [selectedPeriod, setSelectedPeriod] = useState<string>('');
   const [selectedTower, setSelectedTower] = useState<string>('');
   const [flatSearch, setFlatSearch] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
@@ -157,6 +157,8 @@ export const StaffBilling: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['staff-invoices'] });
       queryClient.invalidateQueries({ queryKey: ['staff-billing-overview'] });
       queryClient.invalidateQueries({ queryKey: ['staff-late-fee-policies'] });
+      queryClient.invalidateQueries({ queryKey: ['billing-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-invoices'] });
     },
     onError: (err: any) => {
       setLateFeeActionError(err?.message || 'Failed to apply late fees');
@@ -183,6 +185,8 @@ export const StaffBilling: React.FC = () => {
       setRunError(null);
       queryClient.invalidateQueries({ queryKey: ['staff-billing-overview'] });
       queryClient.invalidateQueries({ queryKey: ['staff-invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['billing-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['resident-invoices'] });
     },
     onError: (err: any) => {
       setRunError(err?.message || 'Failed to execute billing run');

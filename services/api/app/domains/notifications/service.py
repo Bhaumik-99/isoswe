@@ -659,7 +659,11 @@ class NotificationService:
         elif event_type in ("billing.payment_succeeded", "payment.succeeded"):
             amount_paise = payload.get("amount_paise", 0)
             amount_str = f"₹{amount_paise / 100:,.2f}"
-            ref_no = payload.get("payment_reference") or payload.get("reference_number", "N/A")
+            ref_no = (
+                payload.get("payment_reference")
+                or payload.get("provider_reference")
+                or payload.get("reference_number", "N/A")
+            )
             invoice_num = payload.get("invoice_number", "")
 
             user_id_raw = payload.get("user_id") or payload.get("created_by")
@@ -877,7 +881,7 @@ class NotificationService:
         elif event_type == "complaint.assigned":
             complaint_num = payload.get("complaint_number", "TICKET-UNKNOWN")
             title = payload.get("title", "Assigned Task")
-            assigned_to_raw = payload.get("assigned_to_user_id")
+            assigned_to_raw = payload.get("assigned_to_user_id") or payload.get("assigned_to")
 
             if assigned_to_raw:
                 assigned_user = self.get_user_by_id(society_id, uuid.UUID(str(assigned_to_raw)))
@@ -916,7 +920,7 @@ class NotificationService:
                 payload.get("public_message") or f"Ticket status transitioned to {status}."
             )
 
-            creator_id_raw = payload.get("resident_user_id")
+            creator_id_raw = payload.get("resident_user_id") or payload.get("created_by")
             if creator_id_raw:
                 creator = self.get_user_by_id(society_id, uuid.UUID(str(creator_id_raw)))
                 if creator:
@@ -1048,6 +1052,31 @@ class NotificationService:
                     created_count += 1
 
         # --- E. AMENITY BOOKING EVENTS ---
+        elif event_type == "amenity.booking_created":
+            user_id_raw = payload.get("user_id")
+            amenity_name = payload.get("amenity_name", "Amenity")
+            b_date = payload.get("booking_date", "")
+            s_time = payload.get("start_time", "")
+            e_time = payload.get("end_time", "")
+            fee_paise = payload.get("booking_fee_paise", 0)
+            fee_str = f"₹{fee_paise / 100:,.2f}"
+            if user_id_raw:
+                user = self.get_user_by_id(society_id, uuid.UUID(str(user_id_raw)))
+                if user:
+                    self.create_in_app_notification(
+                        society_id=society_id,
+                        recipient=user,
+                        event_type=event_type,
+                        title="Amenity Booking Reserved (Pending Payment)",
+                        body=f"Your booking for {amenity_name} on {b_date} ({s_time}-{e_time}) is reserved pending payment of {fee_str}.",
+                        priority=NotificationPriority.NORMAL,
+                        aggregate_type="amenity_booking",
+                        aggregate_id=str(envelope.aggregate_id),
+                        action_url="/resident/amenities",
+                        base_event_id=envelope.event_id,
+                    )
+                    created_count += 1
+
         elif event_type == "amenity.booking_confirmed":
             user_id_raw = payload.get("user_id")
             amenity_name = payload.get("amenity_name", "Amenity")
@@ -1253,14 +1282,28 @@ class NotificationService:
                     )
                     created_count += 1
                 elif notice_notif:
-                    # In-app notification exists; ensure in-app delivery record exists
-                    existing_deliv = self.db.scalars(
-                        select(NotificationDelivery).where(
-                            NotificationDelivery.notification_id == notice_notif.id,
-                            NotificationDelivery.channel == NotificationChannel.IN_APP,
+                    # In-app notification exists; ensure versioned in-app delivery record exists
+                    version_deliv_key = f"in_app:{notice_id}:v{version_val}:{resident.id}"
+                    deliv_cond = (
+                        or_(
+                            NotificationDelivery.idempotency_key == version_deliv_key,
+                            and_(
+                                NotificationDelivery.notification_id == notice_notif.id,
+                                NotificationDelivery.channel == NotificationChannel.IN_APP,
+                            ),
                         )
+                        if version_val == 1
+                        else (NotificationDelivery.idempotency_key == version_deliv_key)
+                    )
+                    existing_deliv = self.db.scalars(
+                        select(NotificationDelivery).where(deliv_cond)
                     ).first()
                     if not existing_deliv:
+                        notice_notif.title = notif_title
+                        notice_notif.body = notif_body
+                        notice_notif.priority = priority
+                        notice_notif.read_at = None
+                        notice_notif.updated_at = utc_now()
                         deliv = NotificationDelivery(
                             id=uuid.uuid4(),
                             notification_id=notice_notif.id,
@@ -1269,7 +1312,7 @@ class NotificationService:
                             channel=NotificationChannel.IN_APP,
                             provider="in_app",
                             status=DeliveryStatus.DELIVERED,
-                            idempotency_key=f"in_app:{notice_id}:v{version_val}:{resident.id}",
+                            idempotency_key=version_deliv_key,
                             delivered_at=utc_now(),
                             created_at=utc_now(),
                             updated_at=utc_now(),

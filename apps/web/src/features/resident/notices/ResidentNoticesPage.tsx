@@ -69,6 +69,23 @@ export const ResidentNoticesPage: React.FC = () => {
     fetchNotices();
   }, [fetchNotices]);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      void fetchNotices();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchNotices();
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [fetchNotices]);
+
   const handleMarkAsRead = async (noticeId: string) => {
     try {
       await notificationService.markNoticeAsRead(noticeId);

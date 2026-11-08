@@ -188,6 +188,18 @@ export const StaffNotificationsPage: React.FC = () => {
     }
   }, [activeTab, loadNotices, loadDeliveries]);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      if (activeTab === 'NOTICES') {
+        void loadNotices();
+      } else {
+        void loadDeliveries();
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [activeTab, loadNotices, loadDeliveries]);
+
   // --- Fetch Dynamic Targeting Options ---
   const loadTargetingOptions = useCallback(async () => {
     setLoadingTargets(true);
@@ -1139,6 +1151,27 @@ export const StaffNotificationsPage: React.FC = () => {
                         </span>
                       </label>
                       <div className="flex items-center gap-2">
+                        {availableFlats.length > 0 && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const activeTowerIds = Array.from(
+                                  new Set(availableFlats.map((f) => f.tower_id))
+                                );
+                                setFormData({
+                                  ...formData,
+                                  target_tower_ids: activeTowerIds,
+                                  target_tower_id: activeTowerIds[0] || '',
+                                });
+                              }}
+                              className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-900"
+                            >
+                              Select Occupied Towers
+                            </button>
+                            <span className="text-slate-300">|</span>
+                          </>
+                        )}
                         <button
                           type="button"
                           onClick={() => {
@@ -1179,6 +1212,7 @@ export const StaffNotificationsPage: React.FC = () => {
                       <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5 max-h-48 overflow-y-auto p-2 bg-white rounded-lg border border-slate-200">
                         {availableTowers.map((t) => {
                           const isSelected = formData.target_tower_ids.includes(t.id);
+                          const flatCount = availableFlats.filter((f) => f.tower_id === t.id).length;
                           return (
                             <button
                               key={t.id}
@@ -1193,21 +1227,43 @@ export const StaffNotificationsPage: React.FC = () => {
                                   target_tower_id: newIds[0] || '',
                                 });
                               }}
-                              className={`py-1.5 px-2 text-xs font-semibold rounded-md border text-center transition-all ${
+                              className={`py-1.5 px-2 text-xs font-semibold rounded-md border text-center transition-all flex items-center justify-center gap-1 ${
                                 isSelected
                                   ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                  : flatCount > 0
+                                  ? 'bg-emerald-50/70 text-slate-800 border-emerald-300 hover:bg-indigo-50 hover:border-indigo-300'
                                   : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300'
                               }`}
-                              title={t.name}
+                              title={
+                                flatCount > 0
+                                  ? `${t.name} (${flatCount} occupied unit${flatCount > 1 ? 's' : ''})`
+                                  : t.name
+                              }
                             >
-                              {t.tower_number}
+                              <span>{t.tower_number}</span>
+                              {flatCount > 0 && (
+                                <span
+                                  className={`h-1.5 w-1.5 rounded-full ${
+                                    isSelected ? 'bg-emerald-300' : 'bg-emerald-500'
+                                  }`}
+                                />
+                              )}
                             </button>
                           );
                         })}
                       </div>
                     )}
+                    {availableFlats.length > 0 &&
+                      formData.target_tower_ids.length > 0 &&
+                      !formData.target_tower_ids.some((tid) =>
+                        availableFlats.some((f) => f.tower_id === tid)
+                      ) && (
+                        <div className="p-2 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+                          Selected tower(s) currently have 0 registered resident flats. Occupied resident flats are highlighted with a green dot (e.g. T07, T12, T21).
+                        </div>
+                      )}
                     <span className="text-[10px] text-slate-400 block">
-                      Click towers to toggle selection. Selected towers will receive this announcement.
+                      Click towers to toggle selection (green dot = occupied resident units). Selected towers will receive this announcement.
                     </span>
                   </div>
                 )}

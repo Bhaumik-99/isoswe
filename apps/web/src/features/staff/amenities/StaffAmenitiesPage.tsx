@@ -115,6 +115,7 @@ export const StaffAmenitiesPage: React.FC = () => {
       amenityService.staffToggleAmenityStatus(amenityId, isActive),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['staff-amenities-list'] });
+      void queryClient.invalidateQueries({ queryKey: ['resident-amenities'] });
     },
   });
 
@@ -127,6 +128,7 @@ export const StaffAmenitiesPage: React.FC = () => {
       setCancelReason('');
       setCancelError(null);
       void queryClient.invalidateQueries({ queryKey: ['staff-bookings-list'] });
+      void queryClient.invalidateQueries({ queryKey: ['my-amenity-bookings'] });
     },
     onError: (err: unknown) => {
       if (err instanceof ApiClientError) {
@@ -605,6 +607,7 @@ export const StaffAmenitiesPage: React.FC = () => {
             setIsCreatingAmenity(false);
             setEditingAmenity(null);
             void queryClient.invalidateQueries({ queryKey: ['staff-amenities-list'] });
+            void queryClient.invalidateQueries({ queryKey: ['resident-amenities'] });
           }}
         />
       )}
