@@ -73,31 +73,33 @@ class StorageConstruct(Construct):
             auto_delete_objects=not config.is_production,
         )
 
-        # 3. CloudFront Distribution with Origin Access Control (OAC)
-        self.distribution = cloudfront.Distribution(
-            self,
-            "WebDistribution",
-            default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(
-                    self.web_bucket
+        # 3. CloudFront Distribution (Production only)
+        # Staging uses external frontend hosting until AWS account verification.
+        self.distribution = None
+        if config.is_production:
+            self.distribution = cloudfront.Distribution(
+                self,
+                "WebDistribution",
+                default_behavior=cloudfront.BehaviorOptions(
+                    origin=origins.S3BucketOrigin.with_origin_access_control(
+                        self.web_bucket
+                    ),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+                    cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
                 ),
-                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-                cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
-            ),
-            default_root_object="index.html",
-            error_responses=[
-                # SPA Fallback for client-side routing
-                cloudfront.ErrorResponse(
-                    http_status=404,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                ),
-                cloudfront.ErrorResponse(
-                    http_status=403,
-                    response_http_status=200,
-                    response_page_path="/index.html",
-                ),
-            ],
-            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
-        )
+                default_root_object="index.html",
+                error_responses=[
+                    cloudfront.ErrorResponse(
+                        http_status=404,
+                        response_http_status=200,
+                        response_page_path="/index.html",
+                    ),
+                    cloudfront.ErrorResponse(
+                        http_status=403,
+                        response_http_status=200,
+                        response_page_path="/index.html",
+                    ),
+                ],
+                minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+            )

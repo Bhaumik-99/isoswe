@@ -38,9 +38,12 @@ class TownshipStack(Stack):
             self, "Storage", config=config, kms_key=security.kms_key
         )
 
-        # Single source of truth for allowed frontend origins across CloudFront, API Gateway, and FastAPI
-        cf_origin = f"https://{storage.distribution.distribution_domain_name}"
-        frontend_origins = [cf_origin]
+        # Frontend origins
+        frontend_origins = []
+        if storage.distribution is not None:
+            frontend_origins.append(
+                f"https://{storage.distribution.distribution_domain_name}"
+            )
         if config.is_production:
             frontend_origins.append("https://township.example.com")
         else:
@@ -83,22 +86,23 @@ class TownshipStack(Stack):
         )
         CfnOutput(
             self,
-            "CloudFrontDomain",
-            value=storage.distribution.distribution_domain_name,
-            description="CloudFront Web App Domain",
-        )
-        CfnOutput(
-            self,
             "WebBucketName",
             value=storage.web_bucket.bucket_name,
             description="S3 bucket hosting the built frontend (deploy target)",
         )
-        CfnOutput(
-            self,
-            "CloudFrontDistributionId",
-            value=storage.distribution.distribution_id,
-            description="CloudFront distribution ID (cache invalidation target)",
-        )
+        if storage.distribution is not None:
+            CfnOutput(
+                self,
+                "CloudFrontDomain",
+                value=storage.distribution.distribution_domain_name,
+                description="CloudFront Web App Domain",
+            )
+            CfnOutput(
+                self,
+                "CloudFrontDistributionId",
+                value=storage.distribution.distribution_id,
+                description="CloudFront distribution ID (cache invalidation target)",
+            )
         CfnOutput(
             self,
             "SupabaseSecretArn",

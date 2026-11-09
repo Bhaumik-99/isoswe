@@ -157,12 +157,13 @@ jobs:
         run: |
           set -euo pipefail
           out() { jq -er --arg s "$STACK_NAME" --arg k "$1" '.[$s][$k]' "$RUNNER_TEMP/cdk-outputs.json"; }
+          out_opt() { jq -r --arg s "$STACK_NAME" --arg k "$1" '.[$s][$k] // empty' "$RUNNER_TEMP/cdk-outputs.json"; }
           api_url="$(out ApiUrl)"
           {
             echo "API_URL=${api_url%/}"
             echo "WEB_BUCKET=$(out WebBucketName)"
-            echo "DISTRIBUTION_ID=$(out CloudFrontDistributionId)"
-            echo "CLOUDFRONT_DOMAIN=$(out CloudFrontDomain)"
+            echo "DISTRIBUTION_ID=$(out_opt CloudFrontDistributionId)"
+            echo "CLOUDFRONT_DOMAIN=$(out_opt CloudFrontDomain)"
           } >> "$GITHUB_ENV"
 
       # --------------------------------------------------------------- frontend
@@ -189,6 +190,7 @@ jobs:
             --cache-control "no-cache,must-revalidate"
 
       - name: Invalidate CloudFront cache
+        if: env.DISTRIBUTION_ID != ''
         run: |
           aws cloudfront create-invalidation \
             --distribution-id "$DISTRIBUTION_ID" --paths "/*" >/dev/null
@@ -207,7 +209,9 @@ jobs:
             echo "::error::Smoke test failed for $url (last HTTP $code)"; return 1
           }
           check "${API_URL}/health/live"
-          check "https://${CLOUDFRONT_DOMAIN}/"
+          if [ -n "${CLOUDFRONT_DOMAIN:-}" ]; then
+            check "https://${CLOUDFRONT_DOMAIN}/"
+          fi
 
       - name: Deployment summary
         if: always()
