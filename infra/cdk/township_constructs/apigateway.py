@@ -60,8 +60,8 @@ class ApiGatewayConstruct(Construct):
             ),
         )
 
-        # 2. AWS WAF Web ACL (Enabled for Staging & Production)
-        if config.enable_waf:
+        # 2. AWS WAF Web ACL (Enabled for Production)
+        if config.enable_waf and config.is_production:
             waf = wafv2.CfnWebACL(
                 self,
                 "ApiGatewayWaf",
