@@ -126,3 +126,4 @@ the commit on `main`. Revert any destructive migration by hand with `alembic dow
 | `cdk deploy` fails on bootstrap | Run `cdk bootstrap` (step 1) for that account/region. |
 | Migration step: `Failed to retrieve required secret` | Secret not created/filled yet (step 3), or wrong environment. |
 | Smoke test fails with 5xx | `DATABASE_URL`/`SUPABASE_URL` missing in the Secrets Manager secret; check the API Lambda CloudWatch logs. |
+

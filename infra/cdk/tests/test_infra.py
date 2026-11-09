@@ -465,3 +465,15 @@ def test_stack_exposes_outputs_required_by_deploy_workflow(
         "CloudFrontDistributionId",
     ):
         assert name in outputs, f"Deploy workflow requires stack output '{name}'"
+
+
+def test_waf_association_waits_for_api_stage(prod_template: Template) -> None:
+    """The WAF association must depend on the API stage (creation-order race)."""
+    resources = prod_template.to_json()["Resources"]
+    stage_ids = [k for k, v in resources.items() if v["Type"] == "AWS::ApiGateway::Stage"]
+    assert len(stage_ids) == 1
+    associations = [
+        v for v in resources.values() if v["Type"] == "AWS::WAFv2::WebACLAssociation"
+    ]
+    assert len(associations) == 1
+    assert stage_ids[0] in associations[0].get("DependsOn", [])

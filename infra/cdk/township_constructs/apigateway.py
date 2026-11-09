@@ -112,9 +112,12 @@ class ApiGatewayConstruct(Construct):
             )
 
             # Associate WAF with API Gateway deployment stage
-            wafv2.CfnWebACLAssociation(
+            waf_association = wafv2.CfnWebACLAssociation(
                 self,
                 "ApiWafAssociation",
-                resource_arn=f"arn:aws:apigateway:{self.api.env.region}::/restapis/{self.api.rest_api_id}/stages/{config.env_name}",
+                resource_arn=self.api.deployment_stage.stage_arn,
                 web_acl_arn=waf.attr_arn,
             )
+            # Ensure the API Gateway stage exists before the WAF association is created
+            # (a hand-built ARN carries no implicit CloudFormation dependency on the stage).
+            waf_association.node.add_dependency(self.api.deployment_stage)

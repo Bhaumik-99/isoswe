@@ -209,7 +209,7 @@ class ComputeConstruct(Construct):
             command=[
                 "bash",
                 "-c",
-                "pip install --no-cache-dir -r requirements.txt -t /asset-output && cp -au . /asset-output",
+                "pip install --no-cache-dir -r requirements.txt -t /asset-output && cp -r . /asset-output",
             ],
             local=LambdaLocalBundler(source_path=api_dir),
         )
