@@ -45,7 +45,7 @@ The platform is designed to operate:
 | **Security & Secrets** | AWS WAF + KMS + Secrets Manager | CMK encryption at rest, connection strings in Secrets Manager |
 | **Monitoring** | Amazon CloudWatch + CloudTrail | Structured JSON logs and compliance audit trail |
 | **Infrastructure as Code** | AWS CDK | Modular Python constructs for dev, staging, and prod |
-| **CI/CD** | GitHub Actions | Automated lint, typing, tests, build, and CDK synth |
+| **CI/CD** | GitHub Actions | Automated lint, typing, tests, build, and CDK synth; push to `main` auto-deploys to AWS after CI passes ([docs/deployment.md](docs/deployment.md)) |
 
 ---
 

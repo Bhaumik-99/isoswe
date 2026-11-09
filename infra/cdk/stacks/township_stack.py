@@ -89,6 +89,18 @@ class TownshipStack(Stack):
         )
         CfnOutput(
             self,
+            "WebBucketName",
+            value=storage.web_bucket.bucket_name,
+            description="S3 bucket hosting the built frontend (deploy target)",
+        )
+        CfnOutput(
+            self,
+            "CloudFrontDistributionId",
+            value=storage.distribution.distribution_id,
+            description="CloudFront distribution ID (cache invalidation target)",
+        )
+        CfnOutput(
+            self,
             "SupabaseSecretArn",
             value=security.db_secret.secret_arn,
             description="AWS Secrets Manager Supabase Secret ARN",

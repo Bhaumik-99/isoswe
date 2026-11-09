@@ -451,3 +451,17 @@ def test_notification_worker_least_privilege_iam_permissions(
         retention_role_ref, "sns:Publish"
     ), "Retention role must NOT have sns:Publish"
 
+
+
+def test_stack_exposes_outputs_required_by_deploy_workflow(
+    prod_template: Template,
+) -> None:
+    """.github/workflows/deploy-aws.yml reads these CloudFormation outputs by name."""
+    outputs = prod_template.to_json()["Outputs"]
+    for name in (
+        "ApiUrl",
+        "CloudFrontDomain",
+        "WebBucketName",
+        "CloudFrontDistributionId",
+    ):
+        assert name in outputs, f"Deploy workflow requires stack output '{name}'"

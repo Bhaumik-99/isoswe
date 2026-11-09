@@ -1,0 +1,221 @@
+name: Deploy to AWS
+
+# Continuous deployment: runs only AFTER the CI workflow succeeds for a push to `main`
+# (or when triggered manually). See docs/deployment.md for the one-time AWS setup.
+on:
+  workflow_run:
+    workflows: ["Continuous Integration & Security Pipeline"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [dev, staging, prod]
+        default: staging
+
+# Never run two deployments at once, and never cancel one halfway through.
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve deployment target
+    runs-on: ubuntu-latest
+    # Deploy only when explicitly enabled (repo variable) so the workflow stays dormant
+    # until AWS has been set up, and only for CI-passed pushes to main.
+    if: >-
+      vars.AWS_DEPLOY_ENABLED == 'true' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main')
+      )
+    outputs:
+      environment: ${{ steps.target.outputs.environment }}
+    steps:
+      - name: Resolve target environment
+        id: target
+        env:
+          INPUT_ENV: ${{ github.event.inputs.environment }}
+          DEFAULT_ENV: ${{ vars.AWS_DEPLOY_ENV }}
+        run: |
+          env_name="${INPUT_ENV:-${DEFAULT_ENV:-staging}}"
+          case "$env_name" in
+            dev|staging|prod) ;;
+            *) echo "::error::Invalid environment '$env_name' (expected dev, staging or prod)"; exit 1 ;;
+          esac
+          echo "environment=$env_name" >> "$GITHUB_OUTPUT"
+          echo "Deploying to: $env_name"
+
+  deploy:
+    name: Deploy (${{ needs.prepare.outputs.environment }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # GitHub Environment named dev / staging / prod: holds per-environment secrets and
+    # lets you add "required reviewers" on prod for a manual approval gate.
+    environment: ${{ needs.prepare.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC -> AWS (no long-lived AWS keys stored in GitHub)
+    env:
+      TARGET_ENV: ${{ needs.prepare.outputs.environment }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+    steps:
+      - name: Checkout the exact commit that passed CI
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-${{ github.run_id }}
+
+      - name: Map environment names
+        run: |
+          case "$TARGET_ENV" in
+            dev) app_env=development; stack=TownshipOps-Dev ;;
+            staging) app_env=staging; stack=TownshipOps-Staging ;;
+            prod) app_env=production; stack=TownshipOps-Prod ;;
+          esac
+          echo "APP_ENV=$app_env" >> "$GITHUB_ENV"
+          echo "STACK_NAME=$stack" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------- database
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            services/api/requirements.txt
+            infra/cdk/requirements.txt
+
+      - name: Install API dependencies (for Alembic)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/api/requirements.txt
+
+      - name: Run database migrations (Alembic)
+        working-directory: services/api
+        env:
+          ENVIRONMENT: ${{ env.APP_ENV }}
+          # Connection settings come from the AWS Secrets Manager secret the stack creates.
+          DATABASE_SECRET_NAME: township-supabase-credentials-${{ env.TARGET_ENV }}
+          # Optional: a direct/session-mode Supabase URL (port 5432) is recommended for DDL
+          # because the transaction pooler (6543) can break migrations. Empty = use the secret.
+          DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Fail fast (and never touch localhost) if the database URL did not resolve.
+          python - <<'PY'
+          from urllib.parse import urlparse
+          from app.core.config import settings
+          host = urlparse(settings.DATABASE_URL).hostname or ""
+          if not host or host in ("localhost", "127.0.0.1"):
+              raise SystemExit("::error::DATABASE_URL did not resolve to a remote database; aborting.")
+          print(f"Migrating database host: {host}")
+          PY
+          alembic upgrade head
+
+      # --------------------------------------------------------- infrastructure
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install AWS CDK CLI and CDK Python dependencies
+        run: |
+          npm install -g aws-cdk
+          pip install -r infra/cdk/requirements.txt
+
+      - name: Deploy infrastructure and Lambda code (CDK)
+        working-directory: infra/cdk
+        env:
+          # Build the Lambda bundle in the Amazon Linux image so dependencies (pip install)
+          # are packaged. Without this the local fallback bundler ships NO dependencies.
+          REQUIRE_DOCKER: "true"
+          CDK_SKIP_DOCKER_BUNDLING: "false"
+        run: |
+          set -euo pipefail
+          cdk deploy "$STACK_NAME" -c env="$TARGET_ENV" \
+            --require-approval never \
+            --outputs-file "$RUNNER_TEMP/cdk-outputs.json"
+
+      - name: Read stack outputs
+        run: |
+          set -euo pipefail
+          out() { jq -er --arg s "$STACK_NAME" --arg k "$1" '.[$s][$k]' "$RUNNER_TEMP/cdk-outputs.json"; }
+          api_url="$(out ApiUrl)"
+          {
+            echo "API_URL=${api_url%/}"
+            echo "WEB_BUCKET=$(out WebBucketName)"
+            echo "DISTRIBUTION_ID=$(out CloudFrontDistributionId)"
+            echo "CLOUDFRONT_DOMAIN=$(out CloudFrontDomain)"
+          } >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------------- frontend
+      - name: Build frontend
+        working-directory: apps/web
+        env:
+          VITE_API_URL: ${{ env.API_URL }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Publish frontend to S3
+        run: |
+          set -euo pipefail
+          # Fingerprinted assets are immutable and safe to cache for a year.
+          aws s3 sync apps/web/dist/assets "s3://${WEB_BUCKET}/assets" \
+            --cache-control "public,max-age=31536000,immutable"
+          # index.html, service worker, manifest, icons: always revalidate.
+          aws s3 sync apps/web/dist "s3://${WEB_BUCKET}" \
+            --exclude "assets/*" --delete \
+            --cache-control "no-cache,must-revalidate"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" --paths "/*" >/dev/null
+
+      # ------------------------------------------------------------ smoke tests
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          check() {
+            local url="$1"
+            for attempt in 1 2 3 4 5 6; do
+              code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$url" || true)"
+              if [ "$code" = "200" ]; then echo "OK   $url"; return 0; fi
+              echo "WAIT $url (HTTP $code, attempt $attempt/6)"; sleep 10
+            done
+            echo "::error::Smoke test failed for $url (last HTTP $code)"; return 1
+          }
+          check "${API_URL}/health/live"
+          check "https://${CLOUDFRONT_DOMAIN}/"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment: \`${TARGET_ENV}\`"
+            echo "- Commit: \`${{ github.event.workflow_run.head_sha || github.sha }}\`"
+            echo "- Stack: \`${STACK_NAME}\`"
+            echo "- API: ${API_URL:-n/a}"
+            echo "- Web: https://${CLOUDFRONT_DOMAIN:-n/a}"
+          } >> "$GITHUB_STEP_SUMMARY"

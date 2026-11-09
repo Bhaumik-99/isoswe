@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  One-time bootstrap: lets the GitHub Actions workflow .github/workflows/deploy-aws.yml
+  deploy to this AWS account via OIDC (no long-lived access keys). Deploy ONE stack per
+  environment (dev / staging / prod). Prerequisite: `cdk bootstrap` has been run in the
+  target account/region. See docs/deployment.md.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: Bhaumik-99
+  GitHubRepo:
+    Type: String
+    Default: isoswe
+  EnvironmentName:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Description: Must match the GitHub Environment name used by the deploy workflow.
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: >-
+      The GitHub OIDC provider is unique per AWS account. Set to "false" if it already
+      exists (e.g. you deployed this template for another environment).
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ""
+    Description: Required when CreateOidcProvider is "false".
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub township-github-deploy-${EnvironmentName}
+      Description: !Sub GitHub Actions deploy role for the ${EnvironmentName} environment
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingOidcProviderArn
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # The deploy job declares `environment: <name>`, so GitHub issues this subject.
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOrg}/${GitHubRepo}:environment:${EnvironmentName}
+      Policies:
+        - PolicyName: township-deploy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # `cdk deploy` performs the real work through the CDK bootstrap roles.
+              - Sid: AssumeCdkBootstrapRoles
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-*-${AWS::AccountId}-${AWS::Region}
+              - Sid: ReadStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: "*"
+              - Sid: PublishFrontendObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::township-ops-web-${EnvironmentName}/*
+              - Sid: ListFrontendBucket
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:${AWS::Partition}:s3:::township-ops-web-${EnvironmentName}
+              - Sid: InvalidateCdn
+                Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+              # Alembic migrations read the DB connection string from Secrets Manager.
+              - Sid: ReadDatabaseSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:township-supabase-credentials-${EnvironmentName}-*
+              - Sid: DecryptSecretsViaSecretsManagerOnly
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+
+Outputs:
+  DeployRoleArn:
+    Description: Store this as the GitHub Environment secret AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

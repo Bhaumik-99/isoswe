@@ -64,7 +64,12 @@ class LambdaLocalBundler:
                 "tests",
             }
             for item in os.listdir(self.source_path):
-                if item in excluded or item.endswith(".pyc"):
+                if (
+                    item in excluded
+                    or item.endswith((".pyc", ".db"))
+                    or item == ".coverage"
+                    or (item.startswith(".env") and item != ".env.example")
+                ):
                     continue
                 s = os.path.join(self.source_path, item)
                 d = os.path.join(output_dir, item)
@@ -141,6 +146,11 @@ class ComputeConstruct(Construct):
             "*.pyc",
             "tests",
             "tests/**",
+            # Never ship local credentials or dev state inside the Lambda bundle.
+            ".env",
+            ".env.*",
+            "*.db",
+            ".coverage",
         ]
 
         canonical_env = (
