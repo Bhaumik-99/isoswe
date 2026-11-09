@@ -65,7 +65,7 @@ def get_current_user(
     if token.startswith("dev-token-") or (
         settings.is_local_dev
         and settings.ENABLE_LOCAL_AUTH_BYPASS
-        and token in ["neeraj", "swati", "aamir", "helpdesk"]
+        and token in ["neeraj", "swati", "aamir", "helpdesk", "gate", "committee"]
     ):
         mock_user = mock_auth_provider.verify_dev_token(token)
         payload = mock_user

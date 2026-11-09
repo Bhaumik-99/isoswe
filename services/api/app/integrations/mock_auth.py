@@ -50,6 +50,20 @@ MOCK_USERS: dict[str, dict[str, str]] = {
         "name": "Priya Patel",
         "role": "HELPDESK",
     },
+    "dev-token-gate": {
+        "email": "helpdesk@example.com",
+        "phone": "+91-98000-00004",
+        "sub": "00000000-0000-0000-0000-000000000004",
+        "name": "Rajesh Shinde",
+        "role": "HELPDESK",
+    },
+    "dev-token-committee": {
+        "email": "committee@example.com",
+        "phone": "+91-98000-00006",
+        "sub": "00000000-0000-0000-0000-000000000006",
+        "name": "Aniket Patwardhan",
+        "role": "HELPDESK",
+    },
 }
 
 

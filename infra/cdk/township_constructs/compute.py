@@ -209,7 +209,11 @@ class ComputeConstruct(Construct):
             command=[
                 "bash",
                 "-c",
-                "pip install --no-cache-dir -r requirements.txt -t /asset-output && cp -r . /asset-output",
+                """
+                pip install --no-cache-dir -r requirements.txt -t /asset-output &&
+                cp -r app migrations /asset-output/ &&
+                cp alembic.ini /asset-output/
+                """,
             ],
             local=LambdaLocalBundler(source_path=api_dir),
         )

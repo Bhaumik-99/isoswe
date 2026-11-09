@@ -1,48 +1,102 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { KeyRound, Phone, Sparkles, AlertCircle } from 'lucide-react';
+import { KeyRound, Phone, Sparkles, AlertCircle, User, Lock, Eye, EyeOff, LogIn } from 'lucide-react';
 import { useAuth } from './AuthContext';
 import { Button } from '../../components/ui/Button';
 import { Alert } from '../../components/ui/Alert';
 import { supabaseAuth } from '../../services/supabaseAuth';
 
-interface DevPersona {
+interface DemoAccount {
+  id: string;
+  userType: string;
   name: string;
+  username: string;
+  aliases: string[];
+  password: string;
   role: string;
   unit?: string;
   token: string;
+  targetPath: string;
   description: string;
 }
 
-// Deterministic synthetic developer personas matching Pune township seed dataset
-// These accounts exist strictly for local RBAC and tenancy evaluation
-const DEV_PERSONAS: DevPersona[] = [
+// Deterministic demo credentials for each user type in the Pune township seed dataset
+export const DEMO_ACCOUNTS: DemoAccount[] = [
   {
+    id: 'resident-owner',
+    userType: 'RESIDENT (Owner)',
     name: 'Neeraj Kulkarni',
-    role: 'RESIDENT (Owner)',
+    username: 'owner@demo.com',
+    aliases: ['neeraj.kulkarni@example.com', 'owner', 'neeraj'],
+    password: 'Owner@123',
+    role: 'RESIDENT',
     unit: 'T07-1203 (1,150 sq ft)',
     token: 'dev-token-neeraj',
-    description: 'Owner of Tower 7 unit 1203 with full resident access',
+    targetPath: '/resident/overview',
+    description: 'Flat owner with full access to invoices, amenities, visitors, notices & complaints',
   },
   {
+    id: 'resident-tenant',
+    userType: 'RESIDENT (Tenant)',
     name: 'Swati Joshi',
-    role: 'RESIDENT (Tenant)',
+    username: 'tenant@demo.com',
+    aliases: ['swati.joshi@example.com', 'tenant', 'swati'],
+    password: 'Tenant@123',
+    role: 'RESIDENT',
     unit: 'T12-0408 (980 sq ft)',
     token: 'dev-token-swati',
-    description: 'Tenant with time-bound approved lease membership',
+    targetPath: '/resident/overview',
+    description: 'Tenant with active time-bound lease membership and overdue maintenance invoice',
   },
   {
+    id: 'resident-owner-2',
+    userType: 'RESIDENT (Penthouse Owner)',
     name: 'Aamir Shaikh',
-    role: 'RESIDENT (Owner)',
+    username: 'aamir@demo.com',
+    aliases: ['aamir.shaikh@example.com', 'aamir'],
+    password: 'Aamir@123',
+    role: 'RESIDENT',
     unit: 'T21-1601 (1,640 sq ft)',
     token: 'dev-token-aamir',
-    description: 'Owner of penthouse unit in Tower 21',
+    targetPath: '/resident/overview',
+    description: 'Penthouse owner in Tower 21 with partial payment and receipt history',
   },
   {
+    id: 'staff-helpdesk',
+    userType: 'STAFF / HELPDESK ADMIN',
     name: 'Rajesh Shinde',
+    username: 'staff@demo.com',
+    aliases: ['helpdesk@example.com', 'staff', 'helpdesk', 'admin'],
+    password: 'Staff@123',
     role: 'HELPDESK',
     token: 'dev-token-helpdesk',
-    description: 'Facility management staff handling resident maintenance tickets',
+    targetPath: '/staff/overview',
+    description: 'Facility & finance staff managing helpdesk tickets, billing, reconciliation, notices & amenities',
+  },
+  {
+    id: 'gate-security',
+    userType: 'GATE SECURITY GUARD',
+    name: 'Rajesh Shinde (Gate 1)',
+    username: 'gate@demo.com',
+    aliases: ['gate.security@example.com', 'gate', 'guard'],
+    password: 'Gate@123',
+    role: 'HELPDESK',
+    unit: 'Gate 1 - North Main',
+    token: 'dev-token-gate',
+    targetPath: '/gate',
+    description: 'Perimeter gate security tablet for visitor registration, guest pass QR/code check-in & offline sync',
+  },
+  {
+    id: 'committee-member',
+    userType: 'MANAGING COMMITTEE',
+    name: 'Aniket Patwardhan',
+    username: 'committee@demo.com',
+    aliases: ['committee@example.com', 'committee'],
+    password: 'Committee@123',
+    role: 'HELPDESK',
+    token: 'dev-token-committee',
+    targetPath: '/staff/committee',
+    description: 'Managing committee governance viewer for financial collection KPIs, SLA metrics & audit logs',
   },
 ];
 
@@ -51,38 +105,71 @@ export const LoginForm: React.FC = () => {
   const { login, isSessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
 
-  // In production builds, default strictly to genuine Supabase Phone OTP authentication
-  const [activeTab, setActiveTab] = useState<'dev' | 'otp'>(isDev ? 'dev' : 'otp');
+  const [activeTab, setActiveTab] = useState<'demo' | 'otp'>(isDev ? 'demo' : 'otp');
+  const [username, setUsername] = useState('owner@demo.com');
+  const [password, setPassword] = useState('Owner@123');
+  const [showPassword, setShowPassword] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const navigateByRole = (role: string) => {
-    if (role.includes('RESIDENT')) {
-      navigate('/resident/overview');
-    } else {
-      navigate('/staff/overview');
-    }
-  };
-
-  const handleDevLogin = async (token: string, role: string) => {
+  const handleDirectPersonaLogin = async (account: DemoAccount) => {
     if (!isDev) {
-      setError('Development mock login is strictly disabled in production builds.');
+      setError('Development demo login is strictly disabled in production builds.');
       return;
     }
+    setUsername(account.username);
+    setPassword(account.password);
     setError(null);
     clearSessionExpired();
     setIsSubmitting(true);
     try {
-      await login(token);
-      navigateByRole(role);
+      await login(account.token);
+      navigate(account.targetPath);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Dev login failed');
+      setError(err instanceof Error ? err.message : 'Demo login failed');
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isDev) {
+      setError('Development demo login is strictly disabled in production builds.');
+      return;
+    }
+
+    const cleanUser = username.trim().toLowerCase();
+    const cleanPass = password.trim();
+
+    if (!cleanUser || !cleanPass) {
+      setError('Please enter both a demo username and password.');
+      return;
+    }
+
+    const matchedAccount = DEMO_ACCOUNTS.find(
+      (acc) =>
+        acc.username.toLowerCase() === cleanUser ||
+        acc.aliases.some((alias) => alias.toLowerCase() === cleanUser)
+    );
+
+    if (!matchedAccount || matchedAccount.password !== cleanPass) {
+      setError(
+        'Invalid demo username or password. Select any user type card below to auto-fill valid demo credentials.'
+      );
+      return;
+    }
+
+    await handleDirectPersonaLogin(matchedAccount);
+  };
+
+  const handleFillCredentials = (account: DemoAccount) => {
+    setUsername(account.username);
+    setPassword(account.password);
+    setError(null);
   };
 
   const handleSendOtp = async (e: React.FormEvent) => {
@@ -134,7 +221,7 @@ export const LoginForm: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Expired Session Alert */}
       {isSessionExpired && (
         <Alert variant="warning" title="Session Expired">
@@ -142,23 +229,23 @@ export const LoginForm: React.FC = () => {
         </Alert>
       )}
 
-      {/* Environment-Gated Tab Switcher: DEV ONLY */}
+      {/* Environment-Gated Tab Switcher */}
       {isDev && (
         <div className="flex border-b border-slate-200">
           <button
             type="button"
             onClick={() => {
-              setActiveTab('dev');
+              setActiveTab('demo');
               setError(null);
             }}
             className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
-              activeTab === 'dev'
+              activeTab === 'demo'
                 ? 'border-indigo-600 text-indigo-600'
                 : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Local Dev Personas</span>
+            <span>Demo Login (All Roles)</span>
           </button>
           <button
             type="button"
@@ -184,41 +271,129 @@ export const LoginForm: React.FC = () => {
         </Alert>
       )}
 
-      {/* Dev Personas Panel: Statically and Dynamically Excluded in Production */}
-      {isDev && activeTab === 'dev' && (
-        <div className="space-y-3">
+      {/* Demo Username & Password Login + Role Credentials Directory */}
+      {isDev && activeTab === 'demo' && (
+        <div className="space-y-4">
+          <form onSubmit={handlePasswordSubmit} className="space-y-3 bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+            <div>
+              <label
+                htmlFor="demo-username"
+                className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1"
+              >
+                Username / Email
+              </label>
+              <div className="relative">
+                <User className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  id="demo-username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="owner@demo.com"
+                  className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                  required
+                />
+              </div>
+            </div>
+
+            <div>
+              <label
+                htmlFor="demo-password"
+                className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1"
+              >
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <input
+                  id="demo-password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter demo password"
+                  className="w-full pl-9 pr-9 py-2 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 font-mono"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            <Button type="submit" variant="primary" isLoading={isSubmitting} className="w-full">
+              Sign In with Credentials
+            </Button>
+          </form>
+
           <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-md text-[11px] text-amber-800 flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
             <span>
-              <strong>Local Development Only:</strong> Synthetic accounts mapped to Pune township seed data for testing role permissions and tenancy boundaries.
+              <strong>Demo Accounts by Role:</strong> Click any account below to fill its username &amp; password, or click <strong>Instant Sign In</strong> to open that portal directly.
             </span>
           </div>
 
-          <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
-            {DEV_PERSONAS.map((persona) => (
-              <button
-                key={persona.token}
-                type="button"
-                onClick={() => handleDevLogin(persona.token, persona.role)}
-                disabled={isSubmitting}
-                className="w-full text-left p-3 rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 transition-all group focus:outline-none focus:ring-2 focus:ring-indigo-600"
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="font-semibold text-xs text-slate-900 group-hover:text-indigo-900">
-                    {persona.name}
+          <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+            {DEMO_ACCOUNTS.map((account) => {
+              const isSelected = username.toLowerCase() === account.username.toLowerCase();
+              return (
+                <div
+                  key={account.id}
+                  onClick={() => handleFillCredentials(account)}
+                  className={`w-full text-left p-3 rounded-lg border transition-all cursor-pointer ${
+                    isSelected
+                      ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500'
+                      : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/30'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="font-semibold text-xs text-slate-900">
+                      {account.name}
+                      {account.unit && (
+                        <span className="ml-1.5 text-[11px] font-normal text-slate-500">
+                          • {account.unit}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 whitespace-nowrap">
+                      {account.userType}
+                    </span>
                   </div>
-                  <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-700 group-hover:bg-indigo-100 group-hover:text-indigo-800">
-                    {persona.role}
-                  </span>
+
+                  <div className="text-[11px] text-slate-500 mb-2">{account.description}</div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-200/70">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+                      <span>
+                        <span className="text-slate-400">User:</span>{' '}
+                        <strong className="text-slate-800 select-all">{account.username}</strong>
+                      </span>
+                      <span>
+                        <span className="text-slate-400">Pass:</span>{' '}
+                        <strong className="text-slate-800 select-all">{account.password}</strong>
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isSubmitting}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDirectPersonaLogin(account);
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      <LogIn className="w-3 h-3" />
+                      <span>Instant Sign In</span>
+                    </button>
+                  </div>
                 </div>
-                {persona.unit && (
-                  <div className="text-[11px] font-medium text-slate-600 mb-0.5">
-                    Unit: {persona.unit}
-                  </div>
-                )}
-                <div className="text-[11px] text-slate-500 line-clamp-1">{persona.description}</div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
