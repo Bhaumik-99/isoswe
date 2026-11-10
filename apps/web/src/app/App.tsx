@@ -5,6 +5,7 @@ import { AuthProvider } from '../features/auth/AuthContext';
 import { LanguageProvider } from '../i18n/LanguageContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { AppRoutes } from '../routes';
+import { SmoothScrollProvider } from '../components/motion/SmoothScrollProvider';
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +25,9 @@ export const App: React.FC = () => {
         <LanguageProvider>
           <AuthProvider>
             <BrowserRouter>
-              <AppRoutes />
+              <SmoothScrollProvider>
+                <AppRoutes />
+              </SmoothScrollProvider>
             </BrowserRouter>
           </AuthProvider>
         </LanguageProvider>

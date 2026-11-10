@@ -18,6 +18,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { Portal } from '../../components/ui/Portal';
 
 export const ResidentBilling: React.FC = () => {
   const queryClient = useQueryClient();
@@ -399,7 +400,8 @@ export const ResidentBilling: React.FC = () => {
       {/* Modal: Simulated Payment Flow */}
       {/* ------------------------------------------------------------- */}
       {selectedInvoiceForPayment && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
@@ -513,14 +515,16 @@ export const ResidentBilling: React.FC = () => {
               </div>
             </form>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* ------------------------------------------------------------- */}
       {/* Modal: Printable Invoice Detail */}
       {/* ------------------------------------------------------------- */}
       {selectedInvoiceForDetail && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full border border-slate-200 overflow-hidden max-h-[90vh] flex flex-col">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
@@ -671,14 +675,16 @@ export const ResidentBilling: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* ------------------------------------------------------------- */}
       {/* Modal: Official Payment Receipt */}
       {/* ------------------------------------------------------------- */}
       {receiptData && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-emerald-50">
               <div className="flex items-center gap-2">
@@ -744,7 +750,8 @@ export const ResidentBilling: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

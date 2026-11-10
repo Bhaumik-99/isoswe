@@ -32,6 +32,8 @@ import { LiveApprovalMonitor } from './components/LiveApprovalMonitor';
 import { CampusExitManager } from './components/CampusExitManager';
 import { ScopedVisitorHistory } from './components/ScopedVisitorHistory';
 import { OfflineQueueDrawer } from './components/OfflineQueueDrawer';
+import { FixedHeaderPortal } from '../../components/motion/FixedHeaderPortal';
+import { useGsapStagger } from '../../components/motion/useGsapStagger';
 
 type GateTab = 'register' | 'passVerify' | 'liveMonitor' | 'campusExit' | 'history';
 
@@ -159,29 +161,32 @@ export const GateTabletPage: React.FC = () => {
   const insideCount = visitors.filter((v) => v.entry_status === 'CHECKED_IN').length;
   const checkedOutCount = visitors.filter((v) => v.entry_status === 'CHECKED_OUT').length;
   const unsyncedOfflineCount = offlineQueue.filter((q) => q.sync_status !== 'SYNCED').length;
+  const gateContainerRef = useGsapStagger<HTMLDivElement>('[data-gsap-stagger]');
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
-      <GateHeaderBanner
-        guardName={user?.full_name || 'Gate Security'}
-        activeGate={activeGate}
-        availableGates={availableGates}
-        onSelectGate={(gate) => setActiveGate(gate)}
-        isOnline={isOnline}
-        offlineQueueCount={unsyncedOfflineCount}
-        onOpenPrivacyNotice={() => setPrivacyModalOpen(true)}
-        onOpenOfflineDrawer={() => setOfflineDrawerOpen(true)}
-        onBackToStaff={() => navigate('/staff/overview')}
-        onLogout={() => {
-          logout();
-          navigate('/login');
-        }}
-      />
+    <div ref={gateContainerRef} className="min-h-screen bg-slate-950 text-white flex flex-col">
+      <FixedHeaderPortal fallbackHeight={70}>
+        <GateHeaderBanner
+          guardName={user?.full_name || 'Gate Security'}
+          activeGate={activeGate}
+          availableGates={availableGates}
+          onSelectGate={(gate) => setActiveGate(gate)}
+          isOnline={isOnline}
+          offlineQueueCount={unsyncedOfflineCount}
+          onOpenPrivacyNotice={() => setPrivacyModalOpen(true)}
+          onOpenOfflineDrawer={() => setOfflineDrawerOpen(true)}
+          onBackToStaff={() => navigate('/staff/overview')}
+          onLogout={() => {
+            logout();
+            navigate('/login');
+          }}
+        />
+      </FixedHeaderPortal>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 w-full flex-1 space-y-6">
+      <main id="main-content" tabIndex={-1} className="max-w-7xl mx-auto px-4 sm:px-6 py-6 w-full flex-1 space-y-6 outline-none">
         {/* KPI Strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+          <div data-gsap-stagger className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
             <div>
               <span className="text-xs text-slate-400 font-semibold block">
                 {t.gate.kpiTodayVisitors}

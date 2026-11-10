@@ -12,19 +12,20 @@ export const Badge: React.FC<BadgeProps> = ({
   children,
   ...props
 }) => {
+  // WCAG AA >= 4.5:1 contrast foreground/background pairs
   const variants = {
-    neutral: 'bg-[#f6f5f4] text-[#31302e] border-[#e6e6e6]',
-    success: 'bg-white text-[#1aae39] border-[#e6e6e6]',
-    warning: 'bg-white text-[#dd5b00] border-[#e6e6e6]',
-    info: 'bg-white text-[#0075de] border-[#e6e6e6]',
-    danger: 'bg-white text-[#793400] border-[#e6e6e6]',
+    neutral: 'bg-slate-100 text-slate-700 border-slate-200',
+    success: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    warning: 'bg-amber-50 text-amber-800 border-amber-200',
+    info: 'bg-blue-50 text-blue-700 border-blue-200',
+    danger: 'bg-red-50 text-red-700 border-red-200',
   };
 
   return (
     <span
       className={twMerge(
         clsx(
-          'inline-flex items-center px-2 py-1 rounded-full text-[12px] font-semibold tracking-[0.125px] leading-[1.33] border',
+          'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide leading-5 border whitespace-nowrap',
           variants[variant],
           className
         )

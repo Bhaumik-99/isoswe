@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
 import { BankTransaction, formatPaiseToINR, ProposedAllocation } from '../../../types/reconciliation';
 import { reconciliationService } from '../../../services/reconciliationService';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 
 interface ApprovalModalProps {
   transaction: BankTransaction;
@@ -74,7 +75,8 @@ export const ApprovalModal: React.FC<ApprovalModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <Portal>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full border border-slate-200 overflow-hidden">
         {/* Header */}
         <div className="bg-slate-900 px-6 py-4 flex items-center justify-between text-white">
@@ -245,6 +247,7 @@ export const ApprovalModal: React.FC<ApprovalModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

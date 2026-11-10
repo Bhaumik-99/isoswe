@@ -15,6 +15,7 @@ import { useLanguage } from '../../../i18n/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/Card';
 import { Button } from '../../../components/ui/Button';
 import { Badge } from '../../../components/ui/Badge';
+import { Portal } from '../../../components/ui/Portal';
 
 interface PendingApprovalsInboxProps {
   visitors: VisitorRecord[];
@@ -195,11 +196,12 @@ export const PendingApprovalsInbox: React.FC<PendingApprovalsInboxProps> = ({
 
         {/* Photo Modal */}
         {photoModalVisitor && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4"
-            role="dialog"
-            aria-modal="true"
-          >
+          <Portal>
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4"
+              role="dialog"
+              aria-modal="true"
+            >
             <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full overflow-hidden shadow-xl">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                 <span className="font-bold text-sm text-slate-900">{photoModalVisitor}</span>
@@ -228,7 +230,8 @@ export const PendingApprovalsInbox: React.FC<PendingApprovalsInboxProps> = ({
                 )}
               </div>
             </div>
-          </div>
+            </div>
+          </Portal>
         )}
       </CardContent>
     </Card>

@@ -12,6 +12,7 @@ import {
 import { OfflineVisitorQueueItem } from '../../../types';
 import { useLanguage } from '../../../i18n/LanguageContext';
 import { useGateMigrationStatus, retryGateMigration } from '../offline/gateIndexedDB';
+import { Portal } from '../../../components/ui/Portal';
 
 interface OfflineQueueDrawerProps {
   isOpen: boolean;
@@ -52,11 +53,12 @@ export const OfflineQueueDrawer: React.FC<OfflineQueueDrawerProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-    >
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 flex justify-end bg-black/75 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+      >
       <div className="bg-slate-900 border-l border-slate-800 text-white w-full max-w-xl h-full flex flex-col shadow-2xl">
         {/* Header */}
         <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
@@ -214,7 +216,8 @@ export const OfflineQueueDrawer: React.FC<OfflineQueueDrawerProps> = ({
           )}
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };
 

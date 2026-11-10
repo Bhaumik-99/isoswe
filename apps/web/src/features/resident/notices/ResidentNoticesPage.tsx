@@ -27,6 +27,7 @@ import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Card, CardContent } from '../../../components/ui/Card';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 import { useLanguage, SupportedLanguage } from '../../../i18n/LanguageContext';
 
 export const ResidentNoticesPage: React.FC = () => {
@@ -554,7 +555,8 @@ export const ResidentNoticesPage: React.FC = () => {
 
       {/* Full Detail Modal */}
       {detailModalNotice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -608,7 +610,8 @@ export const ResidentNoticesPage: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

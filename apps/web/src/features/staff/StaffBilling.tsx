@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { Portal } from '../../components/ui/Portal';
 import { Alert } from '../../components/ui/Alert';
 
 export const StaffBilling: React.FC = () => {
@@ -774,7 +775,8 @@ export const StaffBilling: React.FC = () => {
       {/* Modal: Configure Bye-Law Policy */}
       {/* ------------------------------------------------------------- */}
       {isPolicyModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
@@ -923,14 +925,16 @@ export const StaffBilling: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* ------------------------------------------------------------- */}
       {/* Modal: Run Monthly Billing Execution & Preview */}
       {/* ------------------------------------------------------------- */}
       {isRunModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
@@ -1057,14 +1061,16 @@ export const StaffBilling: React.FC = () => {
               )}
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* ------------------------------------------------------------- */}
       {/* Modal: Staff Invoice Inspect */}
       {/* ------------------------------------------------------------- */}
       {selectedInvoiceDetail && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
               <div className="flex items-center gap-2">
@@ -1133,7 +1139,8 @@ export const StaffBilling: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

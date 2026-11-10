@@ -36,6 +36,7 @@ import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 
 const AMENITY_TYPES: { label: string; value: AmenityType }[] = [
   { label: 'Clubhouse', value: 'CLUBHOUSE' },
@@ -622,11 +623,12 @@ export const StaffAmenitiesPage: React.FC = () => {
 
       {/* MODAL 3: Administrative Booking Cancellation */}
       {cancellingBooking && (
-        <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <Portal>
+          <div
+            className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
@@ -699,16 +701,18 @@ export const StaffAmenitiesPage: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* MODAL 4: Booking Details Inspector */}
       {inspectingBooking && (
-        <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <Portal>
+          <div
+            className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div>
@@ -816,7 +820,8 @@ export const StaffAmenitiesPage: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );
@@ -902,11 +907,12 @@ const AmenityFormModal: React.FC<AmenityFormModalProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-    >
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+      >
       <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-100 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <h3 className="text-base font-bold text-slate-900">
@@ -1129,7 +1135,8 @@ const AmenityFormModal: React.FC<AmenityFormModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };
 
@@ -1200,11 +1207,12 @@ const AmenityBlocksModal: React.FC<AmenityBlocksModalProps> = ({ amenity, onClos
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-    >
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+      >
       <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 space-y-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
@@ -1326,6 +1334,7 @@ const AmenityBlocksModal: React.FC<AmenityBlocksModalProps> = ({ amenity, onClos
           )}
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

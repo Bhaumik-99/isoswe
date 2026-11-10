@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { useGSAP } from '@gsap/react';
 import {
   Landmark,
   BarChart3,
@@ -10,11 +13,44 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
+import { Portal } from '../components/ui/Portal';
+import { FixedHeaderPortal } from '../components/motion/FixedHeaderPortal';
+import { useGsapStagger } from '../components/motion/useGsapStagger';
+
+gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 export const CommitteeLayout: React.FC = () => {
   const { user, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const navigate = useNavigate();
+
+  const bodyGridRef = useGsapStagger<HTMLDivElement>('[data-gsap-nav]');
+  const sidebarNavRef = useRef<HTMLElement>(null);
+
+  useGSAP(
+    () => {
+      if (typeof window === 'undefined' || !bodyGridRef.current || !sidebarNavRef.current) return;
+      const mm = gsap.matchMedia();
+
+      mm.add('(min-width: 768px) and (prefers-reduced-motion: no-preference)', () => {
+        ScrollTrigger.create({
+          trigger: bodyGridRef.current!,
+          start: 'top 88px',
+          end: () => {
+            const totalH = bodyGridRef.current?.offsetHeight || 0;
+            const navH = sidebarNavRef.current?.offsetHeight || 0;
+            return `+=${Math.max(0, totalH - navH - 24)}`;
+          },
+          pin: sidebarNavRef.current!,
+          pinSpacing: false,
+          invalidateOnRefresh: true,
+        });
+      });
+
+      return () => mm.revert();
+    },
+    { scope: bodyGridRef }
+  );
 
   const handleLogout = () => {
     logout();
@@ -28,72 +64,81 @@ export const CommitteeLayout: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#f6f5f4] text-[#000000] flex flex-col">
-      {/* Top Header (Notion nav-bar) */}
-      <header className="bg-[#ffffff] text-[#000000] border-b border-[#e6e6e6] sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 text-[#615d59] hover:text-[#000000] rounded-[5px] hover:bg-[#f6f5f4]"
-              aria-label="Toggle Navigation Menu"
-            >
-              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </button>
-
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
+      {/* Glassmorphic Top Header portaled outside #smooth-wrapper */}
+      <FixedHeaderPortal fallbackHeight={65}>
+        <header className="glass-surface border-b border-slate-200/80 shadow-xs text-slate-900">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-[8px] bg-[#213183] text-[#ffffff] flex items-center justify-center font-bold border border-[#e6e6e6]">
-                <Landmark className="h-4 w-4" />
-              </div>
-              <div>
-                <span className="font-semibold text-[15px] text-[#000000] block leading-tight tracking-[-0.125px]">
-                  Managing Committee
-                </span>
-                <span className="text-[12px] text-[#615d59] block">Governance &amp; Audit Workspace</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <Badge variant="neutral" className="uppercase font-mono text-[11px]">
-              Read-Only Viewer
-            </Badge>
-
-            <div className="flex items-center gap-3 pl-3 border-l border-[#e6e6e6]">
-              <div className="hidden sm:block text-right">
-                <div className="text-[14px] font-medium text-[#000000] leading-tight">{user?.full_name}</div>
-                <div className="text-[12px] text-[#615d59] truncate max-w-[140px]">{user?.email}</div>
-              </div>
               <button
-                onClick={handleLogout}
-                className="p-2 text-[#615d59] hover:text-[#000000] rounded-[8px] border border-transparent hover:border-[#e6e6e6] hover:bg-[#f6f5f4] transition-colors"
-                title="Log out"
-                aria-label="Log out"
+                type="button"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="md:hidden min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 cursor-pointer"
+                aria-label="Toggle Navigation Menu"
+                aria-expanded={mobileMenuOpen}
               >
-                <LogOut className="h-4 w-4" />
+                {mobileMenuOpen ? <X className="h-5 w-5" aria-hidden="true" /> : <Menu className="h-5 w-5" aria-hidden="true" />}
               </button>
+
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-slate-800 to-primary-700 text-white flex items-center justify-center shadow-xs shrink-0">
+                  <Landmark className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <span className="font-display text-base text-slate-900 block leading-tight">
+                    Managing Committee
+                  </span>
+                  <span className="text-xs text-slate-600 block font-medium">Governance &amp; Audit Workspace</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              <Badge variant="neutral" className="uppercase font-mono text-[11px] hidden sm:inline-flex">
+                Read-Only Viewer
+              </Badge>
+
+              <div className="flex items-center gap-2.5 pl-2.5 border-l border-slate-200">
+                <div className="hidden sm:block text-right">
+                  <div className="text-sm font-medium text-slate-900 leading-tight">{user?.full_name}</div>
+                  <div className="text-xs text-slate-600 truncate max-w-[140px]">{user?.email}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-600 hover:text-red-700 rounded-xl border border-transparent hover:border-red-200 hover:bg-red-50 transition-colors cursor-pointer"
+                  title="Log out"
+                  aria-label="Log out"
+                >
+                  <LogOut className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
+      </FixedHeaderPortal>
 
       {/* Main Layout Area */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 flex gap-8">
-        <aside className="hidden md:block w-64 flex-shrink-0">
-          <nav className="space-y-1 sticky top-24">
+      <div
+        ref={bodyGridRef}
+        className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 flex gap-8 items-start"
+      >
+        <aside className="hidden md:block w-64 flex-shrink-0" aria-label="Committee navigation">
+          <nav ref={sidebarNavRef} className="space-y-1.5 w-64">
             {navItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
+                data-gsap-nav
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] transition-colors ${
+                  `flex items-center gap-3 min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-[#ffffff] text-[#0075de] font-semibold border border-[#e6e6e6] shadow-xs'
-                      : 'text-[#615d59] font-normal hover:text-[#000000] hover:bg-[#ffffff]/70'
+                      ? 'bg-white text-primary-700 font-semibold border border-blue-200/80 border-l-4 border-l-primary-600 shadow-xs'
+                      : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/80 hover:border-slate-200/60 border border-transparent'
                   }`
                 }
               >
-                <item.icon className="h-4 w-4 flex-shrink-0" />
+                <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
                 <span>{item.name}</span>
               </NavLink>
             ))}
@@ -101,36 +146,54 @@ export const CommitteeLayout: React.FC = () => {
         </aside>
 
         {mobileMenuOpen && (
-          <div className="fixed inset-0 z-40 md:hidden bg-black/30 backdrop-blur-[1px]" onClick={() => setMobileMenuOpen(false)}>
-            <div className="fixed inset-y-0 left-0 w-64 bg-[#ffffff] border-r border-[#e6e6e6] p-4 shadow-lg flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between pb-4 border-b border-[#e6e6e6]">
-                <span className="font-semibold text-[15px] text-[#000000]">Committee Portal</span>
-                <button onClick={() => setMobileMenuOpen(false)}>
-                  <X className="h-5 w-5 text-[#615d59]" />
-                </button>
-              </div>
-              <nav className="mt-4 space-y-1 flex-1">
-                {navItems.map((item) => (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
+          <Portal>
+            <div
+              className="fixed inset-0 z-50 md:hidden bg-slate-900/40 backdrop-blur-xs"
+              onClick={() => setMobileMenuOpen(false)}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Committee Mobile Navigation"
+            >
+              <div
+                className="fixed inset-y-0 left-0 w-72 bg-white border-r border-slate-200 p-4 shadow-2xl flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between pb-4 border-b border-slate-200">
+                  <span className="font-display text-base text-slate-900">Committee Portal</span>
+                  <button
+                    type="button"
                     onClick={() => setMobileMenuOpen(false)}
-                    className={({ isActive }) =>
-                      `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] ${
-                        isActive ? 'bg-[#f6f5f4] text-[#0075de] font-semibold' : 'text-[#615d59] hover:text-[#000000]'
-                      }`
-                    }
+                    aria-label="Close committee navigation"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 cursor-pointer"
                   >
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.name}</span>
-                  </NavLink>
-                ))}
-              </nav>
+                    <X className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </div>
+                <nav className="mt-4 space-y-1.5 flex-1 overflow-y-auto">
+                  {navItems.map((item) => (
+                    <NavLink
+                      key={item.path}
+                      to={item.path}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm ${
+                          isActive
+                            ? 'bg-blue-50 text-primary-700 font-semibold border border-blue-200'
+                            : 'text-slate-700 font-medium hover:bg-slate-50'
+                        }`
+                      }
+                    >
+                      <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                      <span>{item.name}</span>
+                    </NavLink>
+                  ))}
+                </nav>
+              </div>
             </div>
-          </div>
+          </Portal>
         )}
 
-        <main className="flex-1 min-w-0">
+        <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 outline-none">
           <Outlet />
         </main>
       </div>

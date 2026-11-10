@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Alert } from '../../components/ui/Alert';
+import { useGsapStagger } from '../../components/motion/useGsapStagger';
 
 interface HealthStatus {
   status: string;
@@ -21,6 +22,7 @@ export const StaffOverview: React.FC = () => {
   const [eventResult, setEventResult] = useState<string | null>(null);
   const [financeResult, setFinanceResult] = useState<{ success: boolean; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const overviewRef = useGsapStagger<HTMLDivElement>('[data-gsap-stagger]');
 
   const checkHealth = async () => {
     try {
@@ -76,19 +78,19 @@ export const StaffOverview: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div ref={overviewRef} className="space-y-6">
       {/* Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
+      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Operations Control Center</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <h1 className="font-display text-2xl sm:text-[28px] text-slate-900">Operations Control Center</h1>
+          <p className="text-sm text-slate-600 mt-0.5">
             System health, asynchronous messaging verification, and RBAC evaluation
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="info">Society: Marvel Greenfield</Badge>
           <Button variant="outline" size="sm" onClick={checkHealth}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" aria-hidden="true" />
             Refresh Probes
           </Button>
         </div>
@@ -101,7 +103,7 @@ export const StaffOverview: React.FC = () => {
       )}
 
       {/* System Health Probes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div data-gsap-stagger className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-semibold flex items-center justify-between">

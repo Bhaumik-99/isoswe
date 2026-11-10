@@ -23,6 +23,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { Portal } from '../../components/ui/Portal';
 
 const CATEGORIES: { value: ComplaintCategory; label: string }[] = [
   { value: 'PLUMBING', label: 'Plumbing' },
@@ -526,7 +527,8 @@ export const StaffHelpdesk: React.FC = () => {
 
       {/* Ticket Management Modal */}
       {activeTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
           <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[92vh] overflow-y-auto p-6 space-y-5">
             {/* Modal Header */}
             <div className="flex justify-between items-start border-b pb-3">
@@ -844,7 +846,8 @@ export const StaffHelpdesk: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

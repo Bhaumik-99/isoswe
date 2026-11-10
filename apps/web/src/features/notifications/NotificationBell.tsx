@@ -141,8 +141,9 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
   return (
     <div className="relative" ref={dropdownRef}>
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`relative p-2 rounded-lg transition-colors ${
+        className={`relative min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl transition-colors cursor-pointer ${
           dark
             ? 'text-slate-300 hover:text-white hover:bg-slate-800'
             : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -150,10 +151,10 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
         aria-label="View notifications"
         aria-expanded={isOpen}
       >
-        <Bell className="h-5 w-5" />
+        <Bell className="h-5 w-5" aria-hidden="true" />
         {unreadCount > 0 && (
           <span
-            className="absolute top-1 right-1 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold text-white bg-red-600 rounded-full border-2 border-white dark:border-slate-900"
+            className="absolute top-1.5 right-1.5 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold text-white bg-red-600 rounded-full border-2 border-white dark:border-slate-900 tabular-nums"
             data-testid="unread-badge"
           >
             {unreadCount > 9 ? '9+' : unreadCount}
@@ -163,7 +164,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
 
       {isOpen && (
         <div
-          className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+          className="absolute right-0 mt-2 w-80 sm:w-96 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-slate-200 z-50 overflow-hidden"
           role="dialog"
           aria-label="Notifications panel"
         >

@@ -33,6 +33,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { useGsapStagger } from '../../components/motion/useGsapStagger';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -49,6 +50,7 @@ export const ResidentOverview: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstallDismissed, setIsInstallDismissed] = useState<boolean>(false);
   const [actingVisitorId, setActingVisitorId] = useState<string | null>(null);
+  const overviewRef = useGsapStagger<HTMLDivElement>('[data-gsap-stagger]');
 
   const { data: billingSummary, isLoading: isBillingLoading } = useQuery({
     queryKey: ['billing-summary', user?.id, selectedFlat?.flat_id],
@@ -154,17 +156,17 @@ export const ResidentOverview: React.FC = () => {
   const latestComplaint = residentComplaints[0];
 
   return (
-    <div className="space-y-6">
+    <div ref={overviewRef} className="space-y-6">
       {/* PWA Mobile App Install Prompt Banner */}
       {deferredPrompt && !isInstallDismissed && (
-        <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-gradient-to-r from-indigo-700 to-indigo-900 text-white rounded-xl shadow-md gap-4">
+        <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-gradient-to-r from-primary-600 to-teal-700 text-white rounded-2xl shadow-md gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-white/10 rounded-lg">
-              <Smartphone className="h-6 w-6 text-indigo-200" />
+            <div className="p-2.5 bg-white/15 rounded-xl">
+              <Smartphone className="h-6 w-6 text-white" aria-hidden="true" />
             </div>
             <div>
-              <h3 className="font-semibold text-sm">Install Isoswe Township App</h3>
-              <p className="text-xs text-indigo-200">
+              <h3 className="font-semibold text-sm text-white">Install Isoswe Township App</h3>
+              <p className="text-xs text-blue-100">
                 1-tap access to maintenance payments, receipt downloads, and ticket tracking on your home screen.
               </p>
             </div>
@@ -174,7 +176,7 @@ export const ResidentOverview: React.FC = () => {
               size="sm"
               variant="outline"
               onClick={() => setIsInstallDismissed(true)}
-              className="text-xs border-indigo-400 text-indigo-100 hover:bg-indigo-800"
+              className="text-xs bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white"
             >
               Dismiss
             </Button>
@@ -182,7 +184,7 @@ export const ResidentOverview: React.FC = () => {
               size="sm"
               variant="primary"
               onClick={handleInstallApp}
-              className="text-xs bg-white text-indigo-900 hover:bg-indigo-50 font-semibold"
+              className="text-xs bg-white text-primary-700 hover:bg-blue-50 font-semibold"
             >
               Install App
             </Button>
@@ -191,10 +193,10 @@ export const ResidentOverview: React.FC = () => {
       )}
 
       {/* Page Title */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
+      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Apartment Residence</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <h1 className="font-display text-2xl sm:text-[28px] text-slate-900">Apartment Residence</h1>
+          <p className="text-sm text-slate-600 mt-0.5">
             Verified property membership and society operations status
           </p>
         </div>
@@ -213,7 +215,7 @@ export const ResidentOverview: React.FC = () => {
       )}
 
       {/* Property Details Card */}
-      <Card>
+      <Card data-gsap-stagger>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Unit Specifications & Registry</CardTitle>
           <span className="text-xs font-mono text-slate-500">ID: {selectedFlat.flat_id.substring(0, 8)}...</span>

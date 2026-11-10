@@ -5,6 +5,7 @@ import {
   SupportedLanguage,
   useLanguage,
 } from '../../../i18n/LanguageContext';
+import { Portal } from '../../../components/ui/Portal';
 
 interface GatePrivacyNoticeModalProps {
   isOpen: boolean;
@@ -20,12 +21,13 @@ export const GatePrivacyNoticeModal: React.FC<GatePrivacyNoticeModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="privacy-notice-title"
-    >
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="privacy-notice-title"
+      >
       <div className="bg-slate-900 border border-slate-700 text-white rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="px-6 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-4">
@@ -133,7 +135,8 @@ export const GatePrivacyNoticeModal: React.FC<GatePrivacyNoticeModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };
 

@@ -38,6 +38,7 @@ import {
 import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 
 export const StaffNotificationsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'NOTICES' | 'DELIVERIES'>('NOTICES');
@@ -1028,7 +1029,8 @@ export const StaffNotificationsPage: React.FC = () => {
       {/* NOTICE COMPOSER / EDITOR MODAL                                            */}
       {/* ========================================================================= */}
       {isComposerOpen && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
@@ -1573,7 +1575,8 @@ export const StaffNotificationsPage: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

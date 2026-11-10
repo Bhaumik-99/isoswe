@@ -8,6 +8,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { Portal } from '../../components/ui/Portal';
 
 export const ResidentPayments: React.FC = () => {
   const [receiptData, setReceiptData] = useState<ReceiptResponse | null>(null);
@@ -153,7 +154,8 @@ export const ResidentPayments: React.FC = () => {
       {/* Modal: Official Receipt View */}
       {/* ------------------------------------------------------------- */}
       {receiptData && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-emerald-50">
               <div className="flex items-center gap-2">
@@ -219,7 +221,8 @@ export const ResidentPayments: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

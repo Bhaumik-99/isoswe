@@ -24,6 +24,7 @@ import {
 } from '../../../types';
 import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
+import { Portal } from '../../../components/ui/Portal';
 
 export const ResidentNotificationsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -379,7 +380,8 @@ export const ResidentNotificationsPage: React.FC = () => {
 
       {/* Notification Preferences Modal */}
       {preferencesModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
             <div className="flex items-center justify-between pb-4 border-b border-slate-200">
               <div className="flex items-center gap-2.5">
@@ -519,7 +521,8 @@ export const ResidentNotificationsPage: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

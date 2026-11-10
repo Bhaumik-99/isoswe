@@ -8,7 +8,8 @@ export const Skeleton: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
 }) => {
   return (
     <div
-      className={twMerge(clsx('animate-pulse rounded-md bg-slate-200/80', className))}
+      aria-hidden="true"
+      className={twMerge(clsx('animate-pulse rounded-xl bg-slate-200/75', className))}
       {...props}
     />
   );

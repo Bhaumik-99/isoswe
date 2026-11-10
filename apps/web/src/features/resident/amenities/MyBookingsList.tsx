@@ -21,6 +21,7 @@ import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 
 interface MyBookingsListProps {
   selectedFlat: FlatMembership;
@@ -365,11 +366,12 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
 
       {/* Cancellation Confirmation Modal */}
       {bookingToCancel && (
-        <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <Portal>
+          <div
+            className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
@@ -445,16 +447,18 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* Payment Processing Modal */}
       {bookingToPay && (
-        <div
-          className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <Portal>
+          <div
+            className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+            role="dialog"
+            aria-modal="true"
+          >
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
@@ -541,7 +545,8 @@ export const MyBookingsList: React.FC<MyBookingsListProps> = ({
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

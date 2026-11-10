@@ -4,6 +4,7 @@ import { GateFlatOption, VisitorRecord } from '../../../types';
 import { gateService } from '../../../services/gateService';
 import { ApiClientError } from '../../../services/apiClient';
 import { useLanguage } from '../../../i18n/LanguageContext';
+import { Portal } from '../../../components/ui/Portal';
 
 interface ScopedVisitorHistoryProps {
   visitors: VisitorRecord[];
@@ -151,11 +152,12 @@ export const ScopedVisitorHistory: React.FC<ScopedVisitorHistoryProps> = ({
 
       {/* Presigned Photo Modal */}
       {photoModalVisitor && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-          role="dialog"
-          aria-modal="true"
-        >
+        <Portal>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+            role="dialog"
+            aria-modal="true"
+          >
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
             <div className="px-5 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
               <div className="text-sm font-bold text-white">{photoModalVisitor}</div>
@@ -193,7 +195,8 @@ export const ScopedVisitorHistory: React.FC<ScopedVisitorHistoryProps> = ({
               ) : null}
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

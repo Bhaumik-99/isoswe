@@ -28,25 +28,26 @@ export class ErrorBoundary extends Component<Props, State> {
   public render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-white rounded-lg border border-slate-200 p-6 shadow-sm text-center">
-            <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-4">
-              <AlertCircle className="w-6 h-6" />
+        <div className="min-h-screen hero-mesh-bg flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200 p-7 shadow-xl text-center">
+            <div className="w-12 h-12 bg-red-50 text-red-600 border border-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="w-6 h-6" aria-hidden="true" />
             </div>
-            <h1 className="text-lg font-semibold text-slate-900 mb-2">Something went wrong</h1>
+            <h1 className="font-display text-xl text-slate-900 mb-2">Something went wrong</h1>
             <p className="text-sm text-slate-600 mb-6">
               An unexpected error interrupted this view. Your session and data remain safe.
             </p>
             <div className="flex justify-center gap-3">
               <Button
                 variant="primary"
+                size="lg"
                 onClick={() => {
                   this.setState({ hasError: false, error: null });
                   window.location.reload();
                 }}
               >
-                <RotateCcw className="w-4 h-4 mr-2" />
-                Reload Application
+                <RotateCcw className="w-4 h-4" aria-hidden="true" />
+                <span>Reload Application</span>
               </Button>
             </div>
           </div>

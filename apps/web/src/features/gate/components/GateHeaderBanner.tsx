@@ -73,7 +73,7 @@ export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
   };
 
   return (
-    <header className="bg-slate-950 border-b border-slate-800 text-white sticky top-0 z-30 shadow-lg">
+    <header className="bg-slate-950/95 backdrop-blur-md border-b border-slate-800 text-white shadow-lg">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
         {/* Left: Brand & Active Gate Selector */}
         <div className="flex items-center gap-3">

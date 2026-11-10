@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import gsap from 'gsap';
+import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { useGSAP } from '@gsap/react';
 import {
   Building2,
   Home,
@@ -17,13 +20,46 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { Badge } from '../components/ui/Badge';
+import { Portal } from '../components/ui/Portal';
+import { FixedHeaderPortal } from '../components/motion/FixedHeaderPortal';
+import { useGsapStagger } from '../components/motion/useGsapStagger';
 import { NotificationBell } from '../features/notifications/NotificationBell';
+
+gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 export const ResidentLayout: React.FC = () => {
   const { user, memberships, selectedFlat, setSelectedFlat, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [flatDropdownOpen, setFlatDropdownOpen] = useState(false);
   const navigate = useNavigate();
+
+  const bodyGridRef = useGsapStagger<HTMLDivElement>('[data-gsap-nav]');
+  const sidebarNavRef = useRef<HTMLElement>(null);
+
+  useGSAP(
+    () => {
+      if (typeof window === 'undefined' || !bodyGridRef.current || !sidebarNavRef.current) return;
+      const mm = gsap.matchMedia();
+
+      mm.add('(min-width: 768px) and (prefers-reduced-motion: no-preference)', () => {
+        ScrollTrigger.create({
+          trigger: bodyGridRef.current!,
+          start: 'top 88px',
+          end: () => {
+            const totalH = bodyGridRef.current?.offsetHeight || 0;
+            const navH = sidebarNavRef.current?.offsetHeight || 0;
+            return `+=${Math.max(0, totalH - navH - 24)}`;
+          },
+          pin: sidebarNavRef.current!,
+          pinSpacing: false,
+          invalidateOnRefresh: true,
+        });
+      });
+
+      return () => mm.revert();
+    },
+    { scope: bodyGridRef }
+  );
 
   const handleLogout = () => {
     logout();
@@ -42,154 +78,183 @@ export const ResidentLayout: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#f6f5f4] text-[#000000] flex flex-col">
-      {/* Top Header (Notion nav-bar) */}
-      <header className="bg-[#ffffff] text-[#000000] border-b border-[#e6e6e6] sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 text-[#615d59] hover:text-[#000000] rounded-[5px] hover:bg-[#f6f5f4]"
-              aria-label="Toggle Navigation Menu"
-            >
-              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-            </button>
-
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
+      {/* Glassmorphic Top Header portaled outside #smooth-wrapper */}
+      <FixedHeaderPortal fallbackHeight={65}>
+        <header className="glass-surface border-b border-slate-200/80 shadow-xs text-slate-900">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-[8px] bg-[#000000] text-[#ffffff] flex items-center justify-center font-bold border border-[#e6e6e6]">
-                <Building2 className="h-4 w-4" />
-              </div>
-              <div>
-                <span className="font-semibold text-[15px] text-[#000000] block leading-tight tracking-[-0.125px]">
-                  Marvel Greenfield
-                </span>
-                <span className="text-[12px] text-[#615d59] block">Resident Workspace</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Flat Selector Dropdown (for multi-flat residents) */}
-            {selectedFlat && (
-              <div className="relative">
-                <button
-                  onClick={() => setFlatDropdownOpen(!flatDropdownOpen)}
-                  className="flex items-center gap-2 px-3.5 py-1.5 text-[14px] font-medium bg-[#ffffff] hover:bg-[#f6f5f4] text-[#000000] rounded-[8px] border border-[#e6e6e6] transition-colors"
-                >
-                  <span>Flat: {selectedFlat.tower_number || 'Tower'}-{selectedFlat.flat_number || 'Unit'}</span>
-                  <Badge variant={selectedFlat.membership_type === 'OWNER' ? 'success' : 'warning'}>
-                    {selectedFlat.membership_type}
-                  </Badge>
-                  {memberships.length > 1 && <ChevronDown className="h-3.5 w-3.5 text-[#615d59]" />}
-                </button>
-
-                {flatDropdownOpen && memberships.length > 1 && (
-                  <div className="absolute right-0 mt-2 w-56 bg-[#ffffff] border border-[#e6e6e6] rounded-[12px] shadow-md py-1 z-40">
-                    <div className="px-3 py-1.5 text-[12px] font-semibold text-[#a39e98] tracking-[0.125px]">
-                      Switch Active Unit
-                    </div>
-                    {memberships.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => {
-                          setSelectedFlat(m);
-                          setFlatDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 text-[14px] flex items-center justify-between hover:bg-[#f6f5f4] ${
-                          selectedFlat.id === m.id ? 'bg-[#f6f5f4] font-semibold text-[#0075de]' : 'text-[#31302e]'
-                        }`}
-                      >
-                        <span>{m.tower_number}-{m.flat_number}</span>
-                        <span className="text-[12px] text-[#615d59]">{m.membership_type}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Notification Bell */}
-            <NotificationBell notificationsUrl="/resident/notifications" />
-
-            {/* User Profile & Logout */}
-            <div className="flex items-center gap-3 pl-3 border-l border-[#e6e6e6]">
-              <div className="hidden sm:block text-right">
-                <div className="text-[14px] font-medium text-[#000000] leading-tight">{user?.full_name}</div>
-                <div className="text-[12px] text-[#615d59] truncate max-w-[140px]">{user?.email}</div>
-              </div>
               <button
-                onClick={handleLogout}
-                className="p-2 text-[#615d59] hover:text-[#000000] rounded-[8px] border border-transparent hover:border-[#e6e6e6] hover:bg-[#f6f5f4] transition-colors"
-                title="Log out"
-                aria-label="Log out"
+                type="button"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="md:hidden min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-600 hover:text-slate-900 rounded-xl hover:bg-slate-100 cursor-pointer"
+                aria-label="Toggle Navigation Menu"
+                aria-expanded={mobileMenuOpen}
               >
-                <LogOut className="h-4 w-4" />
+                {mobileMenuOpen ? <X className="h-5 w-5" aria-hidden="true" /> : <Menu className="h-5 w-5" aria-hidden="true" />}
               </button>
+
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary-600 to-teal-700 text-white flex items-center justify-center shadow-xs shrink-0">
+                  <Building2 className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <span className="font-display text-base text-slate-900 block leading-tight">
+                    Marvel Greenfield
+                  </span>
+                  <span className="text-xs text-slate-600 block font-medium">Resident Workspace</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 sm:gap-3">
+              {/* Flat Selector Dropdown (for multi-flat residents) */}
+              {selectedFlat && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setFlatDropdownOpen(!flatDropdownOpen)}
+                    className="flex items-center gap-2 min-h-[40px] px-3 py-1.5 text-xs sm:text-sm font-medium bg-white hover:bg-slate-50 text-slate-900 rounded-xl border border-slate-200 shadow-xs transition-colors cursor-pointer"
+                    aria-expanded={flatDropdownOpen}
+                  >
+                    <span className="font-mono font-semibold">
+                      {selectedFlat.tower_number || 'Tower'}-{selectedFlat.flat_number || 'Unit'}
+                    </span>
+                    <Badge variant={selectedFlat.membership_type === 'OWNER' ? 'success' : 'warning'}>
+                      {selectedFlat.membership_type}
+                    </Badge>
+                    {memberships.length > 1 && <ChevronDown className="h-3.5 w-3.5 text-slate-600" aria-hidden="true" />}
+                  </button>
+
+                  {flatDropdownOpen && memberships.length > 1 && (
+                    <div className="absolute right-0 mt-2 w-60 bg-white/95 backdrop-blur-xl border border-slate-200 rounded-2xl shadow-xl py-1.5 z-40">
+                      <div className="px-3.5 py-1.5 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                        Switch Active Unit
+                      </div>
+                      {memberships.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedFlat(m);
+                            setFlatDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3.5 py-2.5 text-sm flex items-center justify-between hover:bg-slate-50 cursor-pointer ${
+                            selectedFlat.id === m.id ? 'bg-blue-50/70 font-semibold text-primary-700' : 'text-slate-700'
+                          }`}
+                        >
+                          <span className="font-mono">{m.tower_number}-{m.flat_number}</span>
+                          <span className="text-xs text-slate-600">{m.membership_type}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Notification Bell */}
+              <NotificationBell notificationsUrl="/resident/notifications" />
+
+              {/* User Profile & Logout (destructively separated) */}
+              <div className="flex items-center gap-2.5 pl-2.5 border-l border-slate-200">
+                <div className="hidden sm:block text-right">
+                  <div className="text-sm font-medium text-slate-900 leading-tight">{user?.full_name}</div>
+                  <div className="text-xs text-slate-600 truncate max-w-[140px]">{user?.email}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-600 hover:text-red-700 rounded-xl border border-transparent hover:border-red-200 hover:bg-red-50 transition-colors cursor-pointer"
+                  title="Log out"
+                  aria-label="Log out"
+                >
+                  <LogOut className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
+      </FixedHeaderPortal>
 
       {/* Main Body */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 flex gap-8">
-        {/* Desktop Sidebar Navigation (Notion ex-app-shell-row: rounded 5px, padding 8px 16px, body-sm 15px) */}
-        <aside className="hidden md:block w-60 flex-shrink-0">
-          <nav className="space-y-1 sticky top-24">
+      <div
+        ref={bodyGridRef}
+        className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full flex-1 flex gap-8 items-start"
+      >
+        {/* Desktop Sidebar Navigation */}
+        <aside className="hidden md:block w-64 flex-shrink-0" aria-label="Resident portal navigation">
+          <nav ref={sidebarNavRef} className="space-y-1.5 w-64">
             {navItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
+                data-gsap-nav
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] transition-colors ${
+                  `flex items-center gap-3 min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-[#ffffff] text-[#0075de] font-semibold border border-[#e6e6e6] shadow-xs'
-                      : 'text-[#615d59] font-normal hover:text-[#000000] hover:bg-[#ffffff]/70'
+                      ? 'bg-white text-primary-700 font-semibold border border-blue-200/80 border-l-4 border-l-primary-600 shadow-xs'
+                      : 'text-slate-600 font-medium hover:text-slate-900 hover:bg-white/80 hover:border-slate-200/60 border border-transparent'
                   }`
                 }
               >
-                <item.icon className="h-4 w-4 flex-shrink-0" />
+                <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
                 <span>{item.name}</span>
               </NavLink>
             ))}
           </nav>
         </aside>
 
-        {/* Mobile Navigation Drawer */}
+        {/* Mobile Navigation Drawer Portaled outside #smooth-wrapper */}
         {mobileMenuOpen && (
-          <div className="fixed inset-0 z-40 md:hidden bg-black/30 backdrop-blur-[1px]" onClick={() => setMobileMenuOpen(false)}>
+          <Portal>
             <div
-              className="fixed inset-y-0 left-0 w-64 bg-[#ffffff] border-r border-[#e6e6e6] p-4 shadow-lg flex flex-col"
-              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 z-50 md:hidden bg-slate-900/40 backdrop-blur-xs"
+              onClick={() => setMobileMenuOpen(false)}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Mobile Navigation"
             >
-              <div className="flex items-center justify-between pb-4 border-b border-[#e6e6e6]">
-                <span className="font-semibold text-[15px] text-[#000000]">Navigation</span>
-                <button onClick={() => setMobileMenuOpen(false)}>
-                  <X className="h-5 w-5 text-[#615d59]" />
-                </button>
-              </div>
-              <nav className="mt-4 space-y-1 flex-1">
-                {navItems.map((item) => (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
+              <div
+                className="fixed inset-y-0 left-0 w-72 bg-white border-r border-slate-200 p-4 shadow-2xl flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between pb-4 border-b border-slate-200">
+                  <span className="font-display text-base text-slate-900">Resident Menu</span>
+                  <button
+                    type="button"
                     onClick={() => setMobileMenuOpen(false)}
-                    className={({ isActive }) =>
-                      `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] ${
-                        isActive ? 'bg-[#f6f5f4] text-[#0075de] font-semibold' : 'text-[#615d59] hover:text-[#000000]'
-                      }`
-                    }
+                    aria-label="Close navigation menu"
+                    className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-600 hover:bg-slate-100 cursor-pointer"
                   >
-                    <item.icon className="h-4 w-4" />
-                    <span>{item.name}</span>
-                  </NavLink>
-                ))}
-              </nav>
+                    <X className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </div>
+                <nav className="mt-4 space-y-1.5 flex-1 overflow-y-auto">
+                  {navItems.map((item) => (
+                    <NavLink
+                      key={item.path}
+                      to={item.path}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm ${
+                          isActive
+                            ? 'bg-blue-50 text-primary-700 font-semibold border border-blue-200'
+                            : 'text-slate-700 font-medium hover:bg-slate-50'
+                        }`
+                      }
+                    >
+                      <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                      <span>{item.name}</span>
+                    </NavLink>
+                  ))}
+                </nav>
+              </div>
             </div>
-          </div>
+          </Portal>
         )}
 
         {/* Content View */}
-        <main className="flex-1 min-w-0">
+        <main id="main-content" tabIndex={-1} className="flex-1 min-w-0 outline-none">
           <Outlet />
         </main>
       </div>

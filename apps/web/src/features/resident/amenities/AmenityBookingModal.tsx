@@ -23,6 +23,7 @@ import { Button } from '../../../components/ui/Button';
 import { Badge } from '../../../components/ui/Badge';
 import { Alert } from '../../../components/ui/Alert';
 import { Skeleton } from '../../../components/ui/Skeleton';
+import { Portal } from '../../../components/ui/Portal';
 
 interface AmenityBookingModalProps {
   amenity: Amenity;
@@ -178,12 +179,13 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="booking-modal-title"
-    >
+    <Portal>
+      <div
+        className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="booking-modal-title"
+      >
       <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Modal Top Header */}
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
@@ -558,6 +560,7 @@ export const AmenityBookingModal: React.FC<AmenityBookingModalProps> = ({
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </Portal>
   );
 };

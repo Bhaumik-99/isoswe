@@ -19,6 +19,7 @@ import { Badge } from '../../../components/ui/Badge';
 import { Button } from '../../../components/ui/Button';
 import { Skeleton } from '../../../components/ui/Skeleton';
 import { Alert } from '../../../components/ui/Alert';
+import { Portal } from '../../../components/ui/Portal';
 
 export const ResidentsDirectory: React.FC = () => {
   const queryClient = useQueryClient();
@@ -429,7 +430,8 @@ export const ResidentsDirectory: React.FC = () => {
 
       {/* Register Resident Modal */}
       {isRegisterOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full overflow-hidden">
             <div className="flex items-center justify-between p-4 border-b border-slate-200">
               <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -609,7 +611,8 @@ export const ResidentsDirectory: React.FC = () => {
               </div>
             </form>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

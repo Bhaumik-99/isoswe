@@ -26,6 +26,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { Portal } from '../../components/ui/Portal';
 
 const CATEGORIES: { value: ComplaintCategory; label: string }[] = [
   { value: 'PLUMBING', label: 'Plumbing (Leaks, Pipes, Drains)' },
@@ -390,7 +391,8 @@ export const ResidentComplaints: React.FC = () => {
 
       {/* Raise Complaint Modal */}
       {isRaiseModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 space-y-5">
             <div className="flex justify-between items-center border-b pb-3">
               <h2 className="text-lg font-bold text-gray-900">Raise Maintenance Complaint</h2>
@@ -510,12 +512,14 @@ export const ResidentComplaints: React.FC = () => {
               </Button>
             </div>
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
 
       {/* Complaint Detail Drawer / Modal */}
       {selectedComplaint && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+        <Portal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
           <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-6">
             {/* Header */}
             <div className="flex justify-between items-start border-b pb-4">
@@ -745,7 +749,8 @@ export const ResidentComplaints: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
+          </div>
+        </Portal>
       )}
     </div>
   );

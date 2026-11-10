@@ -16,10 +16,12 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { Alert } from '../../components/ui/Alert';
+import { useGsapStagger } from '../../components/motion/useGsapStagger';
 
 export const CommitteeOverview: React.FC = () => {
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const committeeRef = useGsapStagger<HTMLDivElement>('[data-gsap-stagger]');
 
   const {
     data: overview,
@@ -59,12 +61,12 @@ export const CommitteeOverview: React.FC = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div ref={committeeRef} className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
+      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Managing Committee Oversight</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <h1 className="font-display text-2xl sm:text-[28px] text-slate-900">Managing Committee Oversight</h1>
+          <p className="text-sm text-slate-600 mt-0.5">
             Real-time multi-tower ledger aggregates, arrears ageing, and complaint safety governance
           </p>
         </div>
