@@ -1,130 +1,323 @@
 import React from 'react';
-import { Building2, CreditCard, KeyRound, ShieldCheck, Sparkles } from 'lucide-react';
+import { Building2, ChevronRight, ShieldCheck } from 'lucide-react';
+import { FixedHeaderPortal } from '../components/motion/FixedHeaderPortal';
+import { useSmoothScroll } from '../components/motion/SmoothScrollContext';
 import { useGsapStagger } from '../components/motion/useGsapStagger';
 
 export const AuthLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const containerRef = useGsapStagger<HTMLDivElement>('[data-gsap-hero]');
+  const { scrollTo } = useSmoothScroll();
+  const galleryRef = useGsapStagger<HTMLDivElement>('[data-gsap-gallery]');
 
   return (
-    <div
-      ref={containerRef}
-      className="relative min-h-screen hero-mesh-bg text-slate-900 overflow-hidden flex flex-col justify-center py-10 sm:py-14 px-4 sm:px-6 lg:px-8"
-    >
-      {/* Ambient GSAP Parallax Mesh Highlights (decorative only) */}
-      <div
-        aria-hidden="true"
-        data-speed="0.92"
-        className="pointer-events-none absolute -top-28 -left-24 w-96 h-96 rounded-full bg-primary-500/10 blur-3xl"
-      />
-      <div
-        aria-hidden="true"
-        data-speed="0.88"
-        className="pointer-events-none absolute -bottom-28 -right-24 w-[28rem] h-[28rem] rounded-full bg-teal-500/10 blur-3xl"
-      />
-
-      <main
-        id="main-content"
-        tabIndex={-1}
-        className="relative z-10 w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start outline-none"
-      >
-        {/* Left Column: Editorial Brand Hero & Capability Pillars */}
-        <section
-          aria-label="Platform Overview"
-          className="lg:col-span-5 space-y-6 lg:sticky lg:top-12 pt-2 text-center lg:text-left"
-        >
-          <div
-            data-gsap-hero
-            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full glass-surface border border-slate-200/90 shadow-xs text-xs font-semibold text-primary-700 tracking-wide"
+    <div ref={galleryRef} className="min-h-screen bg-[#ffffff] text-[#1d1d1f] flex flex-col">
+      {/* Apple two-row header: 44px pure-black global-nav + 52px frosted parchment sub-nav */}
+      <FixedHeaderPortal fallbackHeight={96}>
+        <div className="w-full">
+          <nav
+            aria-label="Global Navigation"
+            className="w-full h-[44px] bg-[#000000] text-[#ffffff]"
           >
-            <Sparkles className="w-3.5 h-3.5 text-accent" aria-hidden="true" />
-            <span>Township Operations Workspace • Pune</span>
-          </div>
+            <div className="max-w-[980px] mx-auto px-4 sm:px-6 h-full flex items-center justify-between text-[12px] font-normal tracking-[-0.12px]">
+              <button
+                type="button"
+                onClick={() => scrollTo(0, true)}
+                className="flex items-center gap-2 text-[#ffffff] cursor-pointer active:scale-95 transition-transform"
+              >
+                <Building2 className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Marvel Greenfield</span>
+              </button>
 
-          <div data-gsap-hero className="space-y-3">
-            <div className="inline-flex lg:flex items-center justify-center lg:justify-start gap-3">
-              <div className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gradient-to-br from-primary-600 to-teal-700 text-white shadow-md shrink-0">
-                <Building2 className="w-5 h-5" aria-hidden="true" />
+              <div className="hidden sm:flex items-center gap-5 text-[#cccccc]">
+                <button
+                  type="button"
+                  onClick={() => scrollTo('#login-workspace', true)}
+                  className="hover:text-[#ffffff] transition-colors cursor-pointer"
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollTo('#tile-finance', true)}
+                  className="hover:text-[#ffffff] transition-colors cursor-pointer"
+                >
+                  Finance
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollTo('#tile-gate', true)}
+                  className="hover:text-[#ffffff] transition-colors cursor-pointer"
+                >
+                  Gate Security
+                </button>
+                <button
+                  type="button"
+                  onClick={() => scrollTo('#tile-footer', true)}
+                  className="hover:text-[#ffffff] transition-colors cursor-pointer"
+                >
+                  Architecture
+                </button>
               </div>
-              <span className="text-xs font-mono uppercase tracking-widest text-slate-600 font-semibold">
-                Marvel Greenfield
-              </span>
-            </div>
 
-            <h1 className="font-display text-3xl sm:text-4xl lg:text-[42px] text-slate-900 leading-[1.12]">
+              <button
+                type="button"
+                onClick={() => scrollTo('#login-workspace', true)}
+                className="px-[15px] py-[4px] rounded-[8px] bg-[#1d1d1f] text-[#ffffff] text-[12px] font-normal tracking-[-0.12px] active:scale-95 transition-transform cursor-pointer"
+              >
+                Access
+              </button>
+            </div>
+          </nav>
+
+          <div className="w-full h-[52px] apple-subnav-frosted border-b border-[#e0e0e0] text-[#1d1d1f]">
+            <div className="max-w-[980px] mx-auto px-4 sm:px-6 h-full flex items-center justify-between">
+              <span className="font-display text-[21px] font-semibold tracking-[0.231px] leading-[1.19] text-[#1d1d1f]">
+                Township Workspace
+              </span>
+
+              <div className="flex items-center gap-4">
+                <span className="hidden md:inline text-[12px] text-[#333333] tracking-[-0.12px]">
+                  Pune Residential Operations
+                </span>
+                <button
+                  type="button"
+                  onClick={() => scrollTo('#login-workspace', true)}
+                  className="px-3.5 py-1 rounded-full bg-[#0066cc] text-[#ffffff] text-[12px] font-normal tracking-[-0.12px] active:scale-95 transition-transform cursor-pointer"
+                >
+                  Sign In
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </FixedHeaderPortal>
+
+      <main id="main-content" tabIndex={-1} className="flex-1 outline-none">
+        {/* TILE 1: Full-Bleed White Product Tile + Artifact Card resting on surface */}
+        <section className="w-full bg-[#ffffff] text-[#1d1d1f] pt-12 sm:pt-16 pb-20 px-4 sm:px-6">
+          <div className="max-w-[980px] mx-auto text-center space-y-3">
+            <h1
+              data-gsap-gallery
+              className="font-display text-[34px] sm:text-[40px] lg:text-[56px] font-semibold leading-[1.07] tracking-[-0.28px] text-[#1d1d1f]"
+            >
               Marvel Greenfield Residences
             </h1>
-
-            <p className="text-base text-slate-600 leading-relaxed max-w-lg mx-auto lg:mx-0">
-              Unified society governance, billing reconciliation, visitor gate security, and resident self-service engineered for high-trust community operations.
+            <p
+              data-gsap-gallery
+              className="font-display text-[21px] sm:text-[28px] font-normal leading-[1.14] tracking-[0.196px] text-[#1d1d1f] max-w-2xl mx-auto"
+            >
+              Society governance, maintenance finance, and gate security. All in one quiet system.
             </p>
-          </div>
-
-          {/* Highlight Cards (3-5 key features pattern per UI/UX Pro Max) */}
-          <div className="hidden sm:grid grid-cols-1 gap-3 text-left max-w-lg mx-auto lg:mx-0">
-            <div
-              data-gsap-hero
-              className="glass-surface border border-slate-200/80 rounded-2xl p-4 shadow-xs flex items-start gap-3.5"
-            >
-              <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 text-primary-600 flex items-center justify-center shrink-0">
-                <CreditCard className="w-4 h-4" aria-hidden="true" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">Transparent Billing &amp; Reconciliation</h2>
-                <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                  Automated maintenance invoices, UPI settlement tracking, and instant downloadable receipts.
-                </p>
-              </div>
-            </div>
 
             <div
-              data-gsap-hero
-              className="glass-surface border border-slate-200/80 rounded-2xl p-4 shadow-xs flex items-start gap-3.5"
+              data-gsap-gallery
+              className="pt-3 flex flex-wrap items-center justify-center gap-4"
             >
-              <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-100 text-secondary flex items-center justify-center shrink-0">
-                <KeyRound className="w-4 h-4" aria-hidden="true" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">Offline-Resilient Gate Operations</h2>
-                <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                  Encrypted IndexedDB offline visitor queue, pre-approved guest passes, and multilingual security UI.
-                </p>
-              </div>
-            </div>
-
-            <div
-              data-gsap-hero
-              className="glass-surface border border-slate-200/80 rounded-2xl p-4 shadow-xs flex items-start gap-3.5"
-            >
-              <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-100 text-accent flex items-center justify-center shrink-0">
-                <ShieldCheck className="w-4 h-4" aria-hidden="true" />
-              </div>
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">Committee Governance &amp; Audit Trails</h2>
-                <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                  Role-based flat scoping, real-time arrears ageing, and immutable administrative activity logs.
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => scrollTo('#login-workspace', true)}
+                className="px-[22px] py-[11px] rounded-full bg-[#0066cc] text-[#ffffff] text-[17px] font-normal tracking-[-0.374px] active:scale-95 transition-transform cursor-pointer"
+              >
+                Sign In to Portal
+              </button>
+              <button
+                type="button"
+                onClick={() => scrollTo('#tile-finance', true)}
+                className="px-[22px] py-[11px] rounded-full bg-[#ffffff] text-[#0066cc] border border-[#0066cc] text-[17px] font-normal tracking-[-0.374px] active:scale-95 transition-transform cursor-pointer"
+              >
+                Explore Modules
+              </button>
             </div>
           </div>
 
+          {/* Product Artifact Card with the ONE signature Apple drop-shadow resting on the light tile */}
           <div
-            data-gsap-hero
-            className="flex items-center justify-center lg:justify-start gap-2 text-xs text-slate-600 pt-1"
-          >
-            <ShieldCheck className="h-4 w-4 text-secondary shrink-0" aria-hidden="true" />
-            <span>Multi-tenant Isolation • Supabase Auth • End-to-End Auditing</span>
-          </div>
-        </section>
-
-        {/* Right Column: Elevated Glassmorphic Authentication Card */}
-        <section aria-label="Sign In Form" className="lg:col-span-7 w-full max-w-xl mx-auto lg:max-w-none">
-          <div
-            data-gsap-hero
-            className="bg-white/95 backdrop-blur-xl py-6 px-5 sm:p-8 border border-slate-200/90 shadow-xl rounded-2xl"
+            id="login-workspace"
+            data-gsap-gallery
+            className="max-w-[660px] mx-auto mt-10 sm:mt-12 bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] p-6 sm:p-8 apple-product-shadow"
           >
             {children}
           </div>
         </section>
+
+        {/* TILE 2: Full-Bleed Dark Tile 1 (#272729) — Edge-to-edge color break, zero border */}
+        <section
+          id="tile-finance"
+          data-speed="0.98"
+          className="w-full bg-[#272729] text-[#ffffff] py-[80px] px-4 sm:px-6"
+        >
+          <div className="max-w-[980px] mx-auto text-center space-y-3">
+            <h2 className="font-display text-[34px] sm:text-[40px] font-semibold leading-[1.1] tracking-normal text-[#ffffff]">
+              Financial Ledger.
+            </h2>
+            <p className="font-display text-[21px] sm:text-[28px] font-normal leading-[1.14] tracking-[0.196px] text-[#cccccc]">
+              Maintenance billing, UPI reconciliation, and official receipts. Built without noise.
+            </p>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => scrollTo('#login-workspace', true)}
+                className="inline-flex items-center gap-1 text-[17px] text-[#2997ff] hover:underline cursor-pointer"
+              >
+                <span>Open Resident &amp; Finance Sign In</span>
+                <ChevronRight className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-10 text-left">
+              <div className="bg-[#2a2a2c] rounded-[18px] p-6 space-y-2">
+                <h3 className="font-display text-[21px] font-semibold text-[#ffffff] tracking-[0.231px]">
+                  Zero Duplicate Charges
+                </h3>
+                <p className="text-[14px] text-[#cccccc] leading-[1.43] tracking-[-0.224px]">
+                  Idempotent monthly assessment runs ensure one verified invoice per flat and billing period.
+                </p>
+              </div>
+              <div className="bg-[#252527] rounded-[18px] p-6 space-y-2">
+                <h3 className="font-display text-[21px] font-semibold text-[#ffffff] tracking-[0.231px]">
+                  Bank Statement Matching
+                </h3>
+                <p className="text-[14px] text-[#cccccc] leading-[1.43] tracking-[-0.224px]">
+                  VPA resolution and manual review queues settle collections directly against invoice balances.
+                </p>
+              </div>
+              <div className="bg-[#2a2a2c] rounded-[18px] p-6 space-y-2">
+                <h3 className="font-display text-[21px] font-semibold text-[#ffffff] tracking-[0.231px]">
+                  Committee Oversight
+                </h3>
+                <p className="text-[14px] text-[#cccccc] leading-[1.43] tracking-[-0.224px]">
+                  Real-time tower arrears ageing, SLA accountability, and read-only audit exports.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* TILE 3: Full-Bleed Parchment Tile (#f5f5f7) */}
+        <section
+          id="tile-gate"
+          className="w-full bg-[#f5f5f7] text-[#1d1d1f] py-[80px] px-4 sm:px-6"
+        >
+          <div className="max-w-[980px] mx-auto text-center space-y-3">
+            <h2 className="font-display text-[34px] sm:text-[40px] font-semibold leading-[1.1] tracking-normal text-[#1d1d1f]">
+              Gate Perimeter.
+            </h2>
+            <p className="font-display text-[21px] sm:text-[28px] font-normal leading-[1.14] tracking-[0.196px] text-[#333333]">
+              Encrypted offline visitor queues and instant guest pass check-in.
+            </p>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => scrollTo('#login-workspace', true)}
+                className="inline-flex items-center gap-1 text-[17px] text-[#0066cc] hover:underline cursor-pointer"
+              >
+                <span>Try Gate Security Role</span>
+                <ChevronRight className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-10 text-left">
+              <div className="bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] p-6 space-y-2">
+                <h3 className="text-[17px] font-semibold text-[#1d1d1f] tracking-[-0.374px]">
+                  AES-GCM Offline Sync
+                </h3>
+                <p className="text-[14px] text-[#333333] leading-[1.43] tracking-[-0.224px]">
+                  Visitor logs stay encrypted in IndexedDB during gate network drops and sync cleanly on reconnect.
+                </p>
+              </div>
+              <div className="bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] p-6 space-y-2">
+                <h3 className="text-[17px] font-semibold text-[#1d1d1f] tracking-[-0.374px]">
+                  Multilingual Security UI
+                </h3>
+                <p className="text-[14px] text-[#333333] leading-[1.43] tracking-[-0.224px]">
+                  Instant switching across English, Hindi, and Marathi for fast gatehouse tablet workflows.
+                </p>
+              </div>
+              <div className="bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] p-6 space-y-2">
+                <h3 className="text-[17px] font-semibold text-[#1d1d1f] tracking-[-0.374px]">
+                  90-Day Data Retention
+                </h3>
+                <p className="text-[14px] text-[#333333] leading-[1.43] tracking-[-0.224px]">
+                  Time-limited presigned photo URLs paired with automated privacy notices and retention policies.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Apple Footer (#f5f5f7 parchment, 64px vertical padding, 17px/2.41 dense-link rhythm, 12px fine-print) */}
+        <footer
+          id="tile-footer"
+          className="w-full bg-[#f5f5f7] border-t border-[#e0e0e0] text-[#333333] py-[64px] px-4 sm:px-6"
+        >
+          <div className="max-w-[980px] mx-auto space-y-8">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-6 pb-8 border-b border-[#e0e0e0]">
+              <div>
+                <h4 className="text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1">
+                  Portals
+                </h4>
+                <ul className="text-[17px] font-normal leading-[2.41] text-[#333333]">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => scrollTo('#login-workspace', true)}
+                      className="hover:text-[#0066cc] cursor-pointer"
+                    >
+                      Resident Portal
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => scrollTo('#login-workspace', true)}
+                      className="hover:text-[#0066cc] cursor-pointer"
+                    >
+                      Staff &amp; Finance
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => scrollTo('#login-workspace', true)}
+                      className="hover:text-[#0066cc] cursor-pointer"
+                    >
+                      Gate Console
+                    </button>
+                  </li>
+                </ul>
+              </div>
+
+              <div>
+                <h4 className="text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1">
+                  Governance
+                </h4>
+                <ul className="text-[17px] font-normal leading-[2.41] text-[#333333]">
+                  <li>Managing Committee</li>
+                  <li>Arrears &amp; Ageing</li>
+                  <li>Notice Deliveries</li>
+                </ul>
+              </div>
+
+              <div>
+                <h4 className="text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1">
+                  Trust &amp; Security
+                </h4>
+                <ul className="text-[17px] font-normal leading-[2.41] text-[#333333]">
+                  <li>Multi-tenant Isolation</li>
+                  <li>Supabase Auth</li>
+                  <li>End-to-End Auditing</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-[12px] text-[#7a7a7a] tracking-[-0.12px]">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#0066cc]" aria-hidden="true" />
+                <span>Marvel Greenfield Co-operative Housing Society • Pune</span>
+              </div>
+              <span>Society Operations Platform</span>
+            </div>
+          </div>
+        </footer>
       </main>
     </div>
   );

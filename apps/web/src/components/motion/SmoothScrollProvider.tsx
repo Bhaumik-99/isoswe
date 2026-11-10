@@ -155,10 +155,10 @@ export const SmoothScrollProvider: React.FC<SmoothScrollProviderProps> = ({ chil
 
   return (
     <SmoothScrollContext.Provider value={contextValue}>
-      {/* Skip-to-main link for keyboard accessibility (UI/UX Pro Max Priority 1) */}
+      {/* Skip-to-main link for keyboard accessibility */}
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-4 focus:py-2.5 focus:rounded-xl focus:bg-primary-600 focus:text-white focus:text-sm focus:font-semibold focus:shadow-lg"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[100] focus:px-5 focus:py-2.5 focus:rounded-full focus:bg-[#0066cc] focus:text-white focus:text-sm focus:font-normal"
       >
         Skip to main content
       </a>
@@ -170,14 +170,14 @@ export const SmoothScrollProvider: React.FC<SmoothScrollProviderProps> = ({ chil
         className="fixed top-0 inset-x-0 z-30 pointer-events-none [&>*]:pointer-events-auto"
       />
 
-      {/* Top Smooth Scroll Progress Bar */}
+      {/* Top Smooth Scroll Progress Bar — pure Action Blue (#0066cc) */}
       <div
         aria-hidden="true"
-        className="fixed top-0 left-0 right-0 h-[2.5px] z-[60] pointer-events-none bg-transparent"
+        className="fixed top-0 left-0 right-0 h-[2px] z-[60] pointer-events-none bg-transparent"
       >
         <div
           ref={progressBarRef}
-          className="h-full w-full origin-left scale-x-0 bg-gradient-to-r from-[#2563EB] via-[#3B82F6] to-[#0F766E]"
+          className="h-full w-full origin-left scale-x-0 bg-[#0066cc]"
         />
       </div>
 
@@ -188,17 +188,16 @@ export const SmoothScrollProvider: React.FC<SmoothScrollProviderProps> = ({ chil
         </div>
       </div>
 
-      {/* Floating Back-to-Top Control powered by ScrollSmoother */}
+      {/* Floating Back-to-Top Control (Apple button-icon-circular 44x44px) */}
       {showBackToTop && (
         <button
           type="button"
           onClick={scrollToTop}
           aria-label="Scroll back to top"
           title="Back to top"
-          className="fixed bottom-6 right-6 z-40 min-w-[44px] min-h-[44px] px-3.5 rounded-full bg-white/90 backdrop-blur-md text-slate-900 border border-slate-200 shadow-lg hover:bg-primary-600 hover:text-white hover:border-primary-600 transition-all duration-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+          className="fixed bottom-6 right-6 z-40 w-[44px] h-[44px] rounded-full bg-[#d2d2d7]/65 backdrop-blur-md text-[#1d1d1f] border border-[#e0e0e0] active:scale-95 transition-transform duration-150 flex items-center justify-center cursor-pointer"
         >
           <ArrowUp className="h-4 w-4" aria-hidden="true" />
-          <span className="hidden sm:inline">Top</span>
         </button>
       )}
     </SmoothScrollContext.Provider>

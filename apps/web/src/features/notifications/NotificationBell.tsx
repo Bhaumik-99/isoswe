@@ -143,18 +143,18 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`relative min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl transition-colors cursor-pointer ${
+        className={`relative min-w-[36px] min-h-[36px] px-2 flex items-center justify-center rounded-[8px] transition-colors cursor-pointer ${
           dark
-            ? 'text-slate-300 hover:text-white hover:bg-slate-800'
-            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            ? 'text-[#cccccc] hover:text-[#ffffff] hover:bg-[#1d1d1f]'
+            : 'text-[#333333] hover:text-[#1d1d1f] hover:bg-[#f5f5f7]'
         }`}
         aria-label="View notifications"
         aria-expanded={isOpen}
       >
-        <Bell className="h-5 w-5" aria-hidden="true" />
+        <Bell className="h-4 w-4" aria-hidden="true" />
         {unreadCount > 0 && (
           <span
-            className="absolute top-1.5 right-1.5 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold text-white bg-red-600 rounded-full border-2 border-white dark:border-slate-900 tabular-nums"
+            className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[16px] h-[16px] px-1 text-[10px] font-semibold text-[#ffffff] bg-[#0066cc] rounded-full tabular-nums"
             data-testid="unread-badge"
           >
             {unreadCount > 9 ? '9+' : unreadCount}
@@ -164,7 +164,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
 
       {isOpen && (
         <div
-          className="absolute right-0 mt-2 w-80 sm:w-96 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-slate-200 z-50 overflow-hidden"
+          className="absolute right-0 mt-2 w-80 sm:w-96 bg-[#ffffff] rounded-[18px] border border-[#e0e0e0] apple-product-shadow z-50 overflow-hidden"
           role="dialog"
           aria-label="Notifications panel"
         >

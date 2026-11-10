@@ -17,39 +17,40 @@ export const Alert: React.FC<AlertProps> = ({
 }) => {
   const configs = {
     info: {
-      bg: 'bg-blue-50/70 border-blue-200 text-slate-800',
-      titleColor: 'text-blue-900',
-      icon: <Info className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" aria-hidden="true" />,
+      bg: 'bg-[#f5f5f7] border-[#e0e0e0] text-[#1d1d1f]',
+      icon: <Info className="h-5 w-5 text-[#0066cc] flex-shrink-0 mt-0.5" aria-hidden="true" />,
     },
     warning: {
-      bg: 'bg-amber-50/80 border-amber-200 text-amber-950',
-      titleColor: 'text-amber-900',
-      icon: <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" aria-hidden="true" />,
+      bg: 'bg-[#fafafc] border-[#d2d2d7] text-[#1d1d1f]',
+      icon: <AlertTriangle className="h-5 w-5 text-[#1d1d1f] flex-shrink-0 mt-0.5" aria-hidden="true" />,
     },
     error: {
-      bg: 'bg-red-50/80 border-red-200 text-red-950',
-      titleColor: 'text-red-900',
-      icon: <AlertCircle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" aria-hidden="true" />,
+      bg: 'bg-[#272729] border-[#2a2a2c] text-[#ffffff]',
+      icon: <AlertCircle className="h-5 w-5 text-[#2997ff] flex-shrink-0 mt-0.5" aria-hidden="true" />,
     },
     success: {
-      bg: 'bg-emerald-50/80 border-emerald-200 text-emerald-950',
-      titleColor: 'text-emerald-900',
-      icon: <CheckCircle className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" aria-hidden="true" />,
+      bg: 'bg-[#ffffff] border-[#e0e0e0] text-[#1d1d1f]',
+      icon: <CheckCircle className="h-5 w-5 text-[#0066cc] flex-shrink-0 mt-0.5" aria-hidden="true" />,
     },
   };
 
-  const { bg, titleColor, icon } = configs[variant];
+  const { bg, icon } = configs[variant];
+  const isDark = variant === 'error';
 
   return (
     <div
       role="alert"
-      className={twMerge(clsx('flex gap-3 p-4 rounded-xl border text-sm shadow-xs', bg, className))}
+      className={twMerge(clsx('flex gap-3 p-4 rounded-[18px] border text-[14px] leading-[1.43] tracking-[-0.224px]', bg, className))}
       {...props}
     >
       {icon}
       <div className="flex-1 min-w-0">
-        {title && <h5 className={clsx('font-semibold mb-1 leading-tight', titleColor)}>{title}</h5>}
-        <div className="leading-relaxed text-slate-700">{children}</div>
+        {title && (
+          <h5 className={clsx('font-semibold mb-1 leading-tight', isDark ? 'text-[#ffffff]' : 'text-[#1d1d1f]')}>
+            {title}
+          </h5>
+        )}
+        <div className={clsx('leading-relaxed', isDark ? 'text-[#cccccc]' : 'text-[#333333]')}>{children}</div>
       </div>
     </div>
   );

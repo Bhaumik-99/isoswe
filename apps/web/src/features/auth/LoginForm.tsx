@@ -220,12 +220,13 @@ export const LoginForm: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      {/* Header Title inside Card */}
-      <div className="space-y-1">
-        <h2 className="text-xl font-bold text-slate-900 tracking-tight">Sign in to Workspace</h2>
-        <p className="text-sm text-slate-600">
-          Choose a role account below for instant demo access or authenticate via Phone OTP.
+    <div className="space-y-6">
+      <div className="space-y-1 text-center sm:text-left">
+        <h2 className="font-display text-[24px] sm:text-[28px] font-semibold text-[#1d1d1f] tracking-[-0.28px] leading-[1.15]">
+          Sign in to Township
+        </h2>
+        <p className="text-[14px] text-[#333333] tracking-[-0.224px] leading-[1.43]">
+          Select a seeded persona card for instant portal entry or switch to Supabase Phone OTP.
         </p>
       </div>
 
@@ -236,12 +237,12 @@ export const LoginForm: React.FC = () => {
         </Alert>
       )}
 
-      {/* Segmented Pill Tab Switcher (min 44px touch height per UI/UX Pro Max Priority 2) */}
+      {/* Pill-Shaped Tab Switcher (Apple configurator pill grammar, 44px touch target) */}
       {isDemoEnabled && (
         <div
           role="tablist"
           aria-label="Authentication methods"
-          className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200/80"
+          className="grid grid-cols-2 gap-1.5 p-1 bg-[#f5f5f7] rounded-full border border-[#e0e0e0]"
         >
           <button
             type="button"
@@ -251,13 +252,13 @@ export const LoginForm: React.FC = () => {
               setActiveTab('demo');
               setError(null);
             }}
-            className={`min-h-[44px] px-3 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+            className={`min-h-[44px] px-4 rounded-full text-[14px] tracking-[-0.224px] cursor-pointer transition-transform active:scale-95 flex items-center justify-center gap-1.5 ${
               activeTab === 'demo'
-                ? 'bg-white text-primary-700 shadow-sm border border-slate-200/70'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-[#ffffff] text-[#0066cc] font-semibold border border-[#e0e0e0]'
+                : 'text-[#333333] font-normal hover:text-[#1d1d1f]'
             }`}
           >
-            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+            <Sparkles className="w-4 h-4" aria-hidden="true" />
             <span>Demo Login (All Roles)</span>
           </button>
           <button
@@ -268,13 +269,13 @@ export const LoginForm: React.FC = () => {
               setActiveTab('otp');
               setError(null);
             }}
-            className={`min-h-[44px] px-3 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+            className={`min-h-[44px] px-4 rounded-full text-[14px] tracking-[-0.224px] cursor-pointer transition-transform active:scale-95 flex items-center justify-center gap-1.5 ${
               activeTab === 'otp'
-                ? 'bg-white text-primary-700 shadow-sm border border-slate-200/70'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-[#ffffff] text-[#0066cc] font-semibold border border-[#e0e0e0]'
+                : 'text-[#333333] font-normal hover:text-[#1d1d1f]'
             }`}
           >
-            <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
+            <KeyRound className="w-4 h-4" aria-hidden="true" />
             <span>Supabase Phone OTP</span>
           </button>
         </div>
@@ -288,20 +289,20 @@ export const LoginForm: React.FC = () => {
 
       {/* Demo Username & Password Login + Role Credentials Directory */}
       {isDemoEnabled && activeTab === 'demo' && (
-        <div className="space-y-4">
+        <div className="space-y-5">
           <form
             onSubmit={handlePasswordSubmit}
-            className="space-y-3.5 bg-slate-50/90 p-4 rounded-xl border border-slate-200"
+            className="space-y-4 bg-[#f5f5f7] p-5 rounded-[18px] border border-[#e0e0e0]"
           >
             <div>
               <label
                 htmlFor="demo-username"
-                className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5"
+                className="block text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1.5"
               >
                 Username / Email
               </label>
               <div className="relative">
-                <User className="absolute left-3.5 top-3 h-4 w-4 text-slate-500" aria-hidden="true" />
+                <User className="absolute left-3.5 top-3.5 h-4 w-4 text-[#7a7a7a]" aria-hidden="true" />
                 <input
                   id="demo-username"
                   type="text"
@@ -309,7 +310,7 @@ export const LoginForm: React.FC = () => {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="owner@demo.com"
-                  className="w-full min-h-[44px] pl-10 pr-3 py-2 text-sm bg-white text-slate-900 placeholder-slate-400 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-600 focus:border-primary-600"
+                  className="w-full min-h-[44px] pl-10 pr-4 py-2 text-[17px] bg-[#ffffff] text-[#1d1d1f] placeholder-[#7a7a7a] border border-[#e0e0e0] rounded-[11px] focus:outline-none focus:ring-2 focus:ring-[#0071e3] focus:border-[#0071e3]"
                   required
                 />
               </div>
@@ -318,12 +319,12 @@ export const LoginForm: React.FC = () => {
             <div>
               <label
                 htmlFor="demo-password"
-                className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5"
+                className="block text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1.5"
               >
                 Password
               </label>
               <div className="relative">
-                <Lock className="absolute left-3.5 top-3 h-4 w-4 text-slate-500" aria-hidden="true" />
+                <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-[#7a7a7a]" aria-hidden="true" />
                 <input
                   id="demo-password"
                   type={showPassword ? 'text' : 'password'}
@@ -331,13 +332,13 @@ export const LoginForm: React.FC = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter demo password"
-                  className="w-full min-h-[44px] pl-10 pr-11 py-2 text-sm bg-white text-slate-900 placeholder-slate-400 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-600 focus:border-primary-600 font-mono"
+                  className="w-full min-h-[44px] pl-10 pr-12 py-2 text-[17px] bg-[#ffffff] text-[#1d1d1f] placeholder-[#7a7a7a] border border-[#e0e0e0] rounded-[11px] focus:outline-none focus:ring-2 focus:ring-[#0071e3] focus:border-[#0071e3] font-mono"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-1 top-1 min-w-[36px] min-h-[36px] flex items-center justify-center text-slate-500 hover:text-slate-900 rounded-md cursor-pointer"
+                  className="absolute right-1 top-1 min-w-[36px] min-h-[36px] flex items-center justify-center text-[#7a7a7a] hover:text-[#1d1d1f] rounded-full cursor-pointer"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" aria-hidden="true" /> : <Eye className="h-4 w-4" aria-hidden="true" />}
@@ -345,23 +346,21 @@ export const LoginForm: React.FC = () => {
               </div>
             </div>
 
-            <Button type="submit" variant="primary" size="lg" isLoading={isSubmitting} className="w-full">
+            <Button type="submit" variant="primary" size="md" isLoading={isSubmitting} className="w-full">
               Sign In with Credentials
             </Button>
           </form>
 
-          <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl text-xs text-slate-700 flex items-start gap-2.5">
-            <AlertCircle className="w-4 h-4 text-primary-600 flex-shrink-0 mt-0.5" aria-hidden="true" />
+          <div className="p-3.5 bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] text-[14px] text-[#333333] tracking-[-0.224px] leading-[1.43] flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-[#0066cc] flex-shrink-0 mt-0.5" aria-hidden="true" />
             <span>
-              <strong className="text-slate-900">Demo Accounts by Role:</strong> Select any persona card to autofill credentials, or click <strong className="text-slate-900">Instant Sign In</strong> to launch that portal directly.
+              <strong className="text-[#1d1d1f]">Demo Accounts by Role:</strong> Click any account below to autofill credentials, or press <strong className="text-[#1d1d1f]">Instant Sign In</strong>.
             </span>
           </div>
 
-          <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
-            {DEMO_ACCOUNTS.map((account, idx) => {
+          <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
+            {DEMO_ACCOUNTS.map((account) => {
               const isSelected = username.toLowerCase() === account.username.toLowerCase();
-              const roleDotColors = ['#0F766E', '#2563EB', '#EA580C', '#1D4ED8', '#0284C7', '#059669'];
-              const dotColor = roleDotColors[idx % roleDotColors.length];
               return (
                 <div
                   key={account.id}
@@ -374,42 +373,39 @@ export const LoginForm: React.FC = () => {
                       handleFillCredentials(account);
                     }
                   }}
-                  className={`w-full text-left p-3.5 rounded-xl border transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 ${
+                  className={`w-full text-left p-4 rounded-[18px] bg-[#ffffff] transition-transform cursor-pointer focus-visible:outline-2 focus-visible:outline-[#0071e3] ${
                     isSelected
-                      ? 'border-primary-600 bg-blue-50/50 ring-1 ring-primary-600 shadow-xs'
-                      : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/80'
+                      ? 'border-2 border-[#0071e3] bg-[#fafafc]'
+                      : 'border border-[#e0e0e0] hover:border-[#d2d2d7]'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
-                    <div className="font-semibold text-sm text-slate-900 flex items-center gap-2">
-                      <span
-                        aria-hidden="true"
-                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: dotColor }}
-                      />
+                    <div className="font-semibold text-[17px] text-[#1d1d1f] tracking-[-0.374px]">
                       <span>{account.name}</span>
                       {account.unit && (
-                        <span className="text-xs font-normal text-slate-600">
+                        <span className="ml-2 text-[14px] font-normal text-[#7a7a7a] tracking-[-0.224px]">
                           • {account.unit}
                         </span>
                       )}
                     </div>
-                    <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-primary-700 border border-slate-200 whitespace-nowrap">
+                    <span className="text-[12px] font-semibold px-3 py-1 rounded-full bg-[#f5f5f7] text-[#0066cc] border border-[#e0e0e0] whitespace-nowrap">
                       {account.userType}
                     </span>
                   </div>
 
-                  <p className="text-xs text-slate-600 mb-2.5 pl-4 leading-relaxed">{account.description}</p>
+                  <p className="text-[14px] text-[#333333] mb-3 leading-[1.43] tracking-[-0.224px]">
+                    {account.description}
+                  </p>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80 pl-4">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#e0e0e0]">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-mono">
                       <span>
-                        <span className="text-slate-500">User:</span>{' '}
-                        <strong className="text-slate-900 select-all">{account.username}</strong>
+                        <span className="text-[#7a7a7a]">User:</span>{' '}
+                        <strong className="text-[#1d1d1f] select-all">{account.username}</strong>
                       </span>
                       <span>
-                        <span className="text-slate-500">Pass:</span>{' '}
-                        <strong className="text-slate-900 select-all">{account.password}</strong>
+                        <span className="text-[#7a7a7a]">Pass:</span>{' '}
+                        <strong className="text-[#1d1d1f] select-all">{account.password}</strong>
                       </span>
                     </div>
 
@@ -420,7 +416,7 @@ export const LoginForm: React.FC = () => {
                         e.stopPropagation();
                         handleDirectPersonaLogin(account);
                       }}
-                      className="inline-flex items-center gap-1.5 min-h-[34px] px-3 py-1 rounded-lg text-xs font-semibold bg-primary-600 text-white hover:bg-primary-700 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 min-h-[36px] px-4 py-1.5 rounded-full text-[14px] font-normal bg-[#0066cc] text-[#ffffff] active:scale-95 transition-transform cursor-pointer disabled:opacity-50"
                     >
                       <LogIn className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Instant Sign In</span>
@@ -436,15 +432,15 @@ export const LoginForm: React.FC = () => {
       {/* Genuine Production Supabase Phone OTP Flow */}
       {(!isDemoEnabled || activeTab === 'otp') && (
         <div className="space-y-4">
-          <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-slate-800 space-y-2.5">
+          <div className="p-4 bg-[#f5f5f7] border border-[#e0e0e0] rounded-[18px] text-[14px] text-[#333333] tracking-[-0.224px] space-y-3">
             <div className="flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" aria-hidden="true" />
+              <AlertCircle className="w-4 h-4 text-[#0066cc] flex-shrink-0 mt-0.5" aria-hidden="true" />
               <div className="space-y-1">
-                <p className="font-semibold text-slate-900">
+                <p className="font-semibold text-[#1d1d1f]">
                   Demo Deployment Notice — API Configuration Required for Live SMS OTP
                 </p>
-                <p className="text-slate-700 leading-relaxed">
-                  Phone OTP authentication is enabled once production Supabase Auth &amp; SMS gateway API credentials (<code className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[11px] font-mono text-slate-900">VITE_SUPABASE_URL</code> &amp; <code className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[11px] font-mono text-slate-900">VITE_SUPABASE_PUBLISHABLE_KEY</code>) are configured. In Demo Mode, please use <strong>Demo Login (All Roles)</strong> to sign in across all portals.
+                <p className="text-[#333333] leading-[1.43]">
+                  Phone OTP authentication is enabled once production Supabase Auth &amp; SMS gateway API credentials (<code className="px-1.5 py-0.5 bg-[#ffffff] border border-[#e0e0e0] rounded-[5px] text-[12px] font-mono text-[#1d1d1f]">VITE_SUPABASE_URL</code> &amp; <code className="px-1.5 py-0.5 bg-[#ffffff] border border-[#e0e0e0] rounded-[5px] text-[12px] font-mono text-[#1d1d1f]">VITE_SUPABASE_PUBLISHABLE_KEY</code>) are configured. In Demo Mode, please use <strong>Demo Login (All Roles)</strong> to sign in across all portals.
                 </p>
               </div>
             </div>
@@ -456,7 +452,7 @@ export const LoginForm: React.FC = () => {
                     setActiveTab('demo');
                     setError(null);
                   }}
-                  className="inline-flex items-center gap-1.5 min-h-[36px] px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-primary-700 border border-slate-200 hover:bg-primary-600 hover:text-white hover:border-primary-600 transition-colors cursor-pointer shadow-xs"
+                  className="inline-flex items-center gap-1.5 min-h-[36px] px-4 py-1.5 rounded-full text-[14px] font-normal bg-[#ffffff] text-[#0066cc] border border-[#0066cc] active:scale-95 transition-transform cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>Use Demo Login Instead</span>
@@ -470,12 +466,12 @@ export const LoginForm: React.FC = () => {
               <div>
                 <label
                   htmlFor="otp-phone-input"
-                  className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5"
+                  className="block text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1.5"
                 >
                   Registered Mobile Number
                 </label>
                 <div className="relative">
-                  <Phone className="absolute left-3.5 top-3 h-4 w-4 text-slate-500" aria-hidden="true" />
+                  <Phone className="absolute left-3.5 top-3.5 h-4 w-4 text-[#7a7a7a]" aria-hidden="true" />
                   <input
                     id="otp-phone-input"
                     type="tel"
@@ -483,16 +479,16 @@ export const LoginForm: React.FC = () => {
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
                     placeholder="+91 98000 00001"
-                    className="w-full min-h-[44px] pl-10 pr-3 py-2 text-sm bg-white text-slate-900 placeholder-slate-400 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-600 focus:border-primary-600"
+                    className="w-full min-h-[44px] pl-10 pr-4 py-2 text-[17px] bg-[#ffffff] text-[#1d1d1f] placeholder-[#7a7a7a] border border-[#e0e0e0] rounded-[11px] focus:outline-none focus:ring-2 focus:ring-[#0071e3] focus:border-[#0071e3]"
                     required
                   />
                 </div>
-                <p className="mt-1.5 text-xs text-slate-600">
+                <p className="mt-1.5 text-[12px] text-[#7a7a7a] tracking-[-0.12px]">
                   A 6-digit one-time passcode will be securely dispatched via SMS once the Supabase Auth API is configured.
                 </p>
               </div>
 
-              <Button type="submit" variant="primary" size="lg" isLoading={isSubmitting} className="w-full">
+              <Button type="submit" variant="primary" size="md" isLoading={isSubmitting} className="w-full">
                 Request Phone OTP
               </Button>
             </form>
@@ -501,7 +497,7 @@ export const LoginForm: React.FC = () => {
               <div>
                 <label
                   htmlFor="otp-code-input"
-                  className="block text-xs font-semibold text-slate-700 tracking-wide mb-1.5"
+                  className="block text-[14px] font-semibold text-[#1d1d1f] tracking-[-0.224px] mb-1.5"
                 >
                   Enter 6-Digit OTP Code
                 </label>
@@ -514,17 +510,17 @@ export const LoginForm: React.FC = () => {
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value)}
                   placeholder="123456"
-                  className="w-full min-h-[44px] px-3 py-2 text-center tracking-widest text-lg font-mono bg-white text-slate-900 placeholder-slate-400 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-600"
+                  className="w-full min-h-[44px] px-3 py-2 text-center tracking-widest text-lg font-mono bg-[#ffffff] text-[#1d1d1f] placeholder-[#7a7a7a] border border-[#e0e0e0] rounded-[11px] focus:outline-none focus:ring-2 focus:ring-[#0071e3]"
                   required
                   autoFocus
                 />
               </div>
 
-              <div className="flex gap-2.5">
+              <div className="flex gap-3">
                 <Button
                   type="button"
                   variant="outline"
-                  size="lg"
+                  size="md"
                   onClick={() => {
                     setOtpSent(false);
                     setOtpCode('');
@@ -533,7 +529,7 @@ export const LoginForm: React.FC = () => {
                 >
                   Change Number
                 </Button>
-                <Button type="submit" variant="primary" size="lg" isLoading={isSubmitting} className="flex-1">
+                <Button type="submit" variant="primary" size="md" isLoading={isSubmitting} className="flex-1">
                   Verify &amp; Sign In
                 </Button>
               </div>

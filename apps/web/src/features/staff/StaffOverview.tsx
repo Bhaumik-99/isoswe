@@ -80,10 +80,12 @@ export const StaffOverview: React.FC = () => {
   return (
     <div ref={overviewRef} className="space-y-6">
       {/* Title */}
-      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
+      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-5 border-b border-[#e0e0e0]">
         <div>
-          <h1 className="font-display text-2xl sm:text-[28px] text-slate-900">Operations Control Center</h1>
-          <p className="text-sm text-slate-600 mt-0.5">
+          <h1 className="font-display text-[34px] font-semibold leading-[1.2] tracking-[-0.374px] text-[#1d1d1f]">
+            Operations Control Center
+          </h1>
+          <p className="text-[14px] text-[#333333] tracking-[-0.224px] mt-1">
             System health, asynchronous messaging verification, and RBAC evaluation
           </p>
         </div>

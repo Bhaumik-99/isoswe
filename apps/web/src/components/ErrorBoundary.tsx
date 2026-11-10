@@ -28,19 +28,21 @@ export class ErrorBoundary extends Component<Props, State> {
   public render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen hero-mesh-bg flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200 p-7 shadow-xl text-center">
-            <div className="w-12 h-12 bg-red-50 text-red-600 border border-red-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <AlertCircle className="w-6 h-6" aria-hidden="true" />
+        <div className="min-h-screen bg-[#f5f5f7] flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-[#ffffff] rounded-[18px] border border-[#e0e0e0] p-8 text-center">
+            <div className="w-12 h-12 bg-[#f5f5f7] text-[#1d1d1f] border border-[#e0e0e0] rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="w-5 h-5" aria-hidden="true" />
             </div>
-            <h1 className="font-display text-xl text-slate-900 mb-2">Something went wrong</h1>
-            <p className="text-sm text-slate-600 mb-6">
+            <h1 className="font-display text-[28px] font-semibold text-[#1d1d1f] tracking-[-0.28px] mb-2">
+              Something went wrong
+            </h1>
+            <p className="text-[17px] text-[#333333] leading-[1.47] tracking-[-0.374px] mb-6">
               An unexpected error interrupted this view. Your session and data remain safe.
             </p>
-            <div className="flex justify-center gap-3">
+            <div className="flex justify-center">
               <Button
                 variant="primary"
-                size="lg"
+                size="md"
                 onClick={() => {
                   this.setState({ hasError: false, error: null });
                   window.location.reload();

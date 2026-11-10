@@ -73,12 +73,12 @@ export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
   };
 
   return (
-    <header className="bg-slate-950/95 backdrop-blur-md border-b border-slate-800 text-white shadow-lg">
+    <header className="bg-[#000000] border-b border-[#2a2a2c] text-[#ffffff]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
         {/* Left: Brand & Active Gate Selector */}
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-extrabold shadow-md">
-            <ShieldCheck className="h-6 w-6" />
+          <div className="w-10 h-10 rounded-[11px] bg-[#0066cc] text-[#ffffff] flex items-center justify-center">
+            <ShieldCheck className="h-5 w-5" aria-hidden="true" />
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -146,10 +146,10 @@ export const GateHeaderBanner: React.FC<GateHeaderBannerProps> = ({
                 key={lang}
                 type="button"
                 onClick={() => setLanguage(lang)}
-                className={`px-2.5 py-1 rounded text-xs font-bold transition-colors ${
+                className={`px-2.5 py-1 rounded-[8px] text-xs font-semibold active:scale-95 transition-transform cursor-pointer ${
                   language === lang
-                    ? 'bg-amber-500 text-slate-950'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    ? 'bg-[#0066cc] text-[#ffffff]'
+                    : 'text-[#cccccc] hover:text-[#ffffff] hover:bg-[#1d1d1f]'
                 }`}
               >
                 {LANGUAGE_LABELS[lang]}

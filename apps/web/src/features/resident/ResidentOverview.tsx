@@ -157,26 +157,28 @@ export const ResidentOverview: React.FC = () => {
 
   return (
     <div ref={overviewRef} className="space-y-6">
-      {/* PWA Mobile App Install Prompt Banner */}
+      {/* PWA Mobile App Install Prompt Banner (Apple dark tile, no gradient) */}
       {deferredPrompt && !isInstallDismissed && (
-        <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-gradient-to-r from-primary-600 to-teal-700 text-white rounded-2xl shadow-md gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-white/15 rounded-xl">
-              <Smartphone className="h-6 w-6 text-white" aria-hidden="true" />
+        <div className="flex flex-col sm:flex-row items-center justify-between p-5 bg-[#272729] text-[#ffffff] rounded-[18px] gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-2.5 bg-[#2a2a2c] rounded-[11px]">
+              <Smartphone className="h-5 w-5 text-[#2997ff]" aria-hidden="true" />
             </div>
             <div>
-              <h3 className="font-semibold text-sm text-white">Install Isoswe Township App</h3>
-              <p className="text-xs text-blue-100">
-                1-tap access to maintenance payments, receipt downloads, and ticket tracking on your home screen.
+              <h3 className="font-display text-[17px] font-semibold text-[#ffffff] tracking-[-0.374px]">
+                Install Isoswe Township App
+              </h3>
+              <p className="text-[14px] text-[#cccccc] tracking-[-0.224px]">
+                Instant access to maintenance payments, receipt downloads, and ticket tracking.
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex items-center gap-2.5 w-full sm:w-auto">
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
               onClick={() => setIsInstallDismissed(true)}
-              className="text-xs bg-transparent border-white/40 text-white hover:bg-white/10 hover:text-white"
+              className="text-[#2997ff]"
             >
               Dismiss
             </Button>
@@ -184,7 +186,6 @@ export const ResidentOverview: React.FC = () => {
               size="sm"
               variant="primary"
               onClick={handleInstallApp}
-              className="text-xs bg-white text-primary-700 hover:bg-blue-50 font-semibold"
             >
               Install App
             </Button>
@@ -193,18 +194,20 @@ export const ResidentOverview: React.FC = () => {
       )}
 
       {/* Page Title */}
-      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-200">
+      <div data-gsap-stagger className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-5 border-b border-[#e0e0e0]">
         <div>
-          <h1 className="font-display text-2xl sm:text-[28px] text-slate-900">Apartment Residence</h1>
-          <p className="text-sm text-slate-600 mt-0.5">
+          <h1 className="font-display text-[34px] font-semibold leading-[1.2] tracking-[-0.374px] text-[#1d1d1f]">
+            Apartment Residence
+          </h1>
+          <p className="text-[14px] text-[#333333] tracking-[-0.224px] mt-1">
             Verified property membership and society operations status
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant={selectedFlat.membership_type === 'OWNER' ? 'success' : 'warning'}>
+          <Badge variant={selectedFlat.membership_type === 'OWNER' ? 'info' : 'warning'}>
             Membership: {selectedFlat.membership_type}
           </Badge>
-          <Badge variant="info">Status: {selectedFlat.status}</Badge>
+          <Badge variant="neutral">Status: {selectedFlat.status}</Badge>
         </div>
       </div>
 

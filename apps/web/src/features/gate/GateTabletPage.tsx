@@ -184,51 +184,51 @@ export const GateTabletPage: React.FC = () => {
       </FixedHeaderPortal>
 
       <main id="main-content" tabIndex={-1} className="max-w-7xl mx-auto px-4 sm:px-6 py-6 w-full flex-1 space-y-6 outline-none">
-        {/* KPI Strip */}
+        {/* KPI Strip — Apple dark tiles (#272729) with #2997ff highlights */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-          <div data-gsap-stagger className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+          <div data-gsap-stagger className="p-4 rounded-[18px] bg-[#272729] border border-[#2a2a2c] flex items-center justify-between">
             <div>
-              <span className="text-xs text-slate-400 font-semibold block">
+              <span className="text-[12px] text-[#cccccc] font-normal block tracking-[-0.12px]">
                 {t.gate.kpiTodayVisitors}
               </span>
-              <span className="text-2xl font-extrabold text-white">{visitors.length}</span>
+              <span className="text-[28px] font-semibold text-[#ffffff] tracking-[-0.28px]">{visitors.length}</span>
             </div>
-            <Users className="h-7 w-7 text-indigo-400" />
+            <Users className="h-6 w-6 text-[#2997ff]" aria-hidden="true" />
           </div>
 
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+          <div data-gsap-stagger className="p-4 rounded-[18px] bg-[#2a2a2c] border border-[#333333] flex items-center justify-between">
             <div>
-              <span className="text-xs text-slate-400 font-semibold block">
+              <span className="text-[12px] text-[#cccccc] font-normal block tracking-[-0.12px]">
                 {t.gate.kpiPendingApprovals}
               </span>
-              <span className="text-2xl font-extrabold text-amber-400">{pendingCount}</span>
+              <span className="text-[28px] font-semibold text-[#ffffff] tracking-[-0.28px]">{pendingCount}</span>
             </div>
-            <Clock className="h-7 w-7 text-amber-400" />
+            <Clock className="h-6 w-6 text-[#2997ff]" aria-hidden="true" />
           </div>
 
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+          <div data-gsap-stagger className="p-4 rounded-[18px] bg-[#272729] border border-[#2a2a2c] flex items-center justify-between">
             <div>
-              <span className="text-xs text-slate-400 font-semibold block">
+              <span className="text-[12px] text-[#cccccc] font-normal block tracking-[-0.12px]">
                 {t.gate.kpiCurrentlyInside}
               </span>
-              <span className="text-2xl font-extrabold text-emerald-400">{insideCount}</span>
+              <span className="text-[28px] font-semibold text-[#ffffff] tracking-[-0.28px]">{insideCount}</span>
             </div>
-            <CheckCircle2 className="h-7 w-7 text-emerald-400" />
+            <CheckCircle2 className="h-6 w-6 text-[#2997ff]" aria-hidden="true" />
           </div>
 
-          <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between">
+          <div data-gsap-stagger className="p-4 rounded-[18px] bg-[#252527] border border-[#2a2a2c] flex items-center justify-between">
             <div>
-              <span className="text-xs text-slate-400 font-semibold block">
+              <span className="text-[12px] text-[#cccccc] font-normal block tracking-[-0.12px]">
                 {t.gate.kpiCheckedOutToday}
               </span>
-              <span className="text-2xl font-extrabold text-slate-300">{checkedOutCount}</span>
+              <span className="text-[28px] font-semibold text-[#cccccc] tracking-[-0.28px]">{checkedOutCount}</span>
             </div>
-            <Database className="h-7 w-7 text-slate-400" />
+            <Database className="h-6 w-6 text-[#cccccc]" aria-hidden="true" />
           </div>
         </div>
 
-        {/* High-Contrast Tablet Navigation Tabs */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-slate-900 p-2 rounded-2xl border border-slate-800">
+        {/* High-Contrast Apple Pill Tablet Tabs */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-[#252527] p-1.5 rounded-[18px] border border-[#2a2a2c]">
           {(
             [
               { id: 'register', label: t.gate.tabs.register, icon: UserPlus },
@@ -253,13 +253,13 @@ export const GateTabletPage: React.FC = () => {
                 key={tab.id}
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
-                className={`py-3 px-3 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all ${
+                className={`min-h-[44px] py-2.5 px-3 rounded-full font-normal text-[14px] tracking-[-0.224px] flex items-center justify-center gap-2 transition-transform active:scale-95 cursor-pointer ${
                   isActive
-                    ? 'bg-amber-500 text-slate-950 shadow-md'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    ? 'bg-[#0066cc] text-[#ffffff] font-semibold'
+                    : 'text-[#cccccc] hover:text-[#ffffff] hover:bg-[#2a2a2c]'
                 }`}
               >
-                <Icon className="h-4 w-4 flex-shrink-0" />
+                <Icon className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
                 <span className="truncate">{tab.label}</span>
               </button>
             );

@@ -4,14 +4,12 @@ import { twMerge } from 'tailwind-merge';
 
 export type CardProps = React.HTMLAttributes<HTMLDivElement>;
 
+// Apple store-utility-card: pure white #ffffff, 1px #e0e0e0 hairline border, rounded 18px, ZERO box shadow
 export const Card: React.FC<CardProps> = ({ className, children, ...props }) => {
   return (
     <div
       className={twMerge(
-        clsx(
-          'bg-white border border-slate-200/90 rounded-2xl text-slate-900 shadow-xs transition-shadow duration-200 hover:shadow-sm',
-          className
-        )
+        clsx('bg-[#ffffff] border border-[#e0e0e0] rounded-[18px] text-[#1d1d1f]', className)
       )}
       {...props}
     >
@@ -26,7 +24,7 @@ export const CardHeader: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   ...props
 }) => {
   return (
-    <div className={twMerge(clsx('px-6 py-4 border-b border-slate-100', className))} {...props}>
+    <div className={twMerge(clsx('px-6 py-4 border-b border-[#e0e0e0]', className))} {...props}>
       {children}
     </div>
   );
@@ -40,7 +38,7 @@ export const CardTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({
   return (
     <h3
       className={twMerge(
-        clsx('text-base sm:text-lg font-semibold tracking-[-0.015em] text-slate-900', className)
+        clsx('font-display text-[21px] font-semibold leading-[1.19] tracking-[0.231px] text-[#1d1d1f]', className)
       )}
       {...props}
     >

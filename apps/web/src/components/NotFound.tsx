@@ -5,13 +5,15 @@ import { Button } from './ui/Button';
 
 export const NotFound: React.FC = () => {
   return (
-    <div className="min-h-screen hero-mesh-bg flex items-center justify-center p-4">
-      <div className="max-w-md w-full text-center bg-white/95 backdrop-blur-md p-8 rounded-2xl border border-slate-200 shadow-xl">
-        <div className="w-14 h-14 bg-blue-50 text-primary-600 border border-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-          <FileQuestion className="w-7 h-7" aria-hidden="true" />
+    <div className="min-h-screen bg-[#f5f5f7] flex items-center justify-center p-4">
+      <div className="max-w-md w-full text-center bg-[#ffffff] p-10 rounded-[18px] border border-[#e0e0e0]">
+        <div className="w-14 h-14 bg-[#f5f5f7] text-[#1d1d1f] border border-[#e0e0e0] rounded-full flex items-center justify-center mx-auto mb-5">
+          <FileQuestion className="w-6 h-6" aria-hidden="true" />
         </div>
-        <h1 className="font-display text-2xl text-slate-900 mb-2">Page Not Found</h1>
-        <p className="text-sm text-slate-600 mb-6">
+        <h1 className="font-display text-[34px] font-semibold leading-[1.2] tracking-[-0.374px] text-[#1d1d1f] mb-2">
+          Page Not Found
+        </h1>
+        <p className="text-[17px] text-[#333333] leading-[1.47] tracking-[-0.374px] mb-8">
           The requested path does not exist in this township operations deployment.
         </p>
         <Link to="/" className="inline-block">

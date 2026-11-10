@@ -10,26 +10,27 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'primary', size = 'md', isLoading = false, disabled, children, ...props }, ref) => {
+    // Apple interaction grammar: active scale(0.95), focus outline #0071e3, no chrome shadows, weight 300/400/600 (never 500)
     const baseStyles =
-      'inline-flex items-center justify-center font-medium cursor-pointer transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-600 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none select-none active:scale-[0.98]';
+      'inline-flex items-center justify-center cursor-pointer transition-transform duration-150 focus-visible:outline-2 focus-visible:outline-[#0071e3] focus-visible:outline-offset-2 disabled:text-[#7a7a7a] disabled:opacity-50 disabled:pointer-events-none select-none active:scale-[0.95]';
 
     const variants = {
       primary:
-        'bg-primary-600 text-white hover:bg-primary-700 active:bg-primary-800 rounded-xl shadow-sm hover:shadow-md',
+        'bg-[#0066cc] text-[#ffffff] rounded-full font-normal',
       secondary:
-        'bg-white text-slate-900 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded-xl shadow-xs',
+        'bg-[#ffffff] text-[#0066cc] border border-[#0066cc] rounded-full font-normal',
       outline:
-        'bg-white/90 border border-slate-200 text-slate-800 hover:bg-slate-50 hover:border-slate-300 hover:text-slate-900 rounded-xl shadow-xs',
+        'bg-[#fafafc] text-[#333333] border-[3px] border-[#f0f0f0] rounded-[11px] font-normal',
       ghost:
-        'text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg',
+        'bg-transparent text-[#0066cc] rounded-[5px] font-normal hover:underline',
       danger:
-        'bg-red-600 text-white hover:bg-red-700 active:bg-red-800 rounded-xl shadow-sm',
+        'bg-[#1d1d1f] text-[#ffffff] rounded-[8px] font-normal',
     };
 
     const sizes = {
-      sm: 'min-h-[36px] px-3.5 text-xs gap-1.5',
-      md: 'min-h-[40px] px-4 py-2 text-sm gap-2',
-      lg: 'min-h-[44px] px-6 py-2.5 text-base gap-2',
+      sm: 'min-h-[36px] px-[15px] py-[8px] text-[14px] leading-[1.29] tracking-[-0.224px] gap-1.5',
+      md: 'min-h-[44px] px-[22px] py-[11px] text-[17px] leading-[1.2] tracking-[-0.374px] gap-2',
+      lg: 'min-h-[44px] px-[28px] py-[14px] text-[18px] leading-[1.0] font-light tracking-normal gap-2',
     };
 
     return (
