@@ -101,11 +101,11 @@ export const DEMO_ACCOUNTS: DemoAccount[] = [
 ];
 
 export const LoginForm: React.FC = () => {
-  const isDev = import.meta.env.DEV;
+  const isDemoEnabled = import.meta.env.VITE_DISABLE_DEMO_AUTH !== 'true';
   const { login, isSessionExpired, clearSessionExpired } = useAuth();
   const navigate = useNavigate();
 
-  const [activeTab, setActiveTab] = useState<'demo' | 'otp'>(isDev ? 'demo' : 'otp');
+  const [activeTab, setActiveTab] = useState<'demo' | 'otp'>(isDemoEnabled ? 'demo' : 'otp');
   const [username, setUsername] = useState('owner@demo.com');
   const [password, setPassword] = useState('Owner@123');
   const [showPassword, setShowPassword] = useState(false);
@@ -116,10 +116,6 @@ export const LoginForm: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleDirectPersonaLogin = async (account: DemoAccount) => {
-    if (!isDev) {
-      setError('Development demo login is strictly disabled in production builds.');
-      return;
-    }
     setUsername(account.username);
     setPassword(account.password);
     setError(null);
@@ -137,10 +133,6 @@ export const LoginForm: React.FC = () => {
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isDev) {
-      setError('Development demo login is strictly disabled in production builds.');
-      return;
-    }
 
     const cleanUser = username.trim().toLowerCase();
     const cleanPass = password.trim();
@@ -229,8 +221,8 @@ export const LoginForm: React.FC = () => {
         </Alert>
       )}
 
-      {/* Environment-Gated Tab Switcher */}
-      {isDev && (
+      {/* Tab Switcher */}
+      {isDemoEnabled && (
         <div className="flex border-b border-slate-200">
           <button
             type="button"
@@ -272,7 +264,7 @@ export const LoginForm: React.FC = () => {
       )}
 
       {/* Demo Username & Password Login + Role Credentials Directory */}
-      {isDev && activeTab === 'demo' && (
+      {isDemoEnabled && activeTab === 'demo' && (
         <div className="space-y-4">
           <form onSubmit={handlePasswordSubmit} className="space-y-3 bg-slate-50 p-3.5 rounded-lg border border-slate-200">
             <div>
@@ -399,7 +391,7 @@ export const LoginForm: React.FC = () => {
       )}
 
       {/* Genuine Production Supabase Phone OTP Flow */}
-      {(!isDev || activeTab === 'otp') && (
+      {(!isDemoEnabled || activeTab === 'otp') && (
         <div>
           {!otpSent ? (
             <form onSubmit={handleSendOtp} className="space-y-4">

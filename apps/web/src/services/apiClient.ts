@@ -8,6 +8,7 @@
  */
 
 import { ApiErrorResponse } from '../types';
+import { handleDemoApiRequest } from './demoMockBackend';
 import { sessionManager } from './sessionManager';
 import { supabaseAuth } from './supabaseAuth';
 
@@ -80,7 +81,15 @@ class ApiClient {
         return {} as T;
       }
 
-      const data = await response.json().catch(() => null);
+      const contentType = response.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+      const data = isJson ? await response.json().catch(() => null) : null;
+
+      // On static deployments (e.g. Vercel without backend proxy), /api/* may return index.html or 404/401.
+      // When authenticated with a demo persona token, fall back to the stateful in-browser demo backend.
+      if (token?.startsWith('dev-token-') && (!response.ok || !isJson || data === null)) {
+        return handleDemoApiRequest<T>(endpoint, options, token);
+      }
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -125,6 +134,9 @@ class ApiClient {
 
       return data as T;
     } catch (err: unknown) {
+      if (token?.startsWith('dev-token-')) {
+        return handleDemoApiRequest<T>(endpoint, options, token);
+      }
       if (err instanceof ApiClientError) {
         throw err;
       }
