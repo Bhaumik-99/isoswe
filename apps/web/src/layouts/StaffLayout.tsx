@@ -56,47 +56,47 @@ export const StaffLayout: React.FC = () => {
   const primaryRole = roles[0] || 'STAFF';
 
   return (
-    <div className="min-h-screen bg-[#fbfcfd] flex flex-col">
-      {/* Top Header */}
-      <header className="bg-slate-900 text-white sticky top-0 z-30">
+    <div className="min-h-screen bg-[#f6f5f4] text-[#000000] flex flex-col">
+      {/* Top Header (Notion nav-bar) */}
+      <header className="bg-[#ffffff] text-[#000000] border-b border-[#e6e6e6] sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 text-slate-300 hover:text-white rounded-lg hover:bg-slate-800"
+              className="md:hidden p-2 text-[#615d59] hover:text-[#000000] rounded-[5px] hover:bg-[#f6f5f4]"
               aria-label="Toggle Navigation Menu"
             >
               {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
 
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-indigo-500 text-white flex items-center justify-center font-bold">
-                <ShieldAlert className="h-5 w-5" />
+              <div className="w-8 h-8 rounded-[8px] bg-[#0075de] text-[#ffffff] flex items-center justify-center font-bold border border-[#e6e6e6]">
+                <ShieldAlert className="h-4 w-4" />
               </div>
               <div>
-                <span className="font-semibold text-sm block leading-tight text-white">
+                <span className="font-semibold text-[15px] block leading-tight text-[#000000] tracking-[-0.125px]">
                   Township Operations
                 </span>
-                <span className="text-xs text-slate-400 block">Facility & Financial Ops</span>
+                <span className="text-[12px] text-[#615d59] block">Facility &amp; Financial Workspace</span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <Badge variant="info" className="uppercase font-mono text-[11px] bg-slate-800 text-indigo-300 border-slate-700">
+            <Badge variant="info" className="uppercase font-mono text-[11px]">
               Role: {primaryRole}
             </Badge>
 
-            <NotificationBell dark notificationsUrl="/staff/notifications" />
+            <NotificationBell notificationsUrl="/staff/notifications" />
 
-            <div className="flex items-center gap-3 pl-3 border-l border-slate-700">
+            <div className="flex items-center gap-3 pl-3 border-l border-[#e6e6e6]">
               <div className="hidden sm:block text-right">
-                <div className="text-xs font-medium text-white">{user?.full_name}</div>
-                <div className="text-[11px] text-slate-400 truncate max-w-[140px]">{user?.email}</div>
+                <div className="text-[14px] font-medium text-[#000000] leading-tight">{user?.full_name}</div>
+                <div className="text-[12px] text-[#615d59] truncate max-w-[140px]">{user?.email}</div>
               </div>
               <button
                 onClick={handleLogout}
-                className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+                className="p-2 text-[#615d59] hover:text-[#000000] rounded-[8px] border border-transparent hover:border-[#e6e6e6] hover:bg-[#f6f5f4] transition-colors"
                 title="Log out"
                 aria-label="Log out"
               >
@@ -116,14 +116,14 @@ export const StaffLayout: React.FC = () => {
                 key={item.path}
                 to={item.path}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] transition-colors ${
                     isActive
-                      ? 'bg-slate-900 text-white font-semibold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                      ? 'bg-[#ffffff] text-[#0075de] font-semibold border border-[#e6e6e6] shadow-xs'
+                      : 'text-[#615d59] font-normal hover:text-[#000000] hover:bg-[#ffffff]/70'
                   }`
                 }
               >
-                <item.icon className="h-4 w-4" />
+                <item.icon className="h-4 w-4 flex-shrink-0" />
                 <span>{item.name}</span>
               </NavLink>
             ))}
@@ -132,12 +132,12 @@ export const StaffLayout: React.FC = () => {
 
         {/* Mobile Navigation Drawer */}
         {mobileMenuOpen && (
-          <div className="fixed inset-0 z-40 md:hidden bg-slate-900/40 backdrop-blur-sm" onClick={() => setMobileMenuOpen(false)}>
-            <div className="fixed inset-y-0 left-0 w-64 bg-slate-900 text-white p-4 shadow-xl flex flex-col" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-                <span className="font-semibold text-sm">Staff Navigation</span>
+          <div className="fixed inset-0 z-40 md:hidden bg-black/30 backdrop-blur-[1px]" onClick={() => setMobileMenuOpen(false)}>
+            <div className="fixed inset-y-0 left-0 w-64 bg-[#ffffff] text-[#000000] border-r border-[#e6e6e6] p-4 shadow-lg flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between pb-4 border-b border-[#e6e6e6]">
+                <span className="font-semibold text-[15px] text-[#000000]">Staff Navigation</span>
                 <button onClick={() => setMobileMenuOpen(false)}>
-                  <X className="h-5 w-5 text-slate-400" />
+                  <X className="h-5 w-5 text-[#615d59]" />
                 </button>
               </div>
               <nav className="mt-4 space-y-1 flex-1">
@@ -147,8 +147,8 @@ export const StaffLayout: React.FC = () => {
                     to={item.path}
                     onClick={() => setMobileMenuOpen(false)}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium ${
-                        isActive ? 'bg-indigo-600 text-white font-semibold' : 'text-slate-300 hover:bg-slate-800'
+                      `flex items-center gap-3 px-4 py-2 rounded-[5px] text-[15px] leading-[1.33] ${
+                        isActive ? 'bg-[#f6f5f4] text-[#0075de] font-semibold' : 'text-[#615d59] hover:text-[#000000]'
                       }`
                     }
                   >

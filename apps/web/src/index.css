@@ -4,16 +4,75 @@
 
 @layer base {
   :root {
-    --background: 0 0% 99%;
-    --foreground: 222 47% 11%;
+    --background: 40 11% 96%;
+    --foreground: 0 0% 0%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --border: 214 32% 91%;
+    --card-foreground: 0 0% 0%;
+    --border: 0 0% 90%;
+    --notion-primary: #0075de;
+    --notion-primary-active: #005bab;
+    --notion-secondary: #213183;
+    --notion-canvas: #ffffff;
+    --notion-canvas-soft: #f6f5f4;
+    --notion-ink: #000000;
+    --notion-ink-secondary: #31302e;
+    --notion-ink-muted: #615d59;
+    --notion-ink-faint: #a39e98;
+    --notion-hairline: #e6e6e6;
   }
 
   body {
-    @apply bg-background text-slate-900;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    background-color: #f6f5f4;
+    color: #000000;
+    font-family: Inter, -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-feature-settings: "lnum" 1, "locl" 1;
+    line-height: 1.5;
+  }
+
+  h1 {
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: #000000;
+  }
+
+  h2 {
+    font-weight: 700;
+    letter-spacing: -0.022em;
+    color: #000000;
+  }
+
+  h3 {
+    font-weight: 700;
+    letter-spacing: -0.012em;
+    color: #000000;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    border-radius: 4px;
+    border-color: #e6e6e6;
+    background-color: #ffffff;
+    color: #000000;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: #a39e98;
+  }
+
+  th {
+    background-color: #f6f5f4;
+    color: #615d59;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.125px;
+    border-color: #e6e6e6;
+  }
+
+  td {
+    border-color: #e6e6e6;
+    font-size: 15px;
   }
 }
 
@@ -26,9 +85,9 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #d8d6d2;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #a39e98;
 }

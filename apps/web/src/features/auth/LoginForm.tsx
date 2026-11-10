@@ -171,6 +171,13 @@ export const LoginForm: React.FC = () => {
       return;
     }
 
+    if (!supabaseAuth.isConfigured()) {
+      setError(
+        'Live SMS OTP is only active after configuring Supabase Auth API credentials (VITE_SUPABASE_URL & VITE_SUPABASE_PUBLISHABLE_KEY). For this demo deployment, please use the "Demo Login (All Roles)" tab.'
+      );
+      return;
+    }
+
     setError(null);
     clearSessionExpired();
     setIsSubmitting(true);
@@ -223,17 +230,17 @@ export const LoginForm: React.FC = () => {
 
       {/* Tab Switcher */}
       {isDemoEnabled && (
-        <div className="flex border-b border-slate-200">
+        <div className="flex border-b border-[#e6e6e6]">
           <button
             type="button"
             onClick={() => {
               setActiveTab('demo');
               setError(null);
             }}
-            className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
+            className={`flex-1 pb-3 text-[12px] font-semibold tracking-[0.125px] transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
               activeTab === 'demo'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-[#0075de] text-[#0075de]'
+                : 'border-transparent text-[#615d59] hover:text-[#000000]'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
@@ -245,10 +252,10 @@ export const LoginForm: React.FC = () => {
               setActiveTab('otp');
               setError(null);
             }}
-            className={`flex-1 pb-3 text-xs font-semibold uppercase tracking-wider transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
+            className={`flex-1 pb-3 text-[12px] font-semibold tracking-[0.125px] transition-colors border-b-2 flex items-center justify-center gap-1.5 ${
               activeTab === 'otp'
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-[#0075de] text-[#0075de]'
+                : 'border-transparent text-[#615d59] hover:text-[#000000]'
             }`}
           >
             <KeyRound className="w-3.5 h-3.5" />
@@ -266,23 +273,23 @@ export const LoginForm: React.FC = () => {
       {/* Demo Username & Password Login + Role Credentials Directory */}
       {isDemoEnabled && activeTab === 'demo' && (
         <div className="space-y-4">
-          <form onSubmit={handlePasswordSubmit} className="space-y-3 bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+          <form onSubmit={handlePasswordSubmit} className="space-y-3 bg-[#f6f5f4] p-4 rounded-[12px] border border-[#e6e6e6]">
             <div>
               <label
                 htmlFor="demo-username"
-                className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                className="block text-[12px] font-semibold text-[#31302e] tracking-[0.125px] mb-1"
               >
                 Username / Email
               </label>
               <div className="relative">
-                <User className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <User className="absolute left-3 top-2.5 h-4 w-4 text-[#a39e98]" />
                 <input
                   id="demo-username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="owner@demo.com"
-                  className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                  className="w-full pl-9 pr-3 py-2 text-[14px] bg-[#ffffff] text-[#000000] placeholder-[#a39e98] border border-[#e6e6e6] rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#0075de] focus:border-[#0075de]"
                   required
                 />
               </div>
@@ -291,25 +298,25 @@ export const LoginForm: React.FC = () => {
             <div>
               <label
                 htmlFor="demo-password"
-                className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                className="block text-[12px] font-semibold text-[#31302e] tracking-[0.125px] mb-1"
               >
                 Password
               </label>
               <div className="relative">
-                <Lock className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                <Lock className="absolute left-3 top-2.5 h-4 w-4 text-[#a39e98]" />
                 <input
                   id="demo-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter demo password"
-                  className="w-full pl-9 pr-9 py-2 text-sm bg-white border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 font-mono"
+                  className="w-full pl-9 pr-9 py-2 text-[14px] bg-[#ffffff] text-[#000000] placeholder-[#a39e98] border border-[#e6e6e6] rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#0075de] focus:border-[#0075de] font-mono"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2.5 top-2.5 text-[#a39e98] hover:text-[#31302e]"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -322,51 +329,57 @@ export const LoginForm: React.FC = () => {
             </Button>
           </form>
 
-          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-md text-[11px] text-amber-800 flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="p-3 bg-[#f6f5f4] border border-[#e6e6e6] rounded-[8px] text-[12px] text-[#31302e] flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-[#0075de] flex-shrink-0 mt-0.5" />
             <span>
               <strong>Demo Accounts by Role:</strong> Click any account below to fill its username &amp; password, or click <strong>Instant Sign In</strong> to open that portal directly.
             </span>
           </div>
 
-          <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
-            {DEMO_ACCOUNTS.map((account) => {
+          <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
+            {DEMO_ACCOUNTS.map((account, idx) => {
               const isSelected = username.toLowerCase() === account.username.toLowerCase();
+              const stickerColors = ['#1aae39', '#dd5b00', '#d6b6f6', '#62aef0', '#2a9d99', '#ff64c8'];
+              const stickerDot = stickerColors[idx % stickerColors.length];
               return (
                 <div
                   key={account.id}
                   onClick={() => handleFillCredentials(account)}
-                  className={`w-full text-left p-3 rounded-lg border transition-all cursor-pointer ${
+                  className={`w-full text-left p-3.5 rounded-[12px] border transition-all cursor-pointer ${
                     isSelected
-                      ? 'border-indigo-500 bg-indigo-50/60 ring-1 ring-indigo-500'
-                      : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/30'
+                      ? 'border-[#0075de] bg-[#ffffff] ring-1 ring-[#0075de] shadow-sm'
+                      : 'border-[#e6e6e6] bg-[#ffffff] hover:border-[#a39e98] hover:bg-[#f6f5f4]/60'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <div className="font-semibold text-xs text-slate-900">
-                      {account.name}
+                    <div className="font-semibold text-[14px] text-[#000000] flex items-center gap-2">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: stickerDot }}
+                      />
+                      <span>{account.name}</span>
                       {account.unit && (
-                        <span className="ml-1.5 text-[11px] font-normal text-slate-500">
+                        <span className="text-[12px] font-normal text-[#615d59]">
                           • {account.unit}
                         </span>
                       )}
                     </div>
-                    <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 whitespace-nowrap">
+                    <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#f6f5f4] text-[#0075de] border border-[#e6e6e6] whitespace-nowrap">
                       {account.userType}
                     </span>
                   </div>
 
-                  <div className="text-[11px] text-slate-500 mb-2">{account.description}</div>
+                  <div className="text-[12px] text-[#615d59] mb-2.5 pl-4">{account.description}</div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-200/70">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#e6e6e6] pl-4">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-mono">
                       <span>
-                        <span className="text-slate-400">User:</span>{' '}
-                        <strong className="text-slate-800 select-all">{account.username}</strong>
+                        <span className="text-[#a39e98]">User:</span>{' '}
+                        <strong className="text-[#000000] select-all">{account.username}</strong>
                       </span>
                       <span>
-                        <span className="text-slate-400">Pass:</span>{' '}
-                        <strong className="text-slate-800 select-all">{account.password}</strong>
+                        <span className="text-[#a39e98]">Pass:</span>{' '}
+                        <strong className="text-[#000000] select-all">{account.password}</strong>
                       </span>
                     </div>
 
@@ -377,7 +390,7 @@ export const LoginForm: React.FC = () => {
                         e.stopPropagation();
                         handleDirectPersonaLogin(account);
                       }}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[8px] text-[12px] font-medium bg-[#ffffff] text-[#000000] border border-[#e6e6e6] hover:bg-[#0075de] hover:text-[#ffffff] hover:border-[#0075de] transition-colors disabled:opacity-50"
                     >
                       <LogIn className="w-3 h-3" />
                       <span>Instant Sign In</span>
@@ -392,26 +405,55 @@ export const LoginForm: React.FC = () => {
 
       {/* Genuine Production Supabase Phone OTP Flow */}
       {(!isDemoEnabled || activeTab === 'otp') && (
-        <div>
+        <div className="space-y-4">
+          <div className="p-3.5 bg-[#f6f5f4] border border-[#e6e6e6] rounded-[12px] text-[12px] text-[#31302e] space-y-2">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-[#dd5b00] flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold text-[#000000]">
+                  Demo Deployment Notice — API Configuration Required for Live SMS OTP
+                </p>
+                <p className="text-[#615d59] leading-relaxed">
+                  Phone OTP authentication is enabled once production Supabase Auth &amp; SMS gateway API credentials (<code className="px-1 py-0.5 bg-[#ffffff] border border-[#e6e6e6] rounded-[4px] text-[11px] text-[#000000]">VITE_SUPABASE_URL</code> &amp; <code className="px-1 py-0.5 bg-[#ffffff] border border-[#e6e6e6] rounded-[4px] text-[11px] text-[#000000]">VITE_SUPABASE_PUBLISHABLE_KEY</code>) are configured. In Demo Mode, please use <strong>Demo Login (All Roles)</strong> to sign in across all portals.
+                </p>
+              </div>
+            </div>
+            {isDemoEnabled && (
+              <div className="pl-6 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('demo');
+                    setError(null);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-[8px] text-[12px] font-medium bg-[#ffffff] text-[#0075de] border border-[#e6e6e6] hover:bg-[#0075de] hover:text-[#ffffff] hover:border-[#0075de] transition-colors"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Use Demo Login Instead</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {!otpSent ? (
             <form onSubmit={handleSendOtp} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label className="block text-[12px] font-semibold text-[#31302e] tracking-[0.125px] mb-1.5">
                   Registered Mobile Number
                 </label>
                 <div className="relative">
-                  <Phone className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <Phone className="absolute left-3 top-2.5 h-4 w-4 text-[#a39e98]" />
                   <input
                     type="tel"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
                     placeholder="+91 98000 00001"
-                    className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600"
+                    className="w-full pl-9 pr-3 py-2 text-[14px] bg-[#ffffff] text-[#000000] placeholder-[#a39e98] border border-[#e6e6e6] rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#0075de] focus:border-[#0075de]"
                     required
                   />
                 </div>
-                <p className="mt-1.5 text-xs text-slate-500">
-                  A 6-digit one-time passcode will be securely sent via SMS through Supabase Auth.
+                <p className="mt-1.5 text-[12px] text-[#615d59]">
+                  A 6-digit one-time passcode will be securely dispatched via SMS once the Supabase Auth API is configured.
                 </p>
               </div>
 
@@ -422,7 +464,7 @@ export const LoginForm: React.FC = () => {
           ) : (
             <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                <label className="block text-[12px] font-semibold text-[#31302e] tracking-[0.125px] mb-1.5">
                   Enter 6-Digit OTP Code
                 </label>
                 <input
@@ -431,7 +473,7 @@ export const LoginForm: React.FC = () => {
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value)}
                   placeholder="123456"
-                  className="w-full px-3 py-2 text-center tracking-widest text-lg font-mono border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                  className="w-full px-3 py-2 text-center tracking-widest text-lg font-mono bg-[#ffffff] text-[#000000] placeholder-[#a39e98] border border-[#e6e6e6] rounded-[4px] focus:outline-none focus:ring-2 focus:ring-[#0075de]"
                   required
                   autoFocus
                 />
